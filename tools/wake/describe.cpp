@@ -115,12 +115,21 @@ static void describe_metadata(const std::vector<JobReflection> &jobs, bool debug
 
     std::stringstream stdout_writes;
     std::stringstream stderr_writes;
+    std::stringstream runner_out_writes;
+    std::stringstream runner_err_writes;
+
     for (auto &write : job.std_writes) {
       if (write.second == 1) {
         stdout_writes << write.first;
       }
       if (write.second == 2) {
         stderr_writes << write.first;
+      }
+      if (write.second == 3) {
+        runner_out_writes << write.first;
+      }
+      if (write.second == 4) {
+        runner_err_writes << write.first;
       }
     }
 
@@ -135,6 +144,18 @@ static void describe_metadata(const std::vector<JobReflection> &jobs, bool debug
       if (!stderr_str.empty()) {
         out << "Stderr:";
         indent(out, "  ", stderr_str);
+      }
+
+      std::string runner_out_str = runner_out_writes.str();
+      if (!runner_out_str.empty()) {
+        out << "Runner Output:";
+        indent(out, "  ", runner_out_str);
+      }
+
+      std::string runner_err_str = runner_err_writes.str();
+      if (!runner_err_str.empty()) {
+        out << "Runner Error:";
+        indent(out, "  ", runner_err_str);
       }
     }
 
@@ -198,12 +219,21 @@ static void describe_shell(const std::vector<JobReflection> &jobs, bool debug, b
 
     std::stringstream stdout_writes;
     std::stringstream stderr_writes;
+    std::stringstream runner_out_writes;
+    std::stringstream runner_err_writes;
+
     for (auto &write : job.std_writes) {
       if (write.second == 1) {
         stdout_writes << write.first;
       }
       if (write.second == 2) {
         stderr_writes << write.first;
+      }
+      if (write.second == 3) {
+        runner_out_writes << write.first;
+      }
+      if (write.second == 4) {
+        runner_err_writes << write.first;
       }
     }
 
@@ -217,6 +247,18 @@ static void describe_shell(const std::vector<JobReflection> &jobs, bool debug, b
     if (!stderr_str.empty()) {
       out << "# Stderr:";
       indent(out, "#   ", stderr_str);
+    }
+
+    std::string runner_out_str = runner_out_writes.str();
+    if (!runner_out_str.empty()) {
+      out << "# Runner Output:";
+      indent(out, "#   ", runner_out_str);
+    }
+
+    std::string runner_err_str = runner_err_writes.str();
+    if (!runner_err_str.empty()) {
+      out << "# Runner Error:";
+      indent(out, "#   ", runner_err_str);
     }
 
     if (!job.tags.empty()) {

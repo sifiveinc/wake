@@ -38,7 +38,7 @@
 #include "wcl/iterator.h"
 
 // Increment every time the database schema changes
-#define SCHEMA_VERSION "6"
+#define SCHEMA_VERSION "7"
 
 #define VISIBLE 0
 #define INPUT 1
@@ -89,6 +89,8 @@ struct Database::detail {
   sqlite3_stmt *get_unhashed_file_paths;
   sqlite3_stmt *insert_unhashed_file;
   sqlite3_stmt *get_interleaved_output;
+  sqlite3_stmt *set_runner_status;
+  sqlite3_stmt *get_runner_status;
 
   long run_id;
   detail(bool debugdb_)
@@ -129,7 +131,9 @@ struct Database::detail {
         get_all_runs(0),
         get_edges(0),
         get_file_dependency(0),
-        get_interleaved_output(0) {}
+        get_interleaved_output(0),
+        set_runner_status(0),
+        get_runner_status(0) {}
 };
 
 static void close_db(Database::detail *imp) {
@@ -217,8 +221,9 @@ std::string Database::open(bool wait, bool memory, bool tty) {
       "  starttime   integer not null default 0,"
       "  endtime     integer not null default 0,"
       "  keep        integer not null default 0,"
-      "  stale       integer not null default 0,"   // 0=false, 1=true
-      "  is_atty     integer not null default 0);"  // 0=false, 1=true
+      "  stale       integer not null default 0,"     // 0=false, 1=true
+      "  is_atty     integer not null default 0,"     // 0=false, 1=true
+      "  runner_status integer not null default 0);"  // 0=success, non-zero=failure
       "create index if not exists job on jobs(directory, commandline, environment, stdin, "
       "signature, keep, job_id, stat_id);"
       "create index if not exists jobstats on jobs(stat_id);"
@@ -232,7 +237,7 @@ std::string Database::open(bool wait, bool memory, bool tty) {
       "create table if not exists log("
       "  log_id     integer primary key autoincrement,"
       "  job_id     integer not null references jobs(job_id) on delete cascade,"
-      "  descriptor integer not null,"  // 1=stdout, 2=stderr"
+      "  descriptor integer not null,"  // 1=stdout, 2=stderr, 3=runner_out, 4=runner_err
       "  seconds    real    not null,"  // seconds after job start
       "  output     text    not null);"
       "create index if not exists logorder on log(job_id, descriptor, log_id);"
@@ -432,6 +437,8 @@ std::string Database::open(bool wait, bool memory, bool tty) {
       " from log l"
       " where l.job_id = ?"
       " order by l.seconds";
+  const char *sql_set_runner_status = "update jobs set runner_status=? where job_id=?";
+  const char *sql_get_runner_status = "select runner_status from jobs where job_id=?";
 
 #define PREPARE(sql, member)                                                                     \
   ret = sqlite3_prepare_v2(imp->db, sql, -1, &imp->member, 0);                                   \
@@ -482,6 +489,8 @@ std::string Database::open(bool wait, bool memory, bool tty) {
   PREPARE(sql_get_unhashed_file_paths, get_unhashed_file_paths);
   PREPARE(sql_insert_unhashed_file, insert_unhashed_file);
   PREPARE(sql_get_interleaved_output, get_interleaved_output);
+  PREPARE(sql_set_runner_status, set_runner_status);
+  PREPARE(sql_get_runner_status, get_runner_status);
 
   return "";
 }
@@ -541,6 +550,8 @@ void Database::close() {
   FINALIZE(get_unhashed_file_paths);
   FINALIZE(insert_unhashed_file);
   FINALIZE(get_interleaved_output);
+  FINALIZE(set_runner_status);
+  FINALIZE(get_runner_status);
 
   close_db(imp.get());
 }
@@ -1037,14 +1048,25 @@ std::string Database::get_output(long job, int descriptor) const {
   return out.str();
 }
 
-void Database::replay_output(long job, const char *stdout, const char *stderr) {
+void Database::replay_output(long job, const char *stdout, const char *stderr,
+                             const char *runner_out, const char *runner_err) {
   const char *why = "Could not replay job output";
   bind_integer(why, imp->replay_log, 1, job);
   while (sqlite3_step(imp->replay_log) == SQLITE_ROW) {
     int fd = sqlite3_column_int64(imp->replay_log, 0);
     const char *str = static_cast<const char *>(sqlite3_column_blob(imp->replay_log, 1));
     int len = sqlite3_column_bytes(imp->replay_log, 1);
-    if (len) status_get_generic_stream(fd == 2 ? stderr : stdout) << std::string(str, len);
+    if (len) {
+      if (fd == 1) {
+        status_get_generic_stream(stdout) << std::string(str, len);
+      } else if (fd == 2) {
+        status_get_generic_stream(stderr) << std::string(str, len);
+      } else if (fd == 3) {
+        status_get_generic_stream(runner_out) << std::string(str, len);
+      } else if (fd == 4) {
+        status_get_generic_stream(runner_err) << std::string(str, len);
+      }
+    }
   }
   finish_stmt(why, imp->replay_log, imp->debugdb);
 }
@@ -1151,17 +1173,25 @@ JAST JobReflection::to_structured_json() const {
 
   std::string out_stream;
   std::string err_stream;
+  std::string runner_out_stream;
+  std::string runner_err_stream;
+
   for (auto &write : std_writes) {
     if (write.second == 1) {
       out_stream += write.first;
-    }
-    if (write.second == 2) {
+    } else if (write.second == 2) {
       err_stream += write.first;
+    } else if (write.second == 3) {
+      runner_out_stream += write.first;
+    } else if (write.second == 4) {
+      runner_err_stream += write.first;
     }
   }
 
   json.add("stdout", out_stream);
   json.add("stderr", err_stream);
+  json.add("runner_output", runner_out_stream);
+  json.add("runner_error", runner_err_stream);
 
   JAST &usage_json = json.add("usage", JSON_OBJECT);
   usage_json.add("status", usage.status);
@@ -1561,6 +1591,24 @@ std::vector<JobReflection> Database::matching(
 
   sqlite3_finalize(stmt);
   return out;
+}
+
+void Database::set_runner_status(long job_id, int status) {
+  const char *why = "Could not set runner status";
+  bind_integer(why, imp->set_runner_status, 1, status);
+  bind_integer(why, imp->set_runner_status, 2, job_id);
+  single_step(why, imp->set_runner_status, imp->debugdb);
+}
+
+int Database::get_runner_status(long job_id) {
+  int status = 0;
+  const char *why = "Could not get runner status";
+  bind_integer(why, imp->get_runner_status, 1, job_id);
+  if (sqlite3_step(imp->get_runner_status) == SQLITE_ROW) {
+    status = sqlite3_column_int(imp->get_runner_status, 0);
+  }
+  finish_stmt(why, imp->get_runner_status, imp->debugdb);
+  return status;
 }
 
 std::vector<JobEdge> Database::get_edges() {

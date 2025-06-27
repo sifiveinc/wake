@@ -128,7 +128,7 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
 
             def _ = primJobVirtual job stdout stderr predict
 
-            Pass (RunnerOutput inputs outputs Nil predict)
+            Pass (RunnerOutput inputs outputs Nil predict 0)
 
         def _ =
             require True = isDebugOn
@@ -138,7 +138,8 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
             True
 
         # Now we need to run the job
-        require Pass (RunnerOutput inputs outputs cleanable usage) = baseDoIt job (Pass input)
+        require Pass (RunnerOutput inputs outputs cleanable usage runnerStatus) =
+            baseDoIt job (Pass input)
 
         def Usage status runtime cputime mem ibytes obytes = usage
         def inputsTree = listToTree scmpCanonical inputs
@@ -198,6 +199,9 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
             require True = status == 0
             else Pass ""
 
+            require True = runnerStatus == 0
+            else Pass ""
+
             # Sometimes we want a read-only cache. For instance read-only pre-merge
             # with read-write post-merge.
             require None = getenv "WAKE_LOCAL_JOB_CACHE_READ_ONLY"
@@ -205,7 +209,7 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
 
             job_cache_add jobCacheAddJson
 
-        Pass (RunnerOutput (map getPathName vis) outputs cleanable usage)
+        Pass (RunnerOutput (map getPathName vis) outputs cleanable usage runnerStatus)
 
     makeRunner "job-cache: {name}" run
 

@@ -82,7 +82,7 @@ struct JobReflection {
   Time endtime;
   Time wake_start;
   std::string wake_cmdline;
-  // List of interleaved writes to stdout and stderr
+  // List of interleaved writes to (1) stdout, (2) stderr, (3) runner output, and (4) runner errors
   std::vector<std::pair<std::string, int>> std_writes;
   Usage usage;
   std::vector<FileReflection> visible;
@@ -151,7 +151,8 @@ struct Database {
   void save_output(  // call only if needs_build -> true
       long job, int descriptor, const char *buffer, int size, double runtime);
   std::string get_output(long job, int descriptor) const;
-  void replay_output(long job, const char *stdout, const char *stderr);
+  void replay_output(long job, const char *stdout, const char *stderr, const char *runner_out,
+                     const char *runner_err);
 
   // Returns all files created by wake jobs
   std::vector<std::string> get_outputs() const;
@@ -183,6 +184,10 @@ struct Database {
   std::vector<FileDependency> get_file_dependencies() const;
 
   std::vector<std::pair<std::string, int>> get_interleaved_output(long job_id) const;
+
+  void set_runner_status(long job_id, int status);
+
+  int get_runner_status(long job_id);
 };
 
 #endif
