@@ -1,0 +1,23 @@
+{
+  "command": [
+    "bash", "-c", "(sleep 1 &) ; exit 2"
+  ],
+  "environment": [
+    "USER=root",
+    "HOME=/root",
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  ],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "mount-ops": [
+    {
+      "type": "workspace",
+      "destination": "."
+    }
+  ],
+  "visible": [],
+  "command-timeout":  4,
+  "isolate-pids": true
+}
