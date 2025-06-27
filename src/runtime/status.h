@@ -89,8 +89,6 @@ extern StatusState status_state;
 #define STREAM_ECHO "echo"
 #define STREAM_WARNING "warning"
 #define STREAM_ERROR "error"
-#define STREAM_RUNNER_OUT "runner_out"
-#define STREAM_RUNNER_ERROR "runner_error"
 #define STREAM_NULL "null"
 
 void status_init();

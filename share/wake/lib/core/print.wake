@@ -76,14 +76,6 @@ export def logBSP: LogLevel =
 export def logNever: LogLevel =
     LogLevel "null" # None
 
-# logRunnerOutput: logged to stdout when run with -d
-export def logRunnerOutput: LogLevel =
-    LogLevel "runner_out"
-
-# logRunnerError: logged to stderr by default
-export def logRunnerError: LogLevel =
-    LogLevel "runner_error"
-
 # tap: inject a diagnostic into a pipeline
 # Oftern used in conjunction with println and/or format.
 #

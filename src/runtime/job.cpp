@@ -844,10 +844,10 @@ static void launch(JobTable *jobtable) {
     int color_out = status_get_colour(task.job->stream_out.c_str());
     int fd_err = status_get_fd(task.job->stream_err.c_str());
     int color_err = status_get_colour(task.job->stream_err.c_str());
-    int fd_runner_out = status_get_fd(STREAM_RUNNER_OUT);
-    int color_runner_out = status_get_colour(STREAM_RUNNER_OUT);
-    int fd_runner_err = status_get_fd(STREAM_RUNNER_ERROR);
-    int color_runner_err = status_get_colour(STREAM_RUNNER_ERROR);
+    int fd_runner_out = status_get_fd(task.job->runner_out.c_str());
+    int color_runner_out = status_get_colour(task.job->runner_out.c_str());
+    int fd_runner_err = status_get_fd(task.job->runner_err.c_str());
+    int color_runner_err = status_get_colour(task.job->runner_err.c_str());
 
     // Set up file descriptor buffers
     setup_fd_buf(jobtable, fd_out);
@@ -865,9 +865,9 @@ static void launch(JobTable *jobtable) {
     std::unique_ptr<std::streambuf> err =
         create_stream_buf(jobtable, fd_err, task.job->stream_err.c_str(), job_label_str, color_err);
     std::unique_ptr<std::streambuf> runner_out = create_stream_buf(
-        jobtable, fd_runner_out, STREAM_RUNNER_OUT, job_label_str, color_runner_out);
+        jobtable, fd_runner_out, task.job->runner_out.c_str(), job_label_str, color_runner_out);
     std::unique_ptr<std::streambuf> runner_err = create_stream_buf(
-        jobtable, fd_runner_err, STREAM_RUNNER_ERROR, job_label_str, color_runner_err);
+        jobtable, fd_runner_err, task.job->runner_err.c_str(), job_label_str, color_runner_err);
 
     // Create job entry
     std::shared_ptr<JobEntry> entry =
@@ -1308,13 +1308,13 @@ static PRIMFN(prim_job_virtual) {
   JOB(job, 0);
   STRING(stdout_payload, 1);
   STRING(stderr_payload, 2);
-  STRING(runner_out_payload, 3);  // Add parameters for runner output/error
+  STRING(runner_out_payload, 3);
   STRING(runner_err_payload, 4);
 
   size_t need = reserve_unit() + WJob::reserve();
   runtime.heap.reserve(need);
 
-  parse_usage(&job->predict, args + 5, runtime, scope);  // Adjust index for usage args
+  parse_usage(&job->predict, args + 5, runtime, scope);
   job->predict.found = true;
   job->reality = job->predict;
 
@@ -1476,8 +1476,7 @@ static PRIMFN(prim_job_cache) {
   Value *joblist;
   if (reuse.found && !jobtable->imp->check) {
     Job *jobp = Job::claim(runtime.heap, jobtable->imp->db, dir, dir, stdin_file, env, cmd, true,
-                           STREAM_ECHO, STREAM_INFO, STREAM_WARNING, STREAM_RUNNER_OUT,
-                           STREAM_RUNNER_ERROR);
+                           STREAM_ECHO, STREAM_INFO, STREAM_WARNING, STREAM_INFO, STREAM_ERROR);
     jobp->state = STATE_FORKED | STATE_STDOUT | STATE_STDERR | STATE_RUNNER_OUT | STATE_RUNNER_ERR |
                   STATE_MERGED | STATE_FINISHED;
     jobp->job = job;

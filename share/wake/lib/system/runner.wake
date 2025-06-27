@@ -134,26 +134,9 @@ export def localRunner: Runner =
         # Wait for the job to complete before calling fnOutputs
         require Pass reality = job.getJobReality
 
-        # Check for runner errors and set runner status accordingly
-        # Situations:
-        # 1. Job succeeds, no runner error -> runner status = 0 (success)
-        # 2. Job fails, no runner error -> runner status = 0 (success)
-        # 3. Job succeeds, runner error -> runner status = 1 (failure)
-        # 4. Job fails, runner error -> runner status = job status
-        def runnerStatus = match (getJobRunnerError job)
-            Pass errorMsg if errorMsg !=* "" ->
-                # Log the runner error at the appropriate level
-                def _ = printlnLevel logRunnerError "Runner error detected: {errorMsg}"
-
-                # If job succeeded (status 0) but there's a runner error,
-                # TODO: figure out if we need to account for this situation
-                if reality.getUsageStatus == 0 then
-                    1
-                else
-                    reality.getUsageStatus
-            _ -> 0
-
-        def _ = primJobSetRunnerStatus job runnerStatus
+        # Set the runner status to be a success - its the callers responsibility
+        # to set the appropriate status if the job that ran is an extension of a runner
+        def runnerStatus = 0
 
         # Caller needs to fill this in from nothing
         def cleanable = Nil
@@ -180,7 +163,7 @@ export def virtualRunner: Runner =
         require Pass reality = job.getJobReality
 
         def runnerStatus = 0
-        def _ = primJobSetRunnerStatus job runnerStatus
+        def _ = unsafe_primJobSetRunnerStatus job runnerStatus
 
         # Caller needs to fill this in from nothing
         def cleanable = Nil

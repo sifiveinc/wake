@@ -7,7 +7,7 @@ export def testRunnerFailSuccess: Result Unit Error =
         require Pass result = virtRun job (Pass input)
 
         # Report a runner error after the job completes
-        def _ = reportJobRunnerError job "Intentional runner error for testing"
+        def _ = unsafe_makeJobRunnerError job "Intentional runner error for testing"
 
         Pass result
 
@@ -17,8 +17,8 @@ export def testRunnerFailSuccess: Result Unit Error =
         makeExecPlan ("<test>", Nil) Nil
         | runJobWith testRunner
 
-    require False = job.isRunnerOk
-    else failWithError "Expected isRunnerOk to return False for job with runner error"
+    require False = job.isJobOk
+    else failWithError "Expected isJobOk to return False for job with runner error"
 
     # Runner status should be 1 (error) even though job status is 0 (success)
     require Pass runnerStatus = job.getJobRunnerStatus
@@ -43,7 +43,7 @@ export def testRunnerFailWithJobFailure _ =
         require Pass result = baseRun job (Pass failingInput)
 
         # Report a runner error after the job completes
-        def _ = reportJobRunnerError job "Intentional runner error with job failure"
+        def _ = unsafe_makeJobRunnerError job "Intentional runner error with job failure"
 
         Pass result
 
@@ -55,9 +55,6 @@ export def testRunnerFailWithJobFailure _ =
 
     require False = job.isJobOk
     else failWithError "Expected isJobOk to return False for failing job"
-
-    require False = job.isRunnerOk
-    else failWithError "Expected isRunnerOk to return False for job with runner error"
 
     # Runner status should match job status (42)
     require Pass runnerStatus = job.getJobRunnerStatus
@@ -80,7 +77,7 @@ export def testRunnerOutputStatus _ =
 
         # Set a specific runner status
         def customStatus = 123
-        def _ = primJobSetRunnerStatus job customStatus
+        def _ = unsafe_primJobSetRunnerStatus job customStatus
 
         Pass result
 
@@ -118,7 +115,7 @@ export def testRunnerFailFinish _ =
 
     Pass Unit
 
-# Test that isRunnerOk returns true when there's no runner error
+# Test that isJobOk returns true when there's no runner error
 export def testRunnerOkSuccess _ =
     def job =
         makeExecPlan ("echo", "success", Nil) Nil
@@ -127,10 +124,6 @@ export def testRunnerOkSuccess _ =
     # Job should succeed
     require True = job.isJobOk
     else failWithError "Expected isJobOk to return True for successful job"
-
-    # Runner should also succeed
-    require True = job.isRunnerOk
-    else failWithError "Expected isRunnerOk to return True for job without runner error"
 
     # Runner status should be 0
     require Pass runnerStatus = job.getJobRunnerStatus
@@ -147,11 +140,11 @@ export def testWrapperRunnerStatus: Result Unit Error =
         require Pass result = virtRun job (Pass input)
 
         # Set a runner error
-        def _ = reportJobRunnerError job "Inner runner error"
+        def _ = unsafe_makeJobRunnerError job "Inner runner error"
 
         # Set a runner status
         def customStatus = 42
-        def _ = primJobSetRunnerStatus job customStatus
+        def _ = unsafe_primJobSetRunnerStatus job customStatus
 
         Pass result
 
@@ -168,7 +161,7 @@ export def testWrapperRunnerStatus: Result Unit Error =
             Pass errorMsg if errorMsg !=* "" ->
                 # Add a prefix to the error message
                 def newErrorMsg = "WRAPPER: {errorMsg}"
-                def _ = reportJobRunnerError job newErrorMsg
+                def _ = unsafe_makeJobRunnerError job newErrorMsg
 
                 # Keep the same runner status (should be 42 from inner runner)
                 Pass result
