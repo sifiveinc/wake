@@ -89,6 +89,7 @@ struct JobReflection {
   std::vector<FileReflection> inputs;
   std::vector<FileReflection> outputs;
   std::vector<JobTag> tags;
+  int runner_status;
 
   JAST to_json() const;
   JAST to_structured_json() const;

@@ -110,9 +110,6 @@ export def markJobSetupFailure job err =
 
 # Complete a job after launch with userland defined failure
 export def primJobFailFinish (job: Job) (error: Error): Unit =
-    # report the error as a runner error
-    def _ = unsafe_reportJobRunnerFailure job (error.getErrorCause) 1
-
     (\_ \_ prim "job_fail_finish") job error
 
 # Complete a job successfully by providing to the runtime the inputs/outputs/usage of the job
@@ -442,8 +439,7 @@ export def getJobRunnerStatus (job: Job): Result Integer Error =
 
 # Report a runner error and set runner status for a job.
 # This is a convenience function that calls both makeJobRunnerError and unsafe_primJobSetRunnerStatus. This function
-# is also utilized by primJobFailLaunch and primJobFailFinish to report runner errors before a job is launched or
-# before it has finished.
+# is also utilized by primJobFailLaunch to report runner errors before a job is launched.
 #
 # Marked unsafe as this function should only be called for over-the-wall reporting for runners and because
 # of its uncacheablity as runner errors and runner status are not cached.

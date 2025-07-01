@@ -81,15 +81,16 @@ static void describe_metadata(const std::vector<JobReflection> &jobs, bool debug
     for (auto &arg : job.commandline) out << " " << shell_escape(arg);
     out << std::endl << "  Environment:" << std::endl;
     for (auto &env : job.environment) out << "    " << shell_escape(env) << std::endl;
-    out << "  Directory: " << job.directory << std::endl
-        << "  Built:     " << job.endtime.as_string() << std::endl
-        << "  Runtime:   " << job.usage.runtime << std::endl
-        << "  CPUtime:   " << job.usage.cputime << std::endl
-        << "  Mem bytes: " << job.usage.membytes << std::endl
-        << "  In  bytes: " << job.usage.ibytes << std::endl
-        << "  Out bytes: " << job.usage.obytes << std::endl
-        << "  Status:    " << job.usage.status << std::endl
-        << "  Stdin:     " << job.stdin_file << std::endl;
+    out << "  Directory:     " << job.directory << std::endl
+        << "  Built:         " << job.endtime.as_string() << std::endl
+        << "  Runtime:       " << job.usage.runtime << std::endl
+        << "  CPUtime:       " << job.usage.cputime << std::endl
+        << "  Mem bytes:     " << job.usage.membytes << std::endl
+        << "  In  bytes:     " << job.usage.ibytes << std::endl
+        << "  Out bytes:     " << job.usage.obytes << std::endl
+        << "  Status:        " << job.usage.status << std::endl
+        << "  Runner Status: " << job.runner_status << std::endl
+        << "  Stdin:         " << job.stdin_file << std::endl;
     if (verbose) {
       out << "  Wake run:  " << job.wake_start.as_string() << " (" << job.wake_cmdline << ")"
           << std::endl;
@@ -192,13 +193,14 @@ static void describe_shell(const std::vector<JobReflection> &jobs, bool debug, b
     }
     out << "< " << shell_escape(job.stdin_file) << std::endl << std::endl;
     out << "# When wake ran this command:" << std::endl
-        << "#   Built:     " << job.endtime.as_string() << std::endl
-        << "#   Runtime:   " << job.usage.runtime << std::endl
-        << "#   CPUtime:   " << job.usage.cputime << std::endl
-        << "#   Mem bytes: " << job.usage.membytes << std::endl
-        << "#   In  bytes: " << job.usage.ibytes << std::endl
-        << "#   Out bytes: " << job.usage.obytes << std::endl
-        << "#   Status:    " << job.usage.status << std::endl;
+        << "#   Built:         " << job.endtime.as_string() << std::endl
+        << "#   Runtime:       " << job.usage.runtime << std::endl
+        << "#   CPUtime:       " << job.usage.cputime << std::endl
+        << "#   Mem bytes:     " << job.usage.membytes << std::endl
+        << "#   In  bytes:     " << job.usage.ibytes << std::endl
+        << "#   Out bytes:     " << job.usage.obytes << std::endl
+        << "#   Status:        " << job.usage.status << std::endl
+        << "#   Runner Status: " << job.runner_status << std::endl;
     if (verbose) {
       out << "#  Wake run:  " << job.wake_start.as_string() << " (" << job.wake_cmdline << ")"
           << std::endl;

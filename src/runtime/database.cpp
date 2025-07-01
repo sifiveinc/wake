@@ -1200,6 +1200,7 @@ JAST JobReflection::to_structured_json() const {
   usage_json.add("membytes", usage.membytes);
   usage_json.add("ibytes", usage.ibytes);
   usage_json.add("obytes", usage.obytes);
+  usage_json.add("runner_status", runner_status);
 
   JAST &visible_json = json.add("visible_files", JSON_ARRAY);
   for (const auto &visible_file : visible) {
@@ -1338,6 +1339,7 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
   desc.usage.membytes = sqlite3_column_int64(query, 15);
   desc.usage.ibytes = sqlite3_column_int64(query, 16);
   desc.usage.obytes = sqlite3_column_int64(query, 17);
+  desc.runner_status = sqlite3_column_int64(query, 18);
   if (desc.stdin_file.empty()) desc.stdin_file = "/dev/null";
 
   desc.std_writes = db->get_interleaved_output(desc.job);
@@ -1568,7 +1570,7 @@ std::vector<JobReflection> Database::matching(
   std::string query =
       "SELECT j.job_id, j.label, j.directory, j.commandline, j.environment, j.stack, j.stdin, "
       "j.starttime, j.endtime, j.stale, r.time, r.cmdline, s.status, s.runtime, s.cputime, "
-      "s.membytes, s.ibytes, s.obytes\n"
+      "s.membytes, s.ibytes, s.obytes, j.runner_status\n"
       "FROM jobs j\n"
       "LEFT JOIN stats s\n"
       "ON j.stat_id=s.stat_id\n"
