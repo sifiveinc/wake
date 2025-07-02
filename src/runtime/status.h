@@ -29,7 +29,7 @@
 struct Status {
   std::string cmdline;
   double budget;
-  bool merged, wait_stdout, wait_stderr;
+  bool merged, wait_stdout, wait_stderr, wait_runner_out, wait_runner_err;
   struct timespec launch;
   Status(const std::string &cmdline_, double budget_, const struct timespec &launch_)
       : cmdline(cmdline_),
@@ -37,6 +37,8 @@ struct Status {
         merged(false),
         wait_stdout(true),
         wait_stderr(true),
+        wait_runner_out(true),
+        wait_runner_err(true),
         launch(launch_) {}
 };
 

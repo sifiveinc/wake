@@ -140,12 +140,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  dir = argv[4];
-  if ((dir[0] != '.' || dir[1] != 0) && chdir(dir)) {
-    fprintf(stderr, "chdir: %s: %s\n", dir, strerror(errno));
-    return 127;
-  }
-
   stdin_fd = open(argv[1], O_RDONLY);
   if (stdin_fd == -1) {
     fprintf(stderr, "open: %s: %s\n", argv[1], strerror(errno));
@@ -155,9 +149,24 @@ int main(int argc, char **argv) {
   stdout_fd = atoi(argv[2]);
   stderr_fd = atoi(argv[3]);
 
+  // Parse the new file descriptors for runner output and error
+  int runner_out_fd = atoi(argv[4]);
+  int runner_err_fd = atoi(argv[5]);
+
+  // Update the directory argument index
+  dir = argv[6];
+  if ((dir[0] != '.' || dir[1] != 0) && chdir(dir)) {
+    fprintf(stderr, "chdir: %s: %s\n", dir, strerror(errno));
+    return 127;
+  }
+
   while (stdin_fd <= 2 && stdin_fd != 0) stdin_fd = dup(stdin_fd);
-  while (stdout_fd <= 2 && stderr_fd != 1) stdout_fd = dup(stdout_fd);
-  while (stderr_fd <= 2 && stdout_fd != 2) stderr_fd = dup(stderr_fd);
+  while (stdout_fd <= 2 && stdout_fd != 1) stdout_fd = dup(stdout_fd);
+  while (stderr_fd <= 2 && stderr_fd != 2) stderr_fd = dup(stderr_fd);
+
+  // Ensure runner output and error file descriptors are above 2
+  while (runner_out_fd <= 2) runner_out_fd = dup(runner_out_fd);
+  while (runner_err_fd <= 2) runner_err_fd = dup(runner_err_fd);
 
   if (stdin_fd != 0) {
     dup2(stdin_fd, 0);
@@ -174,7 +183,18 @@ int main(int argc, char **argv) {
     close(stderr_fd);
   }
 
-  // close all open file handles so we leak less into the child process
+  // Set up runner output and error to use file descriptors 3 and 4
+  if (runner_out_fd != 3) {
+    dup2(runner_out_fd, 3);
+    close(runner_out_fd);
+  }
+
+  if (runner_err_fd != 4) {
+    dup2(runner_err_fd, 4);
+    close(runner_err_fd);
+  }
+
+  // Close all open file handles except 0-4 so we leak less into the child process
   auto res = wcl::directory_range::open("/proc/self/fd/");
   if (!res) {
     fprintf(stderr, "wcl::directory_range::open(/proc/self/fd/): %s\n", strerror(res.error()));
@@ -188,7 +208,7 @@ int main(int argc, char **argv) {
     }
     if (entry->name == "." || entry->name == "..") continue;
     int fd = std::stoi(entry->name);
-    if (fd <= 2) continue;
+    if (fd <= 4) continue;  // Keep stdin, stdout, stderr, runner_out, runner_err
     // Otherwise close the fd
     fds_to_close.push_back(fd);
   }
@@ -196,11 +216,11 @@ int main(int argc, char **argv) {
     close(fd);
   }
 
-  if (strcmp(argv[5], "<hash>")) {
-    execvp(argv[5], argv + 5);
-    fprintf(stderr, "execvp: %s: %s\n", argv[5], strerror(errno));
+  if (strcmp(argv[7], "<hash>")) {
+    execvp(argv[7], argv + 7);
+    fprintf(stderr, "execvp: %s: %s\n", argv[7], strerror(errno));
     return 127;
   } else {
-    return do_hash(argv[6]);
+    return do_hash(argv[8]);
   }
 }

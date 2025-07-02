@@ -209,7 +209,7 @@ void query_jobs(const CommandLineOptions &clo, Database &db) {
 
   // --failed
   if (clo.failed) {
-    collect_ands.push_back({"status <> 0"});
+    collect_ands.push_back({"(status <> 0 OR runner_status <> 0)"});
   }
 
   // --canceled
