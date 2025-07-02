@@ -320,7 +320,7 @@ def guardPath job = match _
     Pass l if job.isJobOk -> findFailFn treeOk l
     _ ->
         # Check if it's a runner failure, if not then we know its a job failure
-        def runnerFailure = match (getJobRunnerStatus job)
+        def runnerFailure = match (unsafe_getJobRunnerStatus job)
             Pass status if status != 0 -> "Runner failed with status {str status}"
             _ -> "Non-zero exit status ({format job.getJobStatus})"
 
@@ -398,7 +398,9 @@ export def getJobFailedStderr (job: Job): Result String Error =
 # can write to inorder to report information to Wake. Result returns an empty string if there is
 # no runner output, and is also stored in the Wake db. Since runner outputs are not cached, a cached
 # result will have an empty runner output.
-export def getJobRunnerOutput (job: Job): Result String Error =
+#
+# Marked unsafe as Runner output is not cached and cannot guarantee reproduciblity.
+export def unsafe_getJobRunnerOutput (job: Job): Result String Error =
     (\j \_ prim "job_runner_output") job 1
 
 # Get the runner error from a job.
@@ -407,17 +409,29 @@ export def getJobRunnerOutput (job: Job): Result String Error =
 # job itself. Runner scripts as well as runners can write to the fd4 stream to report errors.
 # Result returns an empty string if there is no runner error, and is also stored in the Wake db.
 # Since runner errors are not cached, a cached result will have an empty runner error.
-export def getJobRunnerError (job: Job): Result String Error =
+#
+# Marked unsafe as Runner error is not cached and cannot guarantee reproduciblity.
+export def unsafe_getJobRunnerError (job: Job): Result String Error =
     (\j \_ prim "job_runner_output") job 2
 
-# Make a runner error for a job.
+# Report a runner output for a job.
+# This is used to report out runner infrastructure information observed from Wake. Similar to runner scripts,
+# runners themselves can write to the fd3 stream to report information via this function. Multiple calls to
+# this function for a specific job will append to the runner output message that is saved to the Wake db.
+#
+# Marked unsafe as this function should only be called for over-the-wall reporting for runners and because
+# of its uncacheablity as runner outputs are not cached.
+export def unsafe_reportJobRunnerOutput (job: Job) (output: String): Job =
+    (\j \o prim "job_report_runner_output") job output
+
+# Report a runner error for a job.
 # This is used to report out runner infrastructure errors observed from Wake. Similar to runner scripts,
 # runners themselves can write to the fd4 stream to report errors via this function. Multiple calls to
 # this function for a specific job will append to the runner error message that is saved to the Wake db.
 #
 # Marked unsafe as this function should only be called for over-the-wall reporting for runners and because
 # of its uncacheablity as runner errors are not cached.
-export def unsafe_makeJobRunnerError (job: Job) (error: String): Job =
+export def unsafe_reportJobRunnerError (job: Job) (error: String): Job =
     (\j \e prim "job_report_runner_error") job error
 
 # Set a runner status for a job
@@ -434,7 +448,9 @@ export def unsafe_primJobSetRunnerStatus (job: Job) (status: Integer): Unit =
 # Get the runner status from a job.
 # The runner status code is used to determine if the runner that a job ran on succeeded (0) or failed (> 0).
 # Jobs that have a failed runner status are not cached.
-export def getJobRunnerStatus (job: Job): Result Integer Error =
+#
+# Marked unsafe as Runner status is not cached and cannot guarantee reproduciblity.
+export def unsafe_getJobRunnerStatus (job: Job): Result Integer Error =
     (\j prim "job_runner_status") job
 
 # Report a runner error and set runner status for a job.
@@ -444,7 +460,7 @@ export def getJobRunnerStatus (job: Job): Result Integer Error =
 # Marked unsafe as this function should only be called for over-the-wall reporting for runners and because
 # of its uncacheablity as runner errors and runner status are not cached.
 export def unsafe_reportJobRunnerFailure (job: Job) (error: String) (status: Integer): Job =
-    def _ = unsafe_makeJobRunnerError job error
+    def _ = unsafe_reportJobRunnerError job error
     def _ = unsafe_primJobSetRunnerStatus job status
 
     job
@@ -488,7 +504,7 @@ export def isJobOk (job: Job): Boolean =
 
     # If the job succeeded, also check if the runner was successful
     if jobSuccess then
-        match (getJobRunnerStatus job)
+        match (unsafe_getJobRunnerStatus job)
             Fail _ -> False
             Pass status -> status == 0
     else

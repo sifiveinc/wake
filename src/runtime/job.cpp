@@ -1602,6 +1602,25 @@ static PRIMFN(prim_job_report_runner_error) {
   RETURN(args[0]);
 }
 
+static PRIMTYPE(type_job_report_runner_output) {
+  return args.size() == 2 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeString) &&
+         out->unify(Data::typeJob);
+}
+
+static PRIMFN(prim_job_report_runner_output) {
+  EXPECT(2);
+  JOB(job, 0);
+  STRING(output_message, 1);
+
+  job->db->save_output(job->job, 3, output_message->c_str(), output_message->size(), 0);
+  job->state |= STATE_RUNNER_OUT;
+
+  runtime.heap.reserve(WJob::reserve());
+  runtime.schedule(WJob::claim(runtime.heap, job));
+
+  RETURN(args[0]);
+}
+
 static PRIMTYPE(type_job_tree) {
   TypeVar list;
   TypeVar pair;
@@ -2030,6 +2049,10 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   // Reports a runner error for a job
   prim_register(pmap, "job_report_runner_error", prim_job_report_runner_error,
                 type_job_report_runner_error, PRIM_IMPURE);
+
+  // Reports runner output for a job
+  prim_register(pmap, "job_report_runner_output", prim_job_report_runner_output,
+                type_job_report_runner_output, PRIM_IMPURE);
 
   // Sets the runner status for a job
   prim_register(pmap, "job_set_runner_status", prim_job_set_runner_status,
