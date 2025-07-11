@@ -150,7 +150,6 @@ unsafe_reportJobRunnerOutput job "Custom runner information"
 unsafe_reportJobRunnerError job "Runner error information"
 ```
 
-
 ## What is Displayed to user on Wake Database Commands
 
 When used with a database command (`--last, --failed, --job`, etc),
