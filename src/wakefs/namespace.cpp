@@ -516,9 +516,12 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
     exit(1);
   }
 
+  int user_cmd_status;
+  waitpid(0, &user_cmd_status, 0);
+
   // Wait for child processes, we are init(1) in this PID namespace.
-  int status;
-  while ((pid = waitpid(-1, &status, 0)) != 0) {
+  int child_status;
+  while ((pid = waitpid(-1, &child_status, 0)) != 0) {
     if (pid == -1) {
       if (errno == ECHILD) {
         break;  // all children have terminated
@@ -528,10 +531,10 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
     }
   }
 
-  if (WIFEXITED(status)) {
-    exit(WEXITSTATUS(status));
+  if (WIFEXITED(user_cmd_status)) {
+    exit(WEXITSTATUS(user_cmd_status));
   }
-  exit(-WTERMSIG(status));
+  exit(-WTERMSIG(user_cmd_status));
 }
 
 [[noreturn]] void exec_in_pidns(pidns_args &nsargs) {
