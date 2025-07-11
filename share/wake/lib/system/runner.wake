@@ -88,6 +88,8 @@ export tuple RunnerOutput =
     export CleanableOutputs: List String
     # The actual resource usage of the job that will be written to the database
     export Usage: Usage
+    # The runner status code (0 for success, non-zero for failure)
+    export RunnerStatus: Integer
 
 # A Runner describes a way to invoke a Plan to get a Job
 export tuple Runner =
@@ -132,11 +134,15 @@ export def localRunner: Runner =
         # Wait for the job to complete before calling fnOutputs
         require Pass reality = job.getJobReality
 
+        # Set the runner status to be a success - its the callers responsibility
+        # to set the appropriate status if the job that ran is an extension of a runner
+        def runnerStatus = 0
+
         # Caller needs to fill this in from nothing
         def cleanable = Nil
         def fileOutputs = fnOutputs cleanable
 
-        RunnerOutput fileInputs fileOutputs cleanable reality
+        RunnerOutput fileInputs fileOutputs cleanable reality runnerStatus
         | Pass
 
     makeRunner "local" run
@@ -156,11 +162,14 @@ export def virtualRunner: Runner =
         # Wait for the job to complete before calling fnOutputs
         require Pass reality = job.getJobReality
 
+        def runnerStatus = 0
+        def _ = unsafe_primJobSetRunnerStatus job runnerStatus
+
         # Caller needs to fill this in from nothing
         def cleanable = Nil
         def fileOutputs = fnOutputs cleanable
 
-        RunnerOutput fileInputs fileOutputs cleanable reality
+        RunnerOutput fileInputs fileOutputs cleanable reality runnerStatus
         | Pass
 
     makeRunner "virtual" run
@@ -297,6 +306,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         require Pass localOutput = localRun job (Pass localInput)
 
         def statusCode = localOutput.getRunnerOutputUsage.getUsageStatus
+        def runnerStatus = localOutput.getRunnerOutputRunnerStatus
 
         require 0 = statusCode
         else failWithError "Non-zero exit status ({str statusCode}) for JSON runner {script} on {specFile}"
@@ -334,6 +344,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
 
         match usageResult
             Fail f -> Fail (makeError f)
-            Pass usage -> Pass (RunnerOutput filteredInputs filteredOutputs jsonOutputs usage)
+            Pass usage ->
+                Pass (RunnerOutput filteredInputs filteredOutputs jsonOutputs usage runnerStatus)
 
     makeRunner "json-{script}" run

@@ -119,6 +119,37 @@ so it is not possible to redirect this within wake code or with command line fla
 
 Similarly, the progress bar is always sent to wake's `stdout` unless `--no-tty` is set.
 
+### Runner Output and Runner Error Streams
+
+In addition to standard output (stdout) and standard error (stderr), Wake reserves two additional file descriptors for special purposes:
+
+- **File Descriptor 3 (fd 3)**: Used for "runner output" (`runner_out`)
+- **File Descriptor 4 (fd 4)**: Used for "runner error" (`runner_err`)
+
+These streams serve a specific purpose in Wake's job execution model:
+
+1. **Runner Output (fd 3)**: Used by runners to report infrastructure information, execution details, or other metadata about how a job was executed. This is separate from the job's actual output and is intended for reporting information about the execution environment or process.
+
+2. **Runner Error (fd 4)**: Used to report runner-specific errors or warnings that are not part of the job's stderr but relate to how the job was executed.
+
+Jobs can write to these file descriptors directly (e.g., `echo "message" >&3`), and the output will be captured separately from stdout and stderr. This separation allows for cleaner distinction between a job's actual output and metadata about its execution.
+
+These streams can be accessed programmatically:
+
+```
+# Get runner output from a job
+unsafe_getJobRunnerOutput job
+
+# Get runner error from a job
+unsafe_getJobRunnerError job
+
+# Report runner output for a job
+unsafe_reportJobRunnerOutput job "Custom runner information"
+
+# Report runner error for a job
+unsafe_reportJobRunnerError job "Runner error information"
+```
+
 ## What is Displayed to user on Wake Database Commands
 
 When used with a database command (`--last, --failed, --job`, etc),
@@ -153,4 +184,3 @@ whereas the `printLevel` is dependent on just the wake execution.
 However, `setJobStdout` may still be preferred in some cases over `println`/`printlnLevel`,
 because the latter will only print the entire output after the `Job` has finished,
 while `setPlanStdout` allows it to be streamed line-by-line as it's printed by the `Job`.
-

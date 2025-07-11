@@ -86,11 +86,13 @@ void set_job_cache(job_cache::Cache *cache) {
 
 #define ALMOST_ONE (1.0 - 2 * std::numeric_limits<double>::epsilon())
 
-#define STATE_FORKED 1     // in database and running
-#define STATE_STDOUT 2     // stdout fully in database
-#define STATE_STDERR 4     // stderr fully in database
-#define STATE_MERGED 8     // exit status in struct
-#define STATE_FINISHED 16  // inputs+outputs+status+runtime in database
+#define STATE_FORKED 1       // in database and running
+#define STATE_STDOUT 2       // stdout fully in database
+#define STATE_STDERR 4       // stderr fully in database
+#define STATE_RUNNER_OUT 8   // runner_out has been closed and in database
+#define STATE_RUNNER_ERR 16  // runner_err has been closed and in database
+#define STATE_MERGED 32      // exit status in struct
+#define STATE_FINISHED 64    // inputs+outputs+status+runtime in database
 
 // Can be queried at multiple stages of the job's lifetime
 struct Job final : public GCObject<Job, Value> {
@@ -106,26 +108,31 @@ struct Job final : public GCObject<Job, Value> {
   std::string echo;
   std::string stream_out;
   std::string stream_err;
+  std::string runner_out;  // Runner-specific output
+  std::string runner_err;  // Runner-specific errors
   HeapPointer<Value> bad_launch;
   HeapPointer<Value> bad_finish;
   double pathtime;
   struct timespec start, stop;
-  Usage record;   // retrieved from DB (user-facing usage)
-  Usage predict;  // prediction of Runners given record (used by scheduler)
-  Usage reality;  // actual measured local usage
-  Usage report;   // usage to save into DB + report in Job API
+  Usage record;       // retrieved from DB (user-facing usage)
+  Usage predict;      // prediction of Runners given record (used by scheduler)
+  Usage reality;      // actual measured local usage
+  Usage report;       // usage to save into DB + report in Job API
+  int runner_status;  // Status code from the runner (0 = success)
 
   // There are 4 distinct wait queues for jobs
-  HeapPointer<Continuation> q_stdout;   // waken once stdout closed
-  HeapPointer<Continuation> q_stderr;   // waken once stderr closed
-  HeapPointer<Continuation> q_reality;  // waken once job merged (reality available)
+  HeapPointer<Continuation> q_stdout;      // waken once stdout closed
+  HeapPointer<Continuation> q_stderr;      // waken once stderr closed
+  HeapPointer<Continuation> q_runner_out;  // waken once runner output available
+  HeapPointer<Continuation> q_runner_err;  // waken once runner error available
+  HeapPointer<Continuation> q_reality;     // waken once job merged (reality available)
   HeapPointer<Continuation> q_inputs;   // waken once job finished (inputs+outputs+report available)
   HeapPointer<Continuation> q_outputs;  // waken once job finished (inputs+outputs+report available)
   HeapPointer<Continuation> q_report;   // waken once job finished (inputs+outputs+report available)
 
   Job(Database *db_, String *label_, String *dir_, String *stdin_file_, String *environ,
-      String *cmdline_, bool keep, const char *echo, const char *stream_out,
-      const char *stream_err);
+      String *cmdline_, bool keep, const char *echo, const char *stream_out, const char *stream_err,
+      const char *runner_out, const char *runner_err);
 
   template <typename T, T (HeapPointerBase::*memberfn)(T x)>
   T recurse(T arg);
@@ -148,6 +155,8 @@ T Job::recurse(T arg) {
   arg = (bad_finish.*memberfn)(arg);
   arg = (q_stdout.*memberfn)(arg);
   arg = (q_stderr.*memberfn)(arg);
+  arg = (q_runner_out.*memberfn)(arg);
+  arg = (q_runner_err.*memberfn)(arg);
   arg = (q_reality.*memberfn)(arg);
   arg = (q_inputs.*memberfn)(arg);
   arg = (q_outputs.*memberfn)(arg);
@@ -272,20 +281,29 @@ struct JobEntry {
   pid_t pid;             //  0 if merged
   int pipe_stdout;       // -1 if closed
   int pipe_stderr;       // -1 if closed
+  int pipe_runner_out;   // -1 if closed (fd 3)
+  int pipe_runner_err;   // -1 if closed (fd 4)
   std::string echo_line;
   std::list<Status>::iterator status;
   std::unique_ptr<std::streambuf> stdout_linebuf;
   std::unique_ptr<std::streambuf> stderr_linebuf;
+  std::unique_ptr<std::streambuf> runner_out_linebuf;
+  std::unique_ptr<std::streambuf> runner_err_linebuf;
 
   JobEntry(JobTable::detail *imp_, RootPointer<Job> &&job_, std::unique_ptr<std::streambuf> stdout,
-           std::unique_ptr<std::streambuf> stderr)
+           std::unique_ptr<std::streambuf> stderr, std::unique_ptr<std::streambuf> runner_out,
+           std::unique_ptr<std::streambuf> runner_err)
       : imp(imp_),
         job(std::move(job_)),
         pid(0),
         pipe_stdout(-1),
         pipe_stderr(-1),
+        pipe_runner_out(-1),
+        pipe_runner_err(-1),
         stdout_linebuf(std::move(stdout)),
-        stderr_linebuf(std::move(stderr)) {}
+        stderr_linebuf(std::move(stderr)),
+        runner_out_linebuf(std::move(runner_out)),
+        runner_err_linebuf(std::move(runner_err)) {}
   ~JobEntry();
 
   double runtime(struct timespec now);
@@ -753,6 +771,52 @@ static void create_psuedoterminal(int io[2]) {
 
 #endif
 
+// Helper function to set up a file descriptor buffer
+// Make the raw output streams and the TermInfoBufs
+// that jobs will use. We make one TermInfoBuf per
+// file descriptor that we're outputting to.
+// TODO: We could add file tee-ing here as well
+static void setup_fd_buf(JobTable *jobtable, int fd) {
+  if (!jobtable->imp->fd_bufs.count(fd)) {
+    std::unique_ptr<std::streambuf> fd_buf;
+    if (fd != -1) {
+      fd_buf = std::make_unique<FdBuf>(fd);
+    } else {
+      fd_buf = std::make_unique<NullBuf>();
+    }
+    jobtable->imp->term_bufs[fd] = std::make_unique<TermInfoBuf>(fd_buf.get(), !isatty(fd));
+    jobtable->imp->fd_bufs[fd] = std::move(fd_buf);
+  }
+}
+
+// Helper function to create a stream buffer
+static std::unique_ptr<std::streambuf> create_stream_buf(
+    JobTable *jobtable, int fd, const char *stream_name,
+    const wcl::optional<std::string> &job_label_str, int color) {
+  if (fd != -1 && RE2::FullMatch(*job_label_str, *WakeConfig::get()->label_filter)) {
+    return std::make_unique<StatusBuf>(stream_name, job_label_str, color,
+                                       *jobtable->imp->term_bufs[fd].get());
+  } else {
+    return std::make_unique<NullBuf>();
+  }
+}
+
+// Helper function to set up pipe/terminal and configure file descriptors
+static void setup_stream(int stream[2], bool is_atty, int &pipe_fd, JobTable *jobtable,
+                         std::shared_ptr<JobEntry> entry) {
+  if (is_atty) {
+    create_psuedoterminal(stream);
+  } else {
+    create_pipe(stream);
+  }
+
+  int flags;
+  if ((flags = fcntl(stream[0], F_GETFD, 0)) != -1) fcntl(stream[0], F_SETFD, flags | FD_CLOEXEC);
+
+  jobtable->imp->poll.add(pipe_fd = stream[0]);
+  jobtable->imp->pipes[stream[0]] = entry;
+}
+
 static void launch(JobTable *jobtable) {
   // Note: We schedule jobs whenever we are under CPU quota, without considering if the
   // new job will cause us to exceed the quota. This is necessary, for two reasons:
@@ -775,83 +839,55 @@ static void launch(JobTable *jobtable) {
     jobtable->imp->active += task.job->threads();
     jobtable->imp->phys_active += task.job->memory();
 
+    // Get file descriptors and colors for all streams
     int fd_out = status_get_fd(task.job->stream_out.c_str());
     int color_out = status_get_colour(task.job->stream_out.c_str());
     int fd_err = status_get_fd(task.job->stream_err.c_str());
     int color_err = status_get_colour(task.job->stream_err.c_str());
+    int fd_runner_out = status_get_fd(task.job->runner_out.c_str());
+    int color_runner_out = status_get_colour(task.job->runner_out.c_str());
+    int fd_runner_err = status_get_fd(task.job->runner_err.c_str());
+    int color_runner_err = status_get_colour(task.job->runner_err.c_str());
 
-    // Make the raw output streams and the TermInfoBufs
-    // that jobs will use. We make one TermInfoBuf per
-    // file descriptor that we're outputting to.
-    // TODO: We could add file tee-ing here as well
-    if (!jobtable->imp->fd_bufs.count(fd_out)) {
-      std::unique_ptr<std::streambuf> fd_buf;
-      if (fd_out != -1) {
-        fd_buf = std::make_unique<FdBuf>(fd_out);
-      } else {
-        fd_buf = std::make_unique<NullBuf>();
-      }
-      jobtable->imp->term_bufs[fd_out] =
-          std::make_unique<TermInfoBuf>(fd_buf.get(), !isatty(fd_out));
-      jobtable->imp->fd_bufs[fd_out] = std::move(fd_buf);
-    }
-    if (!jobtable->imp->fd_bufs.count(fd_err)) {
-      std::unique_ptr<std::streambuf> fd_buf;
-      if (fd_err != -1) {
-        fd_buf = std::make_unique<FdBuf>(fd_err);
-      } else {
-        fd_buf = std::make_unique<NullBuf>();
-      }
-      jobtable->imp->term_bufs[fd_err] =
-          std::make_unique<TermInfoBuf>(fd_buf.get(), !isatty(fd_err));
-      jobtable->imp->fd_bufs[fd_err] = std::move(fd_buf);
-    }
+    // Set up file descriptor buffers
+    setup_fd_buf(jobtable, fd_out);
+    setup_fd_buf(jobtable, fd_err);
+    setup_fd_buf(jobtable, fd_runner_out);
+    setup_fd_buf(jobtable, fd_runner_err);
+
+    // Create stream buffers
 
     // Now we need to figure out if we're outputting to a null buffer to avoid rendering
     // or if we're going to output to a nicely rendered StatusBuf.
     auto job_label_str = wcl::some(task.job->label->as_str());
-    std::unique_ptr<std::streambuf> out, err;
-    // TODO: Add a glob check here when picking the buffer
-    if (fd_out != -1 && RE2::FullMatch(*job_label_str, *WakeConfig::get()->label_filter)) {
-      out = std::make_unique<StatusBuf>(task.job->stream_out, job_label_str, color_out,
-                                        *jobtable->imp->term_bufs[fd_out].get());
-    } else {
-      out = std::make_unique<NullBuf>();
-    }
-    if (fd_err != -1 && RE2::FullMatch(*job_label_str, *WakeConfig::get()->label_filter)) {
-      err = std::make_unique<StatusBuf>(task.job->stream_err, job_label_str, color_err,
-                                        *jobtable->imp->term_bufs[fd_err].get());
-    } else {
-      err = std::make_unique<NullBuf>();
-    }
-    std::shared_ptr<JobEntry> entry = std::make_shared<JobEntry>(
-        jobtable->imp.get(), std::move(task.job), std::move(out), std::move(err));
+    std::unique_ptr<std::streambuf> out =
+        create_stream_buf(jobtable, fd_out, task.job->stream_out.c_str(), job_label_str, color_out);
+    std::unique_ptr<std::streambuf> err =
+        create_stream_buf(jobtable, fd_err, task.job->stream_err.c_str(), job_label_str, color_err);
+    std::unique_ptr<std::streambuf> runner_out = create_stream_buf(
+        jobtable, fd_runner_out, task.job->runner_out.c_str(), job_label_str, color_runner_out);
+    std::unique_ptr<std::streambuf> runner_err = create_stream_buf(
+        jobtable, fd_runner_err, task.job->runner_err.c_str(), job_label_str, color_runner_err);
 
-    int stdout_stream[2];
-    int stderr_stream[2];
-    if (task.is_atty) {
-      create_psuedoterminal(stdout_stream);
-      create_psuedoterminal(stderr_stream);
-    } else {
-      create_pipe(stdout_stream);
-      create_pipe(stderr_stream);
-    }
+    // Create job entry
+    std::shared_ptr<JobEntry> entry =
+        std::make_shared<JobEntry>(jobtable->imp.get(), std::move(task.job), std::move(out),
+                                   std::move(err), std::move(runner_out), std::move(runner_err));
 
-    int flags;
-    if ((flags = fcntl(stdout_stream[0], F_GETFD, 0)) != -1)
-      fcntl(stdout_stream[0], F_SETFD, flags | FD_CLOEXEC);
-    if ((flags = fcntl(stderr_stream[0], F_GETFD, 0)) != -1)
-      fcntl(stderr_stream[0], F_SETFD, flags | FD_CLOEXEC);
-    jobtable->imp->poll.add(entry->pipe_stdout = stdout_stream[0]);
-    jobtable->imp->poll.add(entry->pipe_stderr = stderr_stream[0]);
-    jobtable->imp->pipes[stdout_stream[0]] = entry;
-    jobtable->imp->pipes[stderr_stream[0]] = entry;
+    // Set up all streams
+    int stdout_stream[2], stderr_stream[2], runner_out_stream[2], runner_err_stream[2];
+    setup_stream(stdout_stream, task.is_atty, entry->pipe_stdout, jobtable, entry);
+    setup_stream(stderr_stream, task.is_atty, entry->pipe_stderr, jobtable, entry);
+    setup_stream(runner_out_stream, task.is_atty, entry->pipe_runner_out, jobtable, entry);
+    setup_stream(runner_err_stream, task.is_atty, entry->pipe_runner_err, jobtable, entry);
+
     clock_gettime(CLOCK_REALTIME, &entry->job->start);
     std::stringstream prelude;
     prelude << find_execpath() << "/../lib/wake/shim-wake" << '\0'
             << (task.stdin_file.empty() ? "/dev/null" : task.stdin_file.c_str()) << '\0'
             << std::to_string(stdout_stream[1]) << '\0' << std::to_string(stderr_stream[1]) << '\0'
-            << task.dir << '\0';
+            << std::to_string(runner_out_stream[1]) << '\0' << std::to_string(runner_err_stream[1])
+            << '\0' << task.dir << '\0';
     std::string shim = prelude.str() + task.cmdline;
     auto cmdline = split_null(shim);
     auto environ = split_null(task.environ);
@@ -871,6 +907,8 @@ static void launch(JobTable *jobtable) {
     entry->job->state |= STATE_FORKED;
     close(stdout_stream[1]);
     close(stderr_stream[1]);
+    close(runner_out_stream[1]);
+    close(runner_err_stream[1]);
     bool indirect = *entry->job->cmdline != task.cmdline;
     double predict = entry->job->predict.status == 0 ? entry->job->predict.runtime : 0;
     std::string pretty = pretty_cmd(entry->job->cmdline->as_str());
@@ -911,7 +949,46 @@ JobEntry::~JobEntry() {
   if (imp->batch) {
     if (!echo_line.empty())
       status_get_generic_stream(job->echo.c_str()) << echo_line.c_str() << std::endl;
-    imp->db->replay_output(job->job, job->stream_out.c_str(), job->stream_err.c_str());
+    imp->db->replay_output(job->job, job->stream_out.c_str(), job->stream_err.c_str(),
+                           job->runner_out.c_str(), job->runner_err.c_str());
+  }
+}
+
+// Helper function to handle pipe data
+static bool handle_pipe_data(JobTable::detail &imp, int fd, std::shared_ptr<JobEntry> entry,
+                             int &pipe_fd, bool &wait_flag, int state_flag, int stream_id,
+                             char *buffer, size_t buffer_size, const struct timespec &now,
+                             Runtime &runtime) {
+  int got = read(fd, buffer, buffer_size);
+  if (got == 0 || (got < 0 && errno != EINTR)) {
+    imp.pipes.erase(imp.pipes.find(fd));
+    imp.poll.remove(fd);
+    close(fd);
+    pipe_fd = -1;
+    wait_flag = false;
+    entry->job->state |= state_flag;
+    runtime.heap.guarantee(WJob::reserve());
+    runtime.schedule(WJob::claim(runtime.heap, entry->job.get()));
+    return true;
+  } else {
+    entry->job->db->save_output(entry->job->job, stream_id, buffer, got, entry->runtime(now));
+    if (!imp.batch) {
+      switch (stream_id) {
+        case 1:  // stdout
+          entry->stdout_linebuf->sputn(buffer, got);
+          break;
+        case 2:  // stderr
+          entry->stderr_linebuf->sputn(buffer, got);
+          break;
+        case 3:  // runner_out
+          entry->runner_out_linebuf->sputn(buffer, got);
+          break;
+        case 4:  // runner_err
+          entry->runner_err_linebuf->sputn(buffer, got);
+          break;
+      }
+    }
+    return false;
   }
 }
 
@@ -968,41 +1045,29 @@ bool JobTable::wait(Runtime &runtime) {
       assert(entry);
 
       if (entry->pipe_stdout == fd) {
-        int got = read(fd, buffer, sizeof(buffer));
-        if (got == 0 || (got < 0 && errno != EINTR)) {
-          imp->pipes.erase(it);
-          imp->poll.remove(fd);
-          close(fd);
-          entry->pipe_stdout = -1;
-          entry->status->wait_stdout = false;
-          entry->job->state |= STATE_STDOUT;
-          runtime.heap.guarantee(WJob::reserve());
-          runtime.schedule(WJob::claim(runtime.heap, entry->job.get()));
+        if (handle_pipe_data(*imp, fd, entry, entry->pipe_stdout, entry->status->wait_stdout,
+                             STATE_STDOUT, 1, buffer, sizeof(buffer), now, runtime)) {
           ++done;
-        } else {
-          entry->job->db->save_output(entry->job->job, 1, buffer, got, entry->runtime(now));
-          if (!imp->batch) {
-            entry->stdout_linebuf->sputn(buffer, got);
-          }
         }
       }
       if (entry->pipe_stderr == fd) {
-        int got = read(fd, buffer, sizeof(buffer));
-        if (got == 0 || (got < 0 && errno != EINTR)) {
-          imp->pipes.erase(it);
-          imp->poll.remove(fd);
-          close(fd);
-          entry->pipe_stderr = -1;
-          entry->status->wait_stderr = false;
-          entry->job->state |= STATE_STDERR;
-          runtime.heap.guarantee(WJob::reserve());
-          runtime.schedule(WJob::claim(runtime.heap, entry->job.get()));
+        if (handle_pipe_data(*imp, fd, entry, entry->pipe_stderr, entry->status->wait_stderr,
+                             STATE_STDERR, 2, buffer, sizeof(buffer), now, runtime)) {
           ++done;
-        } else {
-          entry->job->db->save_output(entry->job->job, 2, buffer, got, entry->runtime(now));
-          if (!imp->batch) {
-            entry->stderr_linebuf->sputn(buffer, got);
-          }
+        }
+      }
+      if (entry->pipe_runner_out == fd) {
+        if (handle_pipe_data(*imp, fd, entry, entry->pipe_runner_out,
+                             entry->status->wait_runner_out, STATE_RUNNER_OUT, 3, buffer,
+                             sizeof(buffer), now, runtime)) {
+          ++done;
+        }
+      }
+      if (entry->pipe_runner_err == fd) {
+        if (handle_pipe_data(*imp, fd, entry, entry->pipe_runner_err,
+                             entry->status->wait_runner_err, STATE_RUNNER_ERR, 4, buffer,
+                             sizeof(buffer), now, runtime)) {
+          ++done;
         }
       }
     }
@@ -1083,7 +1148,7 @@ bool JobTable::wait(Runtime &runtime) {
 
 Job::Job(Database *db_, String *label_, String *dir_, String *stdin_file_, String *environ,
          String *cmdline_, bool keep_, const char *echo_, const char *stream_out_,
-         const char *stream_err_)
+         const char *stream_err_, const char *runner_out_, const char *runner_err_)
     : db(db_),
       label(label_),
       cmdline(cmdline_),
@@ -1096,7 +1161,10 @@ Job::Job(Database *db_, String *label_, String *dir_, String *stdin_file_, Strin
       keep(keep_),
       echo(echo_),
       stream_out(stream_out_),
-      stream_err(stream_err_) {
+      stream_err(stream_err_),
+      runner_out(runner_out_),
+      runner_err(runner_err_),
+      runner_status(0) {
   start.tv_sec = stop.tv_sec = 0;
   start.tv_nsec = stop.tv_nsec = 0;
 
@@ -1232,23 +1300,26 @@ static PRIMFN(prim_job_launch) {
 }
 
 static PRIMTYPE(type_job_virtual) {
-  return args.size() == 9 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeString) &&
-         args[2]->unify(Data::typeString) && args[3]->unify(Data::typeInteger) &&
-         args[4]->unify(Data::typeDouble) && args[5]->unify(Data::typeDouble) &&
-         args[6]->unify(Data::typeInteger) && args[7]->unify(Data::typeInteger) &&
-         args[8]->unify(Data::typeInteger) && out->unify(Data::typeUnit);
+  return args.size() == 11 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeString) &&
+         args[2]->unify(Data::typeString) && args[3]->unify(Data::typeString) &&
+         args[4]->unify(Data::typeString) && args[5]->unify(Data::typeInteger) &&
+         args[6]->unify(Data::typeDouble) && args[7]->unify(Data::typeDouble) &&
+         args[8]->unify(Data::typeInteger) && args[9]->unify(Data::typeInteger) &&
+         args[10]->unify(Data::typeInteger) && out->unify(Data::typeUnit);
 }
 
 static PRIMFN(prim_job_virtual) {
-  EXPECT(9);
+  EXPECT(11);
   JOB(job, 0);
   STRING(stdout_payload, 1);
   STRING(stderr_payload, 2);
+  STRING(runner_out_payload, 3);
+  STRING(runner_err_payload, 4);
 
   size_t need = reserve_unit() + WJob::reserve();
   runtime.heap.reserve(need);
 
-  parse_usage(&job->predict, args + 3, runtime, scope);
+  parse_usage(&job->predict, args + 5, runtime, scope);
   job->predict.found = true;
   job->reality = job->predict;
 
@@ -1259,6 +1330,10 @@ static PRIMFN(prim_job_virtual) {
     job->db->save_output(job->job, 1, stdout_payload->c_str(), stdout_payload->size(), 0);
   if (!stderr_payload->empty())
     job->db->save_output(job->job, 2, stderr_payload->c_str(), stderr_payload->size(), 0);
+  if (!runner_out_payload->empty())
+    job->db->save_output(job->job, 3, runner_out_payload->c_str(), runner_out_payload->size(), 0);
+  if (!runner_err_payload->empty())
+    job->db->save_output(job->job, 4, runner_err_payload->c_str(), runner_err_payload->size(), 0);
 
   REQUIRE(job->state == 0);
 
@@ -1278,26 +1353,34 @@ static PRIMFN(prim_job_virtual) {
     // TODO: Add a job_id
     status_get_generic_stream(job->stream_err.c_str()) << stdout_payload->c_str() << std::endl;
   }
+  if (!runner_out_payload->empty()) {
+    status_get_generic_stream(job->runner_out.c_str()) << runner_out_payload->c_str() << std::endl;
+  }
+  if (!runner_err_payload->empty()) {
+    status_get_generic_stream(job->runner_err.c_str()) << runner_err_payload->c_str() << std::endl;
+  }
 
-  job->state = STATE_FORKED | STATE_STDOUT | STATE_STDERR | STATE_MERGED;
+  job->state = STATE_FORKED | STATE_STDOUT | STATE_STDERR | STATE_RUNNER_OUT | STATE_RUNNER_ERR |
+               STATE_MERGED;
 
   runtime.schedule(WJob::claim(runtime.heap, job));
   RETURN(claim_unit(runtime.heap));
 }
 
 static PRIMTYPE(type_job_create) {
-  return args.size() == 12 && args[0]->unify(Data::typeString) &&
+  return args.size() == 14 && args[0]->unify(Data::typeString) &&
          args[1]->unify(Data::typeString) && args[2]->unify(Data::typeString) &&
          args[3]->unify(Data::typeString) && args[4]->unify(Data::typeString) &&
          args[5]->unify(Data::typeInteger) && args[6]->unify(Data::typeString) &&
          args[7]->unify(Data::typeInteger) && args[8]->unify(Data::typeString) &&
          args[9]->unify(Data::typeString) && args[10]->unify(Data::typeString) &&
-         args[11]->unify(Data::typeInteger) && out->unify(Data::typeJob);
+         args[11]->unify(Data::typeString) && args[12]->unify(Data::typeString) &&
+         args[13]->unify(Data::typeInteger) && out->unify(Data::typeJob);
 }
 
 static PRIMFN(prim_job_create) {
   JobTable *jobtable = static_cast<JobTable *>(data);
-  EXPECT(12);
+  EXPECT(14);
   STRING(label, 0);
   STRING(dir, 1);
   STRING(stdin_file, 2);
@@ -1309,15 +1392,17 @@ static PRIMFN(prim_job_create) {
   STRING(echo, 8);
   STRING(stream_out, 9);
   STRING(stream_err, 10);
-  INTEGER_MPZ(is_atty, 11);
+  STRING(runner_out, 11);
+  STRING(runner_err, 12);
+  INTEGER_MPZ(is_atty, 13);
 
   Hash hash;
   REQUIRE(mpz_sizeinbase(signature, 2) <= 8 * sizeof(hash.data));
   mpz_export(&hash.data[0], 0, 1, sizeof(hash.data[0]), 0, 0, signature);
 
-  Job *out =
-      Job::alloc(runtime.heap, jobtable->imp->db, label, dir, stdin_file, env, cmd,
-                 mpz_cmp_si(keep, 0), echo->c_str(), stream_out->c_str(), stream_err->c_str());
+  Job *out = Job::alloc(runtime.heap, jobtable->imp->db, label, dir, stdin_file, env, cmd,
+                        mpz_cmp_si(keep, 0), echo->c_str(), stream_out->c_str(),
+                        stream_err->c_str(), runner_out->c_str(), runner_err->c_str());
 
   out->record = jobtable->imp->db->predict_job(out->code.data[0], &out->pathtime);
 
@@ -1396,8 +1481,9 @@ static PRIMFN(prim_job_cache) {
   Value *joblist;
   if (reuse.found && !jobtable->imp->check) {
     Job *jobp = Job::claim(runtime.heap, jobtable->imp->db, dir, dir, stdin_file, env, cmd, true,
-                           STREAM_ECHO, STREAM_INFO, STREAM_WARNING);
-    jobp->state = STATE_FORKED | STATE_STDOUT | STATE_STDERR | STATE_MERGED | STATE_FINISHED;
+                           STREAM_ECHO, STREAM_INFO, STREAM_WARNING, STREAM_INFO, STREAM_ERROR);
+    jobp->state = STATE_FORKED | STATE_STDOUT | STATE_STDERR | STATE_RUNNER_OUT | STATE_RUNNER_ERR |
+                  STATE_MERGED | STATE_FINISHED;
     jobp->job = job;
     jobp->record = reuse;
     // predict + reality unusued since Job not run
@@ -1478,6 +1564,66 @@ static PRIMFN(prim_job_output) {
     bool stdin_or_stderr = false;
     REQUIRE(stdin_or_stderr);
   }
+}
+
+static PRIMFN(prim_job_runner_output) {
+  EXPECT(2);
+  JOB(arg0, 0);
+  INTEGER_MPZ(arg1, 1);
+
+  runtime.heap.reserve(Tuple::fulfiller_pads + WJob::reserve());
+  Continuation *continuation = scope->claim_fulfiller(runtime, output);
+
+  if (mpz_cmp_si(arg1, 1) == 0) {
+    runtime.schedule(WJob::claim(runtime.heap, arg0));
+    continuation->next = arg0->q_runner_out;
+    arg0->q_runner_out = continuation;
+  } else if (mpz_cmp_si(arg1, 2) == 0) {
+    runtime.schedule(WJob::claim(runtime.heap, arg0));
+    continuation->next = arg0->q_runner_err;
+    arg0->q_runner_err = continuation;
+  } else {
+    bool valid_stream = false;
+    REQUIRE(valid_stream);
+  }
+}
+
+static PRIMTYPE(type_job_report_runner_error) {
+  return args.size() == 2 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeString) &&
+         out->unify(Data::typeJob);
+}
+
+static PRIMFN(prim_job_report_runner_error) {
+  EXPECT(2);
+  JOB(job, 0);
+  STRING(error_message, 1);
+
+  job->db->save_output(job->job, 4, error_message->c_str(), error_message->size(), 0);
+  job->state |= STATE_RUNNER_ERR;
+
+  runtime.heap.reserve(WJob::reserve());
+  runtime.schedule(WJob::claim(runtime.heap, job));
+
+  RETURN(args[0]);
+}
+
+static PRIMTYPE(type_job_report_runner_output) {
+  return args.size() == 2 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeString) &&
+         out->unify(Data::typeJob);
+}
+
+static PRIMFN(prim_job_report_runner_output) {
+  EXPECT(2);
+  JOB(job, 0);
+  STRING(output_message, 1);
+
+  job->db->save_output(job->job, 3, output_message->c_str(), output_message->size(), 0);
+  job->state |= STATE_RUNNER_OUT;
+
+  runtime.heap.reserve(WJob::reserve());
+  runtime.schedule(WJob::claim(runtime.heap, job));
+
+  RETURN(args[0]);
 }
 
 static PRIMTYPE(type_job_tree) {
@@ -1737,6 +1883,42 @@ static PRIMFN(prim_job_record) {
   }
 }
 
+static PRIMTYPE(type_job_set_runner_status) {
+  return args.size() == 2 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeInteger) &&
+         out->unify(Data::typeUnit);
+}
+
+static PRIMFN(prim_job_set_runner_status) {
+  EXPECT(2);
+  JOB(job, 0);
+  INTEGER_MPZ(status, 1);
+
+  int status_val = mpz_get_si(status);
+  job->runner_status = status_val;
+  job->db->set_runner_status(job->job, status_val);
+
+  runtime.heap.reserve(reserve_unit());
+  RETURN(claim_unit(runtime.heap));
+}
+
+static PRIMTYPE(type_job_runner_status) {
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeInteger);
+  result[1].unify(Data::typeError);
+  return args.size() == 1 && args[0]->unify(Data::typeJob) && out->unify(result);
+}
+
+static PRIMFN(prim_job_runner_status) {
+  EXPECT(1);
+  JOB(job, 0);
+
+  int status = job->db->get_runner_status(job->job);
+  MPZ status_mpz(status);
+  runtime.heap.reserve(reserve_result() + Integer::reserve(status_mpz));
+  RETURN(claim_result(runtime.heap, true, Integer::claim(runtime.heap, status_mpz)));
+}
+
 static PRIMTYPE(type_access) {
   return args.size() == 2 && args[0]->unify(Data::typeString) &&
          args[1]->unify(Data::typeInteger) && out->unify(Data::typeBoolean);
@@ -1865,6 +2047,25 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
 
   // Get's the stdout/stderr of a job
   prim_register(pmap, "job_output", prim_job_output, type_job_output, PRIM_PURE);
+
+  // Get's the stdout/stderr/runner_out/runner_err of a job
+  prim_register(pmap, "job_runner_output", prim_job_runner_output, type_job_output, PRIM_PURE);
+
+  // Reports a runner error for a job
+  prim_register(pmap, "job_report_runner_error", prim_job_report_runner_error,
+                type_job_report_runner_error, PRIM_IMPURE);
+
+  // Reports runner output for a job
+  prim_register(pmap, "job_report_runner_output", prim_job_report_runner_output,
+                type_job_report_runner_output, PRIM_IMPURE);
+
+  // Sets the runner status for a job
+  prim_register(pmap, "job_set_runner_status", prim_job_set_runner_status,
+                type_job_set_runner_status, PRIM_IMPURE);
+
+  // Gets the runner status for a job
+  prim_register(pmap, "job_runner_status", prim_job_runner_status, type_job_runner_status,
+                PRIM_PURE);
 
   // Get's the set of file paths of a job: 0=visible, 1=input, 2=output
   prim_register(pmap, "job_tree", prim_job_tree, type_job_tree, PRIM_PURE);
@@ -1996,6 +2197,34 @@ void WJob::execute(Runtime &runtime) {
       what = claim_result(runtime.heap, true, String::claim(runtime.heap, out));
     }
     wake(runtime, job->q_stderr, what);
+  }
+
+  // Handle runner output if available
+  if ((job->state & STATE_RUNNER_OUT) && job->q_runner_out) {
+    HeapObject *what;
+    if (job->bad_launch) {
+      runtime.heap.reserve(reserve_result());
+      what = claim_result(runtime.heap, false, job->bad_launch.get());
+    } else {
+      std::string out(job->db->get_output(job->job, 3));
+      runtime.heap.reserve(reserve_result() + String::reserve(out.size()));
+      what = claim_result(runtime.heap, true, String::claim(runtime.heap, out));
+    }
+    wake(runtime, job->q_runner_out, what);
+  }
+
+  // Handle runner errors if available
+  if ((job->state & STATE_RUNNER_ERR) && job->q_runner_err) {
+    HeapObject *what;
+    if (job->bad_launch) {
+      runtime.heap.reserve(reserve_result());
+      what = claim_result(runtime.heap, false, job->bad_launch.get());
+    } else {
+      std::string out(job->db->get_output(job->job, 4));
+      runtime.heap.reserve(reserve_result() + String::reserve(out.size()));
+      what = claim_result(runtime.heap, true, String::claim(runtime.heap, out));
+    }
+    wake(runtime, job->q_runner_err, what);
   }
 
   if ((job->state & STATE_MERGED) && job->q_reality) {
