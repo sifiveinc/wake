@@ -1178,16 +1178,16 @@ JAST JobReflection::to_structured_json() const {
 
   for (auto &write : std_writes) {
     switch (write.second) {
-      case 1: // stdout
+      case 1:  // stdout
         out_stream += write.first;
         break;
-      case 2: // stderr
+      case 2:  // stderr
         err_stream += write.first;
         break;
-      case 3: // runner_output
+      case 3:  // runner_output
         runner_out_stream += write.first;
         break;
-      case 4: // runner_error
+      case 4:  // runner_error
         runner_err_stream += write.first;
         break;
     }

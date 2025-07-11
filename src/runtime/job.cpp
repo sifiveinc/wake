@@ -974,16 +974,16 @@ static bool handle_pipe_data(JobTable::detail &imp, int fd, std::shared_ptr<JobE
     entry->job->db->save_output(entry->job->job, stream_id, buffer, got, entry->runtime(now));
     if (!imp.batch) {
       switch (stream_id) {
-        case 1: // stdout
+        case 1:  // stdout
           entry->stdout_linebuf->sputn(buffer, got);
           break;
-        case 2: // stderr
+        case 2:  // stderr
           entry->stderr_linebuf->sputn(buffer, got);
           break;
-        case 3: // runner_out
+        case 3:  // runner_out
           entry->runner_out_linebuf->sputn(buffer, got);
           break;
-        case 4: // runner_err
+        case 4:  // runner_err
           entry->runner_err_linebuf->sputn(buffer, got);
           break;
       }
