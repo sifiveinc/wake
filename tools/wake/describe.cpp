@@ -81,15 +81,16 @@ static void describe_metadata(const std::vector<JobReflection> &jobs, bool debug
     for (auto &arg : job.commandline) out << " " << shell_escape(arg);
     out << std::endl << "  Environment:" << std::endl;
     for (auto &env : job.environment) out << "    " << shell_escape(env) << std::endl;
-    out << "  Directory: " << job.directory << std::endl
-        << "  Built:     " << job.endtime.as_string() << std::endl
-        << "  Runtime:   " << job.usage.runtime << std::endl
-        << "  CPUtime:   " << job.usage.cputime << std::endl
-        << "  Mem bytes: " << job.usage.membytes << std::endl
-        << "  In  bytes: " << job.usage.ibytes << std::endl
-        << "  Out bytes: " << job.usage.obytes << std::endl
-        << "  Status:    " << job.usage.status << std::endl
-        << "  Stdin:     " << job.stdin_file << std::endl;
+    out << "  Directory:     " << job.directory << std::endl
+        << "  Built:         " << job.endtime.as_string() << std::endl
+        << "  Runtime:       " << job.usage.runtime << std::endl
+        << "  CPUtime:       " << job.usage.cputime << std::endl
+        << "  Mem bytes:     " << job.usage.membytes << std::endl
+        << "  In  bytes:     " << job.usage.ibytes << std::endl
+        << "  Out bytes:     " << job.usage.obytes << std::endl
+        << "  Status:        " << job.usage.status << std::endl
+        << "  Runner Status: " << job.runner_status << std::endl
+        << "  Stdin:         " << job.stdin_file << std::endl;
     if (verbose) {
       out << "  Wake run:  " << job.wake_start.as_string() << " (" << job.wake_cmdline << ")"
           << std::endl;
@@ -115,12 +116,21 @@ static void describe_metadata(const std::vector<JobReflection> &jobs, bool debug
 
     std::stringstream stdout_writes;
     std::stringstream stderr_writes;
+    std::stringstream runner_out_writes;
+    std::stringstream runner_err_writes;
+
     for (auto &write : job.std_writes) {
       if (write.second == 1) {
         stdout_writes << write.first;
       }
       if (write.second == 2) {
         stderr_writes << write.first;
+      }
+      if (write.second == 3) {
+        runner_out_writes << write.first;
+      }
+      if (write.second == 4) {
+        runner_err_writes << write.first;
       }
     }
 
@@ -135,6 +145,18 @@ static void describe_metadata(const std::vector<JobReflection> &jobs, bool debug
       if (!stderr_str.empty()) {
         out << "Stderr:";
         indent(out, "  ", stderr_str);
+      }
+
+      std::string runner_out_str = runner_out_writes.str();
+      if (!runner_out_str.empty()) {
+        out << "Runner Output:";
+        indent(out, "  ", runner_out_str);
+      }
+
+      std::string runner_err_str = runner_err_writes.str();
+      if (!runner_err_str.empty()) {
+        out << "Runner Error:";
+        indent(out, "  ", runner_err_str);
       }
     }
 
@@ -171,13 +193,14 @@ static void describe_shell(const std::vector<JobReflection> &jobs, bool debug, b
     }
     out << "< " << shell_escape(job.stdin_file) << std::endl << std::endl;
     out << "# When wake ran this command:" << std::endl
-        << "#   Built:     " << job.endtime.as_string() << std::endl
-        << "#   Runtime:   " << job.usage.runtime << std::endl
-        << "#   CPUtime:   " << job.usage.cputime << std::endl
-        << "#   Mem bytes: " << job.usage.membytes << std::endl
-        << "#   In  bytes: " << job.usage.ibytes << std::endl
-        << "#   Out bytes: " << job.usage.obytes << std::endl
-        << "#   Status:    " << job.usage.status << std::endl;
+        << "#   Built:         " << job.endtime.as_string() << std::endl
+        << "#   Runtime:       " << job.usage.runtime << std::endl
+        << "#   CPUtime:       " << job.usage.cputime << std::endl
+        << "#   Mem bytes:     " << job.usage.membytes << std::endl
+        << "#   In  bytes:     " << job.usage.ibytes << std::endl
+        << "#   Out bytes:     " << job.usage.obytes << std::endl
+        << "#   Status:        " << job.usage.status << std::endl
+        << "#   Runner Status: " << job.runner_status << std::endl;
     if (verbose) {
       out << "#  Wake run:  " << job.wake_start.as_string() << " (" << job.wake_cmdline << ")"
           << std::endl;
@@ -198,12 +221,21 @@ static void describe_shell(const std::vector<JobReflection> &jobs, bool debug, b
 
     std::stringstream stdout_writes;
     std::stringstream stderr_writes;
+    std::stringstream runner_out_writes;
+    std::stringstream runner_err_writes;
+
     for (auto &write : job.std_writes) {
       if (write.second == 1) {
         stdout_writes << write.first;
       }
       if (write.second == 2) {
         stderr_writes << write.first;
+      }
+      if (write.second == 3) {
+        runner_out_writes << write.first;
+      }
+      if (write.second == 4) {
+        runner_err_writes << write.first;
       }
     }
 
@@ -217,6 +249,18 @@ static void describe_shell(const std::vector<JobReflection> &jobs, bool debug, b
     if (!stderr_str.empty()) {
       out << "# Stderr:";
       indent(out, "#   ", stderr_str);
+    }
+
+    std::string runner_out_str = runner_out_writes.str();
+    if (!runner_out_str.empty()) {
+      out << "# Runner Output:";
+      indent(out, "#   ", runner_out_str);
+    }
+
+    std::string runner_err_str = runner_err_writes.str();
+    if (!runner_err_str.empty()) {
+      out << "# Runner Error:";
+      indent(out, "#   ", runner_err_str);
     }
 
     if (!job.tags.empty()) {

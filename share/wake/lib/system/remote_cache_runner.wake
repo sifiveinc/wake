@@ -44,6 +44,9 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         require True = output.getRunnerOutputUsage.getUsageStatus == 0
         else Pass output
 
+        require True = output.getRunnerOutputRunnerStatus == 0
+        else Pass output
+
         # If pushing to the cache is not enabled don't bother
         require True = rscApi.getRemoteCacheApiCanPush
         else Pass output
@@ -244,7 +247,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         #     by the same job. If so, upload the target as a "hidden" output file. On rehydration
         #     retore the file as normal but don't list it in the outputs.
         ## -------------------------------------------------------------------------------------- ##
-        Pass (RunnerOutput inputs outputs cleanableOutputs predict)
+        Pass (RunnerOutput inputs outputs cleanableOutputs predict 0)
 
     def run (job: Job) (input: RunnerInput): Result RunnerOutput Error =
         def label = input.getRunnerInputLabel

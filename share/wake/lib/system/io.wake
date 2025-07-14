@@ -169,7 +169,7 @@ def writeRunner (content: String) =
                 def cleanable = (path, Nil)
                 def fileOutputs = fnOutputs cleanable
 
-                RunnerOutput fileInputs fileOutputs cleanable reality
+                RunnerOutput fileInputs fileOutputs cleanable reality 0
                 | Pass
 
     makeRunner "write" run
@@ -316,7 +316,7 @@ def mkdirRunner: Runner =
                 def cleanable = (path, Nil)
                 def fileOutputs = fnOutputs cleanable
 
-                RunnerOutput fileInputs fileOutputs cleanable reality
+                RunnerOutput fileInputs fileOutputs cleanable reality 0
                 | Pass
 
     makeRunner "mkdir" run
