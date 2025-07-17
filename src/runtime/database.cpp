@@ -38,7 +38,7 @@
 #include "wcl/iterator.h"
 
 // Increment every time the database schema changes
-#define SCHEMA_VERSION "7"
+#define SCHEMA_VERSION "8"
 
 #define VISIBLE 0
 #define INPUT 1
@@ -226,6 +226,7 @@ std::string Database::open(bool wait, bool memory, bool tty) {
       "  runner_status integer not null default 0);"  // 0=success, non-zero=failure
       "create index if not exists job on jobs(directory, commandline, environment, stdin, "
       "signature, keep, job_id, stat_id);"
+      "create index if not exists runner_status_idx on jobs(runner_status) WHERE runner_status <> 0;"
       "create index if not exists jobstats on jobs(stat_id);"
       "create table if not exists filetree("
       "  tree_id  integer primary key autoincrement,"
@@ -1508,10 +1509,10 @@ std::vector<JobReflection> Database::matching(
   // This query creates a subtable of the following shape:
   //
   // clang-format off
-  // | job_id | label | run_id | use_id | endtime | commandline | status | runtime |       tags       |
-  // --------------------------------------------------------------------------------------------------
-  // |    1   |  foo  |   1    |    1   |  1234   | ls lah .    |   0    |   2.8   | <d>a=b<d>c=d<d>  |
-  // |    2   |  bar  |   1    |    1   |  0000   | cat f.txt   |   0    |   0.0   |      null        |
+  // | job_id | label | run_id | use_id | endtime | commandline | runner_status | status | runtime |       tags       |
+  // -----------------------------------------------------------------------------------------------------------------------
+  // |    1   |  foo  |   1    |    1   |  1234   | ls lah .    |       0       |   0    |   2.8   | <d>a=b<d>c=d<d>  |
+  // |    2   |  bar  |   1    |    1   |  0000   | cat f.txt   |       1       |   0    |   0.0   |      null        |
   // clang-format on
   //
   // The subtable is constructed by joining the jobs table with the minimal set of other dependent
@@ -1537,6 +1538,7 @@ std::vector<JobReflection> Database::matching(
                 j.use_id,
                 j.endtime,
                 j.commandline,
+                j.runner_status,
                 s.status,
                 s.runtime,
                 '<d>' || group_concat(t.tag, '<d>') || '<d>' tags
