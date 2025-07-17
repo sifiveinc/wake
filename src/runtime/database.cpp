@@ -226,7 +226,8 @@ std::string Database::open(bool wait, bool memory, bool tty) {
       "  runner_status integer not null default 0);"  // 0=success, non-zero=failure
       "create index if not exists job on jobs(directory, commandline, environment, stdin, "
       "signature, keep, job_id, stat_id);"
-      "create index if not exists runner_status_idx on jobs(runner_status) WHERE runner_status <> 0;"
+      "create index if not exists runner_status_idx on jobs(runner_status) WHERE runner_status <> "
+      "0;"
       "create index if not exists jobstats on jobs(stat_id);"
       "create table if not exists filetree("
       "  tree_id  integer primary key autoincrement,"
