@@ -517,7 +517,7 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
   }
 
   int user_cmd_status;
-  waitpid(0, &user_cmd_status, 0);
+  waitpid(pid, &user_cmd_status, 0);
 
   // Wait for child processes, we are init(1) in this PID namespace.
   int child_status;
