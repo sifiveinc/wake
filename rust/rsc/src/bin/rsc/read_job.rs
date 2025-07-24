@@ -17,6 +17,49 @@ use sea_orm::{
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tracing;
+use std::time::Instant;
+use lazy_static::lazy_static;
+use prometheus::{register_counter, register_histogram, Counter, Histogram};
+
+lazy_static! {
+    /// Counts how many cache hits we've had.
+    pub static ref CACHE_HITS: Counter = register_counter!(
+        "cache_hits",
+        "Number of cache hits"
+    ).unwrap();
+
+    /// Counts how many cache misses we've had.
+    pub static ref CACHE_MISSES: Counter = register_counter!(
+        "cache_misses",
+        "Number of cache misses"
+    ).unwrap();
+
+    /// Tracks latencies (in milliseconds) for read_job requests.
+    pub static ref HIT_LATENCY_MS: Histogram = register_histogram!(
+        "hit_latency_ms",
+        "Histogram of cache hit latencies in milliseconds"
+    ).unwrap();
+
+    pub static ref MISS_LATENCY_MS: Histogram = register_histogram!(
+        "miss_latency_ms",
+        "Histogram of cache miss latencies in milliseconds"
+    ).unwrap();
+}
+
+
+#[tracing::instrument(skip_all)]
+fn update_hit_counters(start_time: Instant) {
+    CACHE_HITS.inc();
+    let elapsed_ms = start_time.elapsed().as_millis() as f64;
+    HIT_LATENCY_MS.observe(elapsed_ms);
+}
+
+#[tracing::instrument(skip_all)]
+fn update_miss_counters(start_time: Instant) {
+    CACHE_MISSES.inc();
+    let elapsed_ms = start_time.elapsed().as_millis() as f64;
+    MISS_LATENCY_MS.observe(elapsed_ms);
+}
 
 #[tracing::instrument(skip(hash, conn))]
 async fn record_hit(job_id: Uuid, hash: String, conn: Arc<DatabaseConnection>) {
@@ -92,6 +135,8 @@ pub async fn read_job(
     conn: Arc<DatabaseConnection>,
     blob_stores: HashMap<Uuid, Arc<dyn blob::DebugBlobStore + Sync + Send>>,
 ) -> (StatusCode, Json<ReadJobResponse>) {
+    let start = Instant::now();
+
     let hash = payload.hash();
     let hash_for_spawns = hash.clone();
 
@@ -123,6 +168,9 @@ pub async fn read_job(
         tokio::spawn(async move {
             record_miss(hash_copy, conn.clone()).await;
         });
+        
+        update_miss_counters(start);
+
         return (StatusCode::NOT_FOUND, Json(ReadJobResponse::NoMatch));
     };
 
@@ -136,6 +184,9 @@ pub async fn read_job(
         Ok(map) => map,
         Err(err) => {
             tracing::error!(%err, "Failed to resolve blobs. Resolving job as a cache miss.");
+
+            update_miss_counters(start);
+
             return (StatusCode::NOT_FOUND, Json(ReadJobResponse::NoMatch));
         }
     };
@@ -161,6 +212,9 @@ pub async fn read_job(
         Ok(files) => files,
         Err(err) => {
             tracing::error!(%err, "Failed to resolve all output files. Resolving job as a cache miss.");
+            
+            update_miss_counters(start);
+            
             return (StatusCode::NOT_FOUND, Json(ReadJobResponse::NoMatch));
         }
     };
@@ -188,6 +242,7 @@ pub async fn read_job(
         Some(blob) => blob.clone(),
         None => {
             tracing::error!("Failed to resolve stdout blob. Resolving job as a cache miss.");
+            update_miss_counters(start);
             return (StatusCode::NOT_FOUND, Json(ReadJobResponse::NoMatch));
         }
     };
@@ -196,6 +251,7 @@ pub async fn read_job(
         Some(blob) => blob.clone(),
         None => {
             tracing::error!("Failed to resolve stderr blob. Resolving job as a cache miss.");
+            update_miss_counters(start);
             return (StatusCode::NOT_FOUND, Json(ReadJobResponse::NoMatch));
         }
     };
@@ -221,7 +277,7 @@ pub async fn read_job(
     tokio::spawn(async move {
         record_hit(job_id, hash_copy, conn.clone()).await;
     });
-
+    update_hit_counters(start);
     (StatusCode::OK, Json(response))
 }
 

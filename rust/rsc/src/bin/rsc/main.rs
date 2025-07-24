@@ -2,11 +2,13 @@ use axum::{
     extract::{DefaultBodyLimit, Multipart},
     routing::{get, post},
     Router,
+    response::IntoResponse,
 };
 use chrono::Utc;
 use clap::Parser;
 use itertools::Itertools;
 use migration::{Migrator, MigratorTrait};
+use prometheus::{Encoder, TextEncoder};
 use rlimit::Resource;
 use rsc::database;
 use sea_orm::{prelude::Uuid, ConnectOptions, Database, DatabaseConnection};
@@ -106,6 +108,20 @@ async fn check_version(check: axum::extract::Query<VersionCheck>) -> axum::http:
     return axum::http::StatusCode::OK;
 }
 
+async fn metrics_handler() -> impl IntoResponse {
+    let encoder = TextEncoder::new();
+    let metric_families = prometheus::gather();
+    let mut buffer = Vec::new();
+    if let Err(err) = encoder.encode(&metric_families, &mut buffer) {
+        tracing::error! {%err, "Failed to encode metrics"};
+    }
+
+    (
+        axum::http::StatusCode::OK,
+        String::from_utf8(buffer).unwrap_or_default()
+    )
+}
+
 fn create_router(
     conn: Arc<DatabaseConnection>,
     config: Arc<config::RSCConfig>,
@@ -169,6 +185,7 @@ fn create_router(
                 move || dashboard::stats(conn)
             }),
         )
+        .route("/metrics", get(metrics_handler))
         .route(
             "/job/matching",
             post({
