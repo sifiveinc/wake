@@ -1112,6 +1112,29 @@ bool JobTable::wait(Runtime &runtime) {
       runtime.heap.guarantee(WJob::reserve());
       runtime.schedule(WJob::claim(runtime.heap, entry->job.get()));
 
+      // Force close any remaining runner pipes when process exits.
+      // There are situations where the polling mechanism doesn't detect the EOF condition
+      // on unused pipes (child processes that inherit the fd but never write to it).
+      // This ensures that we always clean up after the child process.
+      if (entry->pipe_runner_out != -1) {
+        imp->pipes.erase(entry->pipe_runner_out);
+        imp->poll.remove(entry->pipe_runner_out);
+        close(entry->pipe_runner_out);
+        entry->pipe_runner_out = -1;
+        entry->job->state |= STATE_RUNNER_OUT;
+        runtime.heap.guarantee(WJob::reserve());
+        runtime.schedule(WJob::claim(runtime.heap, entry->job.get()));
+      }
+      if (entry->pipe_runner_err != -1) {
+        imp->pipes.erase(entry->pipe_runner_err);
+        imp->poll.remove(entry->pipe_runner_err);
+        close(entry->pipe_runner_err);
+        entry->pipe_runner_err = -1;
+        entry->job->state |= STATE_RUNNER_ERR;
+        runtime.heap.guarantee(WJob::reserve());
+        runtime.schedule(WJob::claim(runtime.heap, entry->job.get()));
+      }
+
       // If this was the job on the critical path, adjust remain
       if (entry->job->pathtime == status_state.remain) {
         auto crit = imp->critJob(ALMOST_ONE * (entry->job->pathtime - entry->job->record.runtime));

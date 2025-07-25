@@ -96,10 +96,11 @@ export def primJobLaunch (job: Job) (jobKey: JobKey) (usage: Usage): Unit =
 
 # Complete a job before launch with userland defined failure
 export def primJobFailLaunch (job: Job) (error: Error): Unit =
-    # report the error as a runner error
+    def _ = (\_ \_ prim "job_fail_launch") job error
+
     def _ = unsafe_reportJobRunnerFailure job (error.getErrorCause) 1
 
-    (\_ \_ prim "job_fail_launch") job error
+    Unit
 
 # Wrap `primJobFailLaunch` in the type signature required to satisfy `rmapFail`, for cases where
 # a runner fails *before* delegating to `localRunner` or anything else which calls `primJobLaunch`.
