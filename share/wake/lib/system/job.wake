@@ -97,7 +97,6 @@ export def primJobLaunch (job: Job) (jobKey: JobKey) (usage: Usage): Unit =
 # Complete a job before launch with userland defined failure
 export def primJobFailLaunch (job: Job) (error: Error): Unit =
     def _ = (\_ \_ prim "job_fail_launch") job error
-
     def _ = unsafe_reportJobRunnerFailure job (error.getErrorCause) 1
 
     Unit
