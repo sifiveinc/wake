@@ -2071,7 +2071,7 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   // Get's the stdout/stderr of a job
   prim_register(pmap, "job_output", prim_job_output, type_job_output, PRIM_PURE);
 
-  // Get's the stdout/stderr/runner_out/runner_err of a job
+  // Get's the runner_out/runner_err of a job
   prim_register(pmap, "job_runner_output", prim_job_runner_output, type_job_output, PRIM_PURE);
 
   // Reports a runner error for a job
