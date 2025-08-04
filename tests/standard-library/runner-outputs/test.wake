@@ -216,6 +216,7 @@ exit 0
     # Run the script with file descriptors 3 and 4 mapped to runner output and error
     def job =
         makeExecPlan (scriptPath.getPathName, Nil) (scriptPath, Nil)
+        | editPlanEnvironment (setEnvironment "WAKE_ALLOW_RUNNER_STREAMS" "1")
         | runJobWith localRunner
 
     # Wait for job to complete
