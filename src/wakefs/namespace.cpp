@@ -507,8 +507,8 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
     exit(1);
   }
 
-  pid_t pid = fork();
-  if (pid == 0) {
+  pid_t user_pid = fork();
+  if (user_pid == 0) {
     // Execute the user-specified command.
     const auto *args = reinterpret_cast<const pidns_args *>(arg);
     err = execve_wrapper(args->command, args->environment);
@@ -516,21 +516,31 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
     exit(1);
   }
 
-  int user_cmd_status;
-  waitpid(pid, &user_cmd_status, 0);
+  int user_cmd_status = 0;
 
-  // Wait for child processes, we are init(1) in this PID namespace.
-  int child_status;
-  while ((pid = waitpid(-1, &child_status, 0)) != 0) {
-    if (pid == -1) {
+  // Reap all children as they exit
+  while (true) {
+    int status;
+    pid_t child_pid = waitpid(-1, &status, 0);
+
+    if (child_pid == -1) {
       if (errno == ECHILD) {
         break;  // all children have terminated
+      }
+      if (errno == EINTR) {
+        continue;  // Interrupted by signal, try again
       }
       std::cerr << "waitpid: " << strerror(errno) << std::endl;
       exit(1);
     }
+
+    // Check if this was the main user command
+    if (child_pid == user_pid) {
+      user_cmd_status = status;
+    }
   }
 
+  // Exit with the user command's status
   if (WIFEXITED(user_cmd_status)) {
     exit(WEXITSTATUS(user_cmd_status));
   }
