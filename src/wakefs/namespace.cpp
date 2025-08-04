@@ -516,7 +516,8 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
     exit(1);
   }
 
-  int user_cmd_status = 0;
+  int user_cmd_status = -1;
+  bool user_cmd_finished = false;
 
   // Reap all children as they exit
   while (true) {
@@ -537,7 +538,13 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
     // Check if this was the main user command
     if (child_pid == user_pid) {
       user_cmd_status = status;
+      user_cmd_finished = true;
     }
+  }
+
+  if (!user_cmd_finished) {
+    std::cerr << "waitpid: user command did not terminate" << std::endl;
+    exit(1);
   }
 
   // Exit with the user command's status
