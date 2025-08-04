@@ -222,7 +222,8 @@ int main(int argc, char **argv) {
     if (entry->name == "." || entry->name == "..") continue;
     int fd = std::stoi(entry->name);
     int max_fd_to_keep = allow_runner_streams ? 4 : 2;
-    if (fd <= max_fd_to_keep) continue;  // Keep stdin, stdout, stderr, and optionally runner streams
+    if (fd <= max_fd_to_keep)
+      continue;  // Keep stdin, stdout, stderr, and optionally runner streams
     // Otherwise close the fd
     fds_to_close.push_back(fd);
   }
