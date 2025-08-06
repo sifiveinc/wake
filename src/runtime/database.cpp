@@ -284,15 +284,34 @@ std::string Database::open(bool wait, bool memory, bool tty) {
 
     // since older wake.db files may not have the header set, we need to check the legacy table,
     // to differentiate between a brand-new DB and an old one.
+    // Todo: remove this check once all wake.db instances have migrated to newer versions.
     int legacy_ver = 0;
     if (header_ver == 0) {
       sqlite3_stmt *st = nullptr;
       const char *q = "SELECT max(version) FROM schema;";
-      if (sqlite3_prepare_v2(imp->db, q, -1, &st, nullptr) == SQLITE_OK &&
-          sqlite3_step(st) == SQLITE_ROW) {
-        legacy_ver = sqlite3_column_int(st, 0);
+      int rc = sqlite3_prepare_v2(imp->db, q, -1, &st, nullptr);
+
+      if (rc == SQLITE_OK) {
+        rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW) legacy_ver = sqlite3_column_int(st, 0);
       }
+
       sqlite3_finalize(st);
+
+      if (rc == SQLITE_BUSY) {
+        close_db(imp.get());
+        if (!wait) return "Database wake.db is busy.";
+        if (tty) {
+          if (waiting)
+            std::cerr << '.';
+          else {
+            waiting = true;
+            std::cerr << "Database wake.db is busy; waiting .";
+          }
+        }
+        sleep(1);
+        continue;
+      }
     }
 
     int db_ver = header_ver ? header_ver : legacy_ver;
