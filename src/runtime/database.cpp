@@ -272,23 +272,84 @@ std::string Database::open(bool wait, bool memory, bool tty) {
     }
 #endif
 
-    char *fail;
+    // use PRAGMA user_version to store the schema version in the DB header for quick access.
+    int header_ver = 0;
+    {
+      sqlite3_stmt *st = nullptr;
+      if (sqlite3_prepare_v2(imp->db, "PRAGMA user_version;", -1, &st, nullptr) == SQLITE_OK &&
+          sqlite3_step(st) == SQLITE_ROW)
+        header_ver = sqlite3_column_int(st, 0);
+      sqlite3_finalize(st);
+    }
+
+    // since older wake.db files may not have the header set, we need to check the legacy table,
+    // to differentiate between a brand-new DB and an old one.
+    // TODO: remove this check once most wake.db instances have the newer version.
+    int legacy_ver = 0;
+    if (header_ver == 0) {
+      sqlite3_stmt *st = nullptr;
+      const char *q = "SELECT max(version) FROM schema;";
+      int rc = sqlite3_prepare_v2(imp->db, q, -1, &st, nullptr);
+
+      if (rc == SQLITE_OK) {
+        rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW) legacy_ver = sqlite3_column_int(st, 0);
+      }
+
+      sqlite3_finalize(st);
+
+      if (rc == SQLITE_BUSY) {
+        close_db(imp.get());
+        if (!wait) return "Database wake.db is busy.";
+        if (tty) {
+          if (waiting)
+            std::cerr << '.';
+          else {
+            waiting = true;
+            std::cerr << "Database wake.db is busy; waiting .";
+          }
+        }
+        sleep(1);
+        continue;
+      }
+    }
+
+    int db_ver = header_ver ? header_ver : legacy_ver;
+
+    if (db_ver && db_ver != atoi(SCHEMA_VERSION)) {
+      close_db(imp.get());
+      return db_ver > atoi(SCHEMA_VERSION)
+                 ? "wake.db was created by a newer version of Wake; please upgrade Wake."
+                 : "wake.db was created by an older version of Wake; please remove it.";
+    }
+
+    char *fail = nullptr;
     ret = sqlite3_exec(imp->db, schema_sql, 0, 0, &fail);
     if (ret == SQLITE_OK) {
       if (waiting) {
         std::cerr << std::endl;
       }
+
+      // stamp the PRAGMA user_version
+      {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "PRAGMA user_version=%d;", atoi(SCHEMA_VERSION));
+        sqlite3_exec(imp->db, buf, nullptr, nullptr, nullptr);
+      }
+
       // Use an empty entropy table as a proxy for a new database (it gets filled automatically)
       const char *get_version =
           "select (select count(row_id) from entropy), (select max(version) from schema);";
       const char *set_version = "insert or ignore into schema(version) values(" SCHEMA_VERSION ");";
+
+      // TODO: remove this older check once most wake.db instances have migrated to newer versions.
       ret = sqlite3_exec(imp->db, get_version, &schema_cb, 0, 0);
       if (ret == SQLITE_OK) {
         sqlite3_exec(imp->db, set_version, 0, 0, 0);
         break;
       } else {
         close_db(imp.get());
-        return "produced by an incompatible version of wake; remove it.";
+        return "produced by an incompatible version of wake; please remove it.";
       }
     }
 
@@ -303,7 +364,8 @@ std::string Database::open(bool wait, bool memory, bool tty) {
       if (waiting) {
         std::cerr << std::endl;
       }
-      return out;
+      return "Could not apply schema version " + std::string(SCHEMA_VERSION) +
+             " to the wake.db. Please remove the wake.db and try again: " + out;
     } else {
       if (tty) {
         if (waiting) {
