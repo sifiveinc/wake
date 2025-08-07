@@ -164,10 +164,6 @@ int main(int argc, char **argv) {
   while (stdout_fd <= 2 && stdout_fd != 1) stdout_fd = dup(stdout_fd);
   while (stderr_fd <= 2 && stderr_fd != 2) stderr_fd = dup(stderr_fd);
 
-  // Ensure runner output and error file descriptors are above 2
-  while (runner_out_fd <= 2) runner_out_fd = dup(runner_out_fd);
-  while (runner_err_fd <= 2) runner_err_fd = dup(runner_err_fd);
-
   if (stdin_fd != 0) {
     dup2(stdin_fd, 0);
     close(stdin_fd);
@@ -183,14 +179,31 @@ int main(int argc, char **argv) {
     close(stderr_fd);
   }
 
-  // Set up runner output and error to use file descriptors 3 and 4
-  if (runner_out_fd != 3) {
-    dup2(runner_out_fd, 3);
-    close(runner_out_fd);
+  bool allow_runner_streams = false;
+
+  const char *env_override = getenv("WAKE_ALLOW_RUNNER_STREAMS");
+  if (env_override && strcmp(env_override, "1") == 0) {
+    allow_runner_streams = true;
   }
 
-  if (runner_err_fd != 4) {
-    dup2(runner_err_fd, 4);
+  // Only set up runner streams if allowed, otherwise close them
+  if (allow_runner_streams) {
+    // Ensure runner output and error file descriptors are above 2
+    while (runner_out_fd <= 2) runner_out_fd = dup(runner_out_fd);
+    while (runner_err_fd <= 2) runner_err_fd = dup(runner_err_fd);
+
+    // Set up runner output and error to use file descriptors 3 and 4
+    if (runner_out_fd != 3) {
+      dup2(runner_out_fd, 3);
+      close(runner_out_fd);
+    }
+
+    if (runner_err_fd != 4) {
+      dup2(runner_err_fd, 4);
+      close(runner_err_fd);
+    }
+  } else {
+    close(runner_out_fd);
     close(runner_err_fd);
   }
 
@@ -208,7 +221,9 @@ int main(int argc, char **argv) {
     }
     if (entry->name == "." || entry->name == "..") continue;
     int fd = std::stoi(entry->name);
-    if (fd <= 4) continue;  // Keep stdin, stdout, stderr, runner_out, runner_err
+    int max_fd_to_keep = allow_runner_streams ? 4 : 2;
+    if (fd <= max_fd_to_keep)
+      continue;  // Keep stdin, stdout, stderr, and optionally runner streams
     // Otherwise close the fd
     fds_to_close.push_back(fd);
   }
