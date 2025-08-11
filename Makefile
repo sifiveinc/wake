@@ -46,7 +46,7 @@ clean:
 	rm -rf .build/* bin/* lib/wake/* */*.o */*/*.o src/json/jlexer.cpp src/parser/lexer.cpp src/parser/parser.cpp src/parser/parser.h src/version.h wake.db
 	touch bin/stamp lib/wake/stamp
 
-wake.db:	bin/wake bin/wakebox lib/wake/fuse-waked lib/wake/shim-wake lib/wake/wake-hash
+wake.db:	bin/wake bin/wakebox lib/wake/fuse-waked lib/wake/shim-wake lib/wake/wake-hash bin/wake-migrate
 	test -f $@ || ./bin/wake --init .
 
 install:	all
@@ -109,6 +109,9 @@ lib/wake/shim-wake:	tools/shim-wake/main.o vendor/blake2/blake2b-ref.o src/wcl/f
 
 lib/wake/wake-hash: tools/wake-hash/main.o vendor/blake2/blake2b-ref.o $(COMMON_OBJS)
 	$(CXX) $(CFLAGS) -o $@ $^ $(LOCAL_CFLAGS) $(CXX_VERSION) $(LDFLAGS) $(CORE_LDFLAGS)
+
+bin/wake-migrate: tools/wake-migrate/main.o $(COMMON_OBJS)
+	$(CXX) $(CFLAGS) -o $@ $^ $(LOCAL_CFLAGS) $(CXX_VERSION) $(LDFLAGS) $(CORE_LDFLAGS) -lsqlite3
 
 %.o:	%.cpp	$(filter-out src/parser/parser.h,$(wildcard */*/*.h)) | src/parser/parser.h
 	$(CXX) $(CFLAGS) $(LOCAL_CFLAGS) $(CORE_CFLAGS) $(CXX_VERSION) -o $@ -c $<
