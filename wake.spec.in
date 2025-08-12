@@ -37,6 +37,7 @@ mkdir -p %{buildroot}/var/cache/wake
 /usr/bin/wake-rsc-migration
 /usr/bin/wake-rsc-tool
 /usr/bin/wake-format
+/usr/bin/wake-migrate
 /usr/bin/job-cache
 /usr/lib/wake
 /usr/share/wake

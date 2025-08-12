@@ -98,6 +98,7 @@ def targets =
     buildBSP,
     (bootstrapTarget buildLSP),
     buildWakeFormat,
+    buildWakeMigrate,
     (bootstrapTarget buildJobCache),
     Nil
 

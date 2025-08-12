@@ -58,6 +58,7 @@ tools/tools.wake
 tools/wakebox/wakebox.wake
 tools/wake-format/wake-format.wake
 tools/wake-hash/hash.wake
+tools/wake-migrate/wake-migrate.wake
 tools/wake-unit/wake-unit.wake
 tools/wake/wake.wake
 vendor/blake2/blake2.wake
