@@ -161,7 +161,23 @@ static bool resolve_autofs_mounts(const std::vector<mount_op> &mount_ops) {
   // Sort by path depth as we want parent paths resolved first for nested autofs situations
   std::sort(autofs_paths.begin(), autofs_paths.end(),
             [](const std::string &a, const std::string &b) {
-              return std::count(a.begin(), a.end(), '/') < std::count(b.begin(), b.end(), '/');
+              auto count_directories = [](const std::string &path) {
+                if (path.empty() || path == "/") return 0;
+
+                std::vector<std::string> directories;
+                std::stringstream ss(path);
+                std::string directory;
+
+                while (std::getline(ss, directory, '/')) {
+                  if (!directory.empty()) {  // Skip slashes
+                    directories.push_back(directory);
+                  }
+                }
+
+                return static_cast<int>(directories.size());
+              };
+
+              return count_directories(a) < count_directories(b);
             });
 
   for (const auto &path : autofs_paths) {
