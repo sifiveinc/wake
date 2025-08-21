@@ -327,6 +327,12 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
 
   int res = fstatat(context.rootfd, key.second.c_str(), stbuf, AT_SYMLINK_NOFOLLOW);
   if (res == -1) res = -errno;
+
+  // If file is only visible (not writeable), remove write permissions from the reported mode
+  if (!it->second.is_writeable(key.second)) {
+    stbuf->st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
+  }
+
   return res;
 }
 
