@@ -51,8 +51,8 @@ daemon_client::daemon_client(const std::string &base_dir)
       subdir_live_file(mount_path + "/.l." + std::to_string(getpid())),
       visibles_path(mount_path + "/.i." + std::to_string(getpid())) {}
 
-// The arg 'visible' is destroyed/moved in the interest of performance with large visible lists.
-bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_file) {
+// The args 'visible' and 'modifiable' are destroyed/moved in the interest of performance with large lists.
+bool daemon_client::connect(std::vector<std::string> &visible, std::vector<std::string> &modifiable, bool close_live_file) {
   int err = mkdir_with_parents(mount_path, 0775);
   if (0 != err) {
     std::cerr << "mkdir_with_parents ('" << mount_path << "'):" << strerror(err) << std::endl;
@@ -115,10 +115,12 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
   // We can safely release the global handle now that we hold a live_fd
   (void)close(ffd);
 
-  // The fuse-waked process takes an input file containing visible files, json formatted.
+  // The fuse-waked process takes an input file containing visible and modifiable files, json formatted.
   JAST for_daemon(JSON_OBJECT);
   auto &vis = for_daemon.add("visible", JSON_ARRAY);
   for (auto &s : visible) vis.add(std::move(s));
+  auto &mod = for_daemon.add("modifiable", JSON_ARRAY);
+  for (auto &s : modifiable) mod.add(std::move(s));
 
   std::ofstream ijson(visibles_path);
   ijson << for_daemon;
