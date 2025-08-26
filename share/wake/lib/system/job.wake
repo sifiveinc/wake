@@ -171,7 +171,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             | getOrElse uusage
 
         def output =
-            run job (Pass (RunnerInput label cmd vis env dir stdin res prefix usage isatty finputs foutputs))
+            run job (Pass (RunnerInput label cmd vis Nil env dir stdin res prefix usage isatty finputs foutputs))
 
         def final _ = match output
             Fail e -> primJobFailFinish job e

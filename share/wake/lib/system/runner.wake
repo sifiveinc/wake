@@ -37,6 +37,11 @@ export tuple RunnerInput =
     export Label: String
     export Command: List String
     export Visible: List Path
+    # Files which the Runner exposes to the Job as additional inputs, but which may be modified as
+    # needed.  These *must not* have any effect on the output files (i.e. for the same inputs, the
+    # output must be identical whether or not these files were given, and regardless of their
+    # contents), but they *can* have an effect on the process by which those outputs are created.
+    export Modifiable: List String
     export Environment: List String
     export Directory: String
     export Stdin: String
@@ -122,7 +127,7 @@ export def makeRunner (name: String) (run: Job => RunnerInput => Result RunnerOu
 # You must use Fn{Inputs,Outputs} to fill in this information for wake to maintain safety and reusability
 # Advanced usage only, proceed with caution
 export def localRunner: Runner =
-    def run (job: Job) ((RunnerInput _ cmd vis env dir stdin _ _ predict isAtty fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
+    def run (job: Job) ((RunnerInput _ cmd vis _ env dir stdin _ _ predict isAtty fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
         def jobKey = JobKey dir stdin env.implode cmd.implode 0 "" isAtty.booleanToInteger
         def _ = primJobLaunch job jobKey predict
 
@@ -151,7 +156,7 @@ export def localRunner: Runner =
 #
 # This runner is useful for tracking a unit of work that is job like but not launched as a process
 export def virtualRunner: Runner =
-    def run (job: Job) ((RunnerInput _ _ vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
+    def run (job: Job) ((RunnerInput _ _ vis _ _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
         def _ = primJobVirtual job "" "" predict
 
         def fileInputs =
@@ -241,7 +246,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
     def script = which (simplify rawScript)
     def executeOk = access script xOK
 
-    def run (job: Job) ((RunnerInput label command visible environment directory stdin res prefix record isatty fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
+    def run (job: Job) ((RunnerInput label command visible modifiable environment directory stdin res prefix record isatty fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
         require True = executeOk
         else markJobSetupFailure job "Runner {script} is not executable".makeError
 
@@ -253,6 +258,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                 "command" :-> command | map JString | JArray,
                 "environment" :-> environment | map JString | JArray,
                 "visible" :-> visible | map (_.getPathName.JString) | JArray,
+                "modifiable" :-> modifiable | map JString | JArray,
                 "directory" :-> JString directory,
                 "stdin" :-> JString stdin,
                 "resources" :-> res | map JString | JArray,
@@ -289,6 +295,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             RunnerInput
             label
             cmd
+            Nil
             Nil
             (extraEnv ++ environment)
             "."
