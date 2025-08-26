@@ -5,10 +5,15 @@ In order to create a new test, you need three things:
 
 All of these files must be `git add`-ed.
 
-Your shell script will be provided with the name of the wake executable to
-test as its only option. It is helpful to default to just 'wake' for that
+Your shell script will be provided with the path containing the wake executable
+to test as its only option. It is helpful to default to just 'wake' for that
 option so that the test can be run individually from the command-line.
-This can be achieved by invoking wake with `"${1:-wake}"`.
+This can be achieved by setting up the wake path to include the parameter:
+```bash
+WAKE="${1:+$1/wake}"
+WAKE="${WAKE:-wake}"
+```
+...then invoke wake with `"$WAKE"`.
 
 To pass:
   - `pass.sh` scripts are expected to exit with 0

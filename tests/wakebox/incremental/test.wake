@@ -1,0 +1,48 @@
+package incremental_runner
+
+from wake import _
+
+publish source =
+    ("Makefile", "impl.h", "impl.c", "main.h", "main.c", Nil)
+    | map ("{@here}/{_}")
+
+export def test (_args: List String) =
+    require Pass makeFile = source "{@here}/Makefile"
+    require Pass sourceFiles = sources @here `.*\.[hc]`
+
+    def job =
+        makePlan "Test incremental compilation" (makeFile, sourceFiles) "ls -l ; make"
+        | setPlanDirectory @here
+        | setPlanPersistence ReRun
+        | setPlanEcho logReport
+        | setPlanStdout logReport
+        | runJobWith incrementalCRunner
+
+    require True = isJobOk job
+    else failWithError "Job failed"
+
+    Pass Unit
+
+export def incrementalCRunner: Runner =
+    def run (job: Job) (input: RunnerInput): Result RunnerOutput Error =
+        def oFiles = files input.getRunnerInputDirectory `.*\.o`
+
+        require Pass oPaths =
+            map claim oFiles
+            | findFail
+
+        def fnInputs = oFiles ++ _
+        def fnOutputs = filter (! matches `.*\.o` _)
+
+        def incrementalInput =
+            input
+            | editRunnerInputVisible (oPaths ++ _)
+            | editRunnerInputFnInputs (\fn \is fnInputs (fn is))
+
+        def (Runner _ defaultRun) = defaultRunner
+
+        defaultRun job (Pass incrementalInput)
+        |< editRunnerOutputInputs fnOutputs
+        |< editRunnerOutputOutputs fnOutputs
+
+    makeRunner "incrementalRunner" run
