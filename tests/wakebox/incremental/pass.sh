@@ -15,8 +15,7 @@ cleanup() {
     if [[ -f main.c.orig ]]; then
         mv main.c.orig main.c
     fi
-    # TODO: This should use `wake --clean`, but a quick test doesn't seem to remove anything.
-    rm -f impl.o main.o hello
+    "$WAKE" --clean
 }
 cleanup
 
