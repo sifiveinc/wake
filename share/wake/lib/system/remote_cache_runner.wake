@@ -38,7 +38,7 @@ export target rscRunner (rscApi: RemoteCacheApi): Runner =
 export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => Result String Error) (wakeroot: String) ((Runner name baseDoIt): Runner): Runner =
     def runJobAndUpload job input hashKey =
         # Run the job to get the results
-        require Pass output = baseDoIt job (Pass input)
+        require Pass output = baseDoIt job input
 
         # Don't cache failing jobs
         require True = output.getRunnerOutputUsage.getUsageStatus == 0
@@ -276,7 +276,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
 
             # This job isn't getting cached. That's probably preferable since the server
             # request failed but good to keep in mind.
-            baseDoIt job (Pass input)
+            baseDoIt job input
 
         # If a valid response is received from the server then handle it
         def cacheLookupSucceeded response = match response
@@ -296,7 +296,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
                 Pass x -> Pass x
                 # Otherwise if hydration fails for any reason just run the job as normal.
                 # There is no point in attempting to push since the server just said its cached
-                Fail _ -> baseDoIt job (Pass input)
+                Fail _ -> baseDoIt job input
 
         # Search the remote cache for the job
         match (rscApi | rscApiFindMatchingJob (mkSearchRequest input hashKey))

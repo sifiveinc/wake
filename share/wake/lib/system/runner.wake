@@ -94,7 +94,7 @@ export tuple RunnerOutput =
 # A Runner describes a way to invoke a Plan to get a Job
 export tuple Runner =
     export Name: String
-    Fn: Job => Result RunnerInput Error => Result RunnerOutput Error
+    Fn: Job => RunnerInput => Result RunnerOutput Error
 
 # makeRunner: Hides some of the boiler plate required to create a runner
 #
@@ -108,14 +108,7 @@ export tuple Runner =
 #
 # localRunner is a good reference implementation of the run function.
 export def makeRunner (name: String) (run: Job => RunnerInput => Result RunnerOutput Error): Runner =
-    def do job maybeInput = match maybeInput
-        Fail e ->
-            def _ = primJobFailLaunch job e
-
-            Fail e
-        Pass input -> run job input
-
-    Runner name do
+    Runner name run
 
 # localRunner: A runner that provides no sandboxing protections and no file tracking.
 #
@@ -303,7 +296,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         # Dispatch to the local runner via composition and get the outputs
         def (Runner _ localRun) = localRunner
 
-        require Pass localOutput = localRun job (Pass localInput)
+        require Pass localOutput = localRun job localInput
 
         def statusCode = localOutput.getRunnerOutputUsage.getUsageStatus
         def runnerStatus = localOutput.getRunnerOutputRunnerStatus
