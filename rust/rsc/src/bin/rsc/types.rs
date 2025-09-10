@@ -253,7 +253,6 @@ pub enum ReadJobResponse {
         output_files: Vec<ResolvedBlobFile>,
         stdout_blob: ResolvedBlob,
         stderr_blob: ResolvedBlob,
-        content_hash: String,
         status: i32,
         runtime: f64,
         cputime: f64,
