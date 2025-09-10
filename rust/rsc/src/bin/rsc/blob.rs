@@ -39,6 +39,7 @@ pub async fn create_blob(
     dbonly_store: Arc<dyn DebugBlobStore + Send + Sync>,
 ) -> (StatusCode, Json<PostBlobResponse>) {
     let mut parts: Vec<PostBlobResponsePart> = Vec::new();
+    let mut content_hash: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = match field.name() {
@@ -53,8 +54,26 @@ pub async fn create_blob(
             }
         };
 
-        // If the client tells us the blob is small we'll trust them and just store it directly in
-        // the database.
+        // Save the content hash of the blob
+        if name == "content_hash" {
+            match field.text().await {
+                Ok(hash) => {
+                    content_hash = Some(hash);
+                    continue;
+                }
+                Err(err) => {
+                    tracing::error!(%err, "Failed to read content_hash field");
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(PostBlobResponse::Error {
+                            message: "Invalid content_hash field".into(),
+                        }),
+                    );
+                }
+            }
+        }
+
+        // Process blob data fields
         let store = match field.content_type() {
             Some("blob/small") => dbonly_store.clone(),
             _ => active_store.clone(),
@@ -86,6 +105,7 @@ pub async fn create_blob(
             key: Set(blob_key),
             size: Set(blob_size),
             store_id: Set(store.id()),
+            content_hash: Set(content_hash.clone().unwrap_or_default()),
         };
 
         match database::upsert_blob(db.as_ref(), active_blob).await {
@@ -98,7 +118,11 @@ pub async fn create_blob(
                     }),
                 );
             }
-            Ok(id) => parts.push(PostBlobResponsePart { id, name }),
+            Ok(id) => parts.push(PostBlobResponsePart {
+                id,
+                name,
+                content_hash: content_hash.clone().unwrap_or_default(),
+            }),
         }
     }
 

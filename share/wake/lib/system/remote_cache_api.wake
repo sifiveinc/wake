@@ -63,8 +63,10 @@ tuple CacheSearchRequest =
 tuple CacheSearchBlob =
     # The id of the blob on the remote server
     Id: String
-    # The uri where the blob may be downloaded from. Not guaranteed to be http/https
+    # The uri where the blob may be downloaded from
     Uri: String
+    # The content hash of the blob used for verification
+    ContentHash: String
 
 # A file backed by a blob that a cached job created
 tuple CacheSearchOutputFile =
@@ -343,8 +345,9 @@ export def rscApiPostStringBlob (name: String) (value: String) (api: RemoteCache
     def contentType = contentTypeFromSize value.strlen
 
     require Pass temp = writeTempFile name value
+    def fileHash = temp.getPathHash
 
-    uploadBlobRequest api (addFormData name temp contentType)
+    uploadBlobRequest api (addFormDataWithHash name temp.getPathName contentType fileHash)
 
 # rscApiPostFileBlob: Posts a named file on disk to the remote server defined by *api*
 #                     then returns the id associated to the blob. Requires authorization.
@@ -363,7 +366,10 @@ export def rscApiPostFileBlob (name: String) (file: String) (api: RemoteCacheApi
         Pass (Stat _ _ size) -> contentTypeFromSize size
         Fail _ -> None
 
-    uploadBlobRequest api (unsafe_addFormData name file contentType)
+    # retrieve the hash of the file being uploaded
+    require Pass fileHash = rsciHashFile file
+
+    uploadBlobRequest api (addFormDataWithHash name file contentType fileHash)
 
 # rscApiPostJob: Posts a job defined by *req* to the remote cache server. Requires authorization.
 #
@@ -626,22 +632,28 @@ def resolveUriResponse (dbSchemeFn: (String => String => Result a Error)) (fileS
 # ```
 #  rscApiGetStringBlob (RemoteCacheBlob "asdf" "https://...") = Pass "foo\nbar\nbat"
 # ```
-export def rscApiGetStringBlob ((CacheSearchBlob _ uri): CacheSearchBlob): Result String Error =
+export def rscApiGetStringBlob ((CacheSearchBlob blobId uri contentHash): CacheSearchBlob): Result String Error =
     def resolveStringFileScheme scheme path =
         buildHttpRequest "{scheme}://{path}"
         | setMethod HttpMethodGet
         | makeRequest
         |< getHttpResponseBody
 
-    uri
-    | resolveUriResponse resolveDbScheme resolveStringFileScheme
+    require Pass content = uri | resolveUriResponse resolveDbScheme resolveStringFileScheme
+
+    # Verify content hash if provided
+    def actualHash = hashString content
+    require True = actualHash ==* contentHash
+    else failWithError "rsc: Hash mismatch for blob {blobId}. Expected: {contentHash}, Got: {actualHash}"
+
+    Pass content
 
 # rscApiGetFileBlob: Downloads a blob to *path* with *mode* permisssions and return *path*
 #
 # ```
 #  rscApiGetFileBlob (RemoteCacheBlob "asdf" "https://...") "foo/bar" 0644 = Pass "foo/bar"
 # ```
-export def rscApiGetFileBlob ((CacheSearchBlob blobId uri): CacheSearchBlob) (path: String) (mode: Integer): Result String Error =
+export def rscApiGetFileBlob ((CacheSearchBlob blobId uri contentHash): CacheSearchBlob) (path: String) (mode: Integer): Result String Error =
     def resolveDbSchemeToFile scheme path =
         resolveDbScheme scheme path
         |> writeTempFile "rsc.output_file.blob.{blobId}"
@@ -652,6 +664,11 @@ export def rscApiGetFileBlob ((CacheSearchBlob blobId uri): CacheSearchBlob) (pa
         | makeBinaryRequest
 
     require Pass blobPath = (uri | resolveUriResponse resolveDbSchemeToFile resolveBlobFileScheme)
+
+    # Verify content hash if provided
+    require Pass actualHash = rsciHashFile blobPath.getPathName
+    require True = actualHash ==* contentHash
+    else failWithError "rsc: Hash mismatch for blob {blobId}. Expected: {contentHash}, Got: {actualHash}"
 
     def fixupScript =
         """
@@ -832,6 +849,12 @@ def uploadBlobRequest (api: RemoteCacheApi) (setBlob: HttpRequest => HttpRequest
 
     Pass id
 
+# Helper to add form data with hash
+def addFormDataWithHash (name: String) (file: String) (contentType: Option String) (hash: String) (req: HttpRequest): HttpRequest =
+    req
+    | unsafe_addFormData name file contentType
+    | unsafe_addFormData "content_hash" hash None
+
 # Converts a CacheSearchRequest to JSON
 def getCacheSearchRequestJson (req: CacheSearchRequest): JValue =
     def (CacheSearchRequest _label cmd cwd env hiddenInfo isAtty stdin visibleFiles) = req
@@ -962,7 +985,10 @@ def mkCacheSearchResponse (json: JValue): Result CacheSearchResponse Error =
         require Pass (JString url) = jField v "url"
         else failWithError "rsc: JSON response has incorrect schema. '{v | format}' must have string key 'url'"
 
-        CacheSearchBlob id url
+        require Pass (JString contentHash) = jField v "content_hash"
+        else failWithError "rsc: JSON response has incorrect schema. '{v | format}' must have string key 'content_hash'"
+
+        CacheSearchBlob id url contentHash
         | Pass
 
     require Pass stdoutBlobF = jField json "stdout_blob"
@@ -1084,3 +1110,31 @@ def mkCacheSearchResponse (json: JValue): Result CacheSearchResponse Error =
     obytes
     | Match
     | Pass
+
+def hashUsage =
+    Usage 0 0.0 0.1 0 0 0
+
+# RSC version of computing hashes for files, similar to Hashcode target in path.wake
+def rsciHashFile (file: String): Result String Error =
+    def hashPlan cmd =
+        Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+
+    def hashJob =
+        hashPlan ("<hash>", file, Nil)
+        | setPlanLabel "rsc: compute hash for {file}"
+        | runJobWith localRunner
+        | setJobInspectVisibilityHidden
+
+    require True = hashJob.isJobOk
+    else failWithError "rsc: Failed to compute hash for file {file}"
+
+    require Pass stdout = hashJob.getJobStdout
+    else failWithError "rsc: Failed to get stdout for hash job"
+
+    def fileHash =
+        stdout
+        | extract `(.{64}).*`
+
+    match fileHash
+        (hash, Nil) -> Pass hash
+        _ -> failWithError "rsc: No hash found in output for file {file}"
