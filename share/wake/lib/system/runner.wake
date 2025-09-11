@@ -26,6 +26,8 @@ export tuple Usage =
     export InBytes: Integer
     export OutBytes: Integer
 
+export def emptyUsage = Usage 0 0.0 0.0 0 0 0
+
 export def getUsageThreads (Usage _ run cpu _ _ _: Usage): Double =
     if run ==. 0.0 then
         cpu
@@ -88,13 +90,12 @@ export tuple RunnerOutput =
     export CleanableOutputs: List String
     # The actual resource usage of the job that will be written to the database
     export Usage: Usage
-    # The runner status code (0 for success, non-zero for failure)
-    export RunnerStatus: Integer
+    export RunnerError: Option Error
 
 # A Runner describes a way to invoke a Plan to get a Job
 export tuple Runner =
     export Name: String
-    Fn: Job => RunnerInput => Result RunnerOutput Error
+    Fn: Job => RunnerInput => RunnerOutput
 
 # makeRunner: Hides some of the boiler plate required to create a runner
 #
@@ -107,7 +108,7 @@ export tuple Runner =
 # instead of accepting an arbitrary runner parameter.
 #
 # localRunner is a good reference implementation of the run function.
-export def makeRunner (name: String) (run: Job => RunnerInput => Result RunnerOutput Error): Runner =
+export def makeRunner (name: String) (run: Job => RunnerInput => RunnerOutput): Runner =
     Runner name run
 
 # localRunner: A runner that provides no sandboxing protections and no file tracking.
@@ -115,7 +116,7 @@ export def makeRunner (name: String) (run: Job => RunnerInput => Result RunnerOu
 # You must use Fn{Inputs,Outputs} to fill in this information for wake to maintain safety and reusability
 # Advanced usage only, proceed with caution
 export def localRunner: Runner =
-    def run (job: Job) ((RunnerInput _ cmd vis env dir stdin _ _ predict isAtty fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
+    def run (job: Job) ((RunnerInput _ cmd vis env dir stdin _ _ predict isAtty fnInputs fnOutputs): RunnerInput): RunnerOutput =
         def jobKey = JobKey dir stdin env.implode cmd.implode 0 "" isAtty.booleanToInteger
         def _ = primJobLaunch job jobKey predict
 
@@ -125,18 +126,17 @@ export def localRunner: Runner =
             | fnInputs
 
         # Wait for the job to complete before calling fnOutputs
-        require Pass reality = job.getJobReality
-
-        # Set the runner status to be a success - its the callers responsibility
-        # to set the appropriate status if the job that ran is an extension of a runner
-        def runnerStatus = 0
+        def Pair usage runnerError = match job.getJobReality
+            Fail err -> Pair emptyUsage (Some err)
+            # Set the runner status to be a success (`None`) - its the callers responsibility
+            # to set the appropriate status if the job that ran is an extension of a runner
+            Pass reality -> Pair reality None
 
         # Caller needs to fill this in from nothing
         def cleanable = Nil
         def fileOutputs = fnOutputs cleanable
 
-        RunnerOutput fileInputs fileOutputs cleanable reality runnerStatus
-        | Pass
+        RunnerOutput fileInputs fileOutputs cleanable usage runnerError
 
     makeRunner "local" run
 
@@ -144,7 +144,7 @@ export def localRunner: Runner =
 #
 # This runner is useful for tracking a unit of work that is job like but not launched as a process
 export def virtualRunner: Runner =
-    def run (job: Job) ((RunnerInput _ _ vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
+    def run (job: Job) ((RunnerInput _ _ vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
         def _ = primJobVirtual job "" "" predict
 
         def fileInputs =
@@ -153,17 +153,17 @@ export def virtualRunner: Runner =
             | fnInputs
 
         # Wait for the job to complete before calling fnOutputs
-        require Pass reality = job.getJobReality
-
-        def runnerStatus = 0
-        def _ = unsafe_primJobSetRunnerStatus job runnerStatus
+        def Pair usage runnerError = match job.getJobReality
+            Fail err -> Pair emptyUsage (Some err)
+            # Set the runner status to be a success (`None`) - its the callers responsibility
+            # to set the appropriate status if the job that ran is an extension of a runner
+            Pass reality -> Pair reality None
 
         # Caller needs to fill this in from nothing
         def cleanable = Nil
         def fileOutputs = fnOutputs cleanable
 
-        RunnerOutput fileInputs fileOutputs cleanable reality runnerStatus
-        | Pass
+        RunnerOutput fileInputs fileOutputs cleanable usage runnerError
 
     makeRunner "virtual" run
 
@@ -234,9 +234,13 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
     def script = which (simplify rawScript)
     def executeOk = access script xOK
 
-    def run (job: Job) ((RunnerInput label command visible environment directory stdin res prefix record isatty fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
+    def run (job: Job) ((RunnerInput label command visible environment directory stdin res prefix record isatty fnInputs fnOutputs): RunnerInput): RunnerOutput =
         require True = executeOk
-        else markJobSetupFailure job "Runner {script} is not executable".makeError
+        else
+            def runnerError = "Runner {script} is not executable".makeError
+            def _ = markJobSetupFailure job runnerError
+
+            RunnerOutput Nil Nil Nil emptyUsage (Some runnerError)
 
         def Usage status runtime cputime membytes inbytes outbytes = record
 
@@ -269,10 +273,13 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         def specFile = "{buildDirName}/spec-{prefix}.json"
         def resultFile = "{buildDirName}/result-{prefix}.json"
 
-        require Pass _ =
+        def writeResult =
             write specFile (prettyJSON json)
             | addErrorContext "Failed to 'write {specFile}: '"
             | rmapFail (markJobSetupFailure job)
+
+        require Pass _ = writeResult
+        else RunnerOutput Nil Nil Nil emptyUsage writeResult.getFail
 
         def cmd = script, "-I", "-p", specFile, "-o", resultFile, extraArgs
 
@@ -295,18 +302,20 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
 
         # Dispatch to the local runner via composition and get the outputs
         def (Runner _ localRun) = localRunner
-
-        require Pass localOutput = localRun job localInput
-
+        def localOutput = localRun job localInput
         def statusCode = localOutput.getRunnerOutputUsage.getUsageStatus
-        def runnerStatus = localOutput.getRunnerOutputRunnerStatus
 
+        # The `localRunner` output reflects the status of the runner itself, not the job, and so we
+        # need to save that separately and extract the job status from the result file.
         require 0 = statusCode
-        else failWithError "Non-zero exit status ({str statusCode}) for JSON runner {script} on {specFile}"
+        else
+            Some "Non-zero exit status ({str statusCode}) for JSON runner on {specFile}".makeError
+            | RunnerOutput Nil Nil (specFile, Nil) emptyUsage
 
         require Pass content = parseJSONFile (Path resultFile "BadHash")
-
-        def _ = markFileCleanable resultFile
+        else
+            Some "Failed to parse output {resultFile} for JSON runner".makeError
+            | RunnerOutput Nil Nil (specFile, Nil) emptyUsage
 
         def field name = match _ _
             _ (Fail f) -> Fail f
@@ -334,10 +343,12 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         def jsonOutputs = getK `outputs`
         def filteredInputs = fnInputs jsonInputs
         def filteredOutputs = fnOutputs jsonOutputs
+        def cleanableOutputs = specFile, resultFile, jsonOutputs
 
         match usageResult
-            Fail f -> Fail (makeError f)
-            Pass usage ->
-                Pass (RunnerOutput filteredInputs filteredOutputs jsonOutputs usage runnerStatus)
+            Pass usage -> RunnerOutput filteredInputs filteredOutputs cleanableOutputs usage None
+            Fail msg ->
+                Some msg.makeError
+                | RunnerOutput filteredInputs filteredOutputs cleanableOutputs emptyUsage
 
     makeRunner "json-{script}" run

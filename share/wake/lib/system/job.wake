@@ -170,12 +170,12 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             getJobRecord job
             | getOrElse uusage
 
-        def output =
+        def RunnerOutput inputs outputs cleanable reality runnerError =
             run job (RunnerInput label cmd vis env dir stdin res prefix usage isatty finputs foutputs)
 
-        def final _ = match output
-            Fail e -> primJobFailFinish job e
-            Pass (RunnerOutput inputs outputs cleanable reality _) ->
+        def final _ = match runnerError
+            Some e -> primJobFailFinish job e
+            None ->
                 def hashedOutputs =
                     outputs
                     | computeHashes prefix

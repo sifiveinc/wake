@@ -24,9 +24,9 @@ export def testDisablingCacheWithEndpoints (api: RemoteCacheApi): Result Unit Er
 
     def testJobAllowed Unit: Result Unit Error =
         def input =
-            RunnerInput "test" Nil Nil Nil "." "" Nil "" (Usage 0 0.0 0.0 0 0 0) False (\x x) (\x x)
+            RunnerInput "test" Nil Nil Nil "." "" Nil "" emptyUsage False (\x x) (\x x)
 
-        def output = RunnerOutput Nil Nil Nil (Usage 0 0.0 0.0 0 0 0) 0
+        def output = RunnerOutput Nil Nil Nil emptyUsage None
         def req = mkCacheAllowedRequest input output "test-hash"
 
         require Pass _ = rscApiCheckJobAllowed req api

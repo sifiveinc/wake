@@ -4,13 +4,13 @@
 export def testRunnerFailSuccess _: Result Unit Error =
     def run job input =
         def (Runner _ virtRun) = virtualRunner
-        require Pass result = virtRun job input
+        def result = virtRun job input
 
         # Report a runner error after the job completes
         def _ = unsafe_reportJobRunnerError job "Intentional runner error for testing"
         def _ = unsafe_primJobSetRunnerStatus job 1
 
-        Pass result
+        result
 
     def testRunner = makeRunner "test-runner-fail-success" run
 
@@ -36,7 +36,7 @@ export def testRunnerFailSuccess _: Result Unit Error =
     addErrorContext "runner-fail-success" check
 
 # Test that a runner preserves job failure status when both job and runner fail
-export def testRunnerFailWithJobFailure _ =
+export def testRunnerFailWithJobFailure _: Result Unit Error =
     def run job input =
         # Run a command that will fail with exit code 42
         def failingInput =
@@ -44,12 +44,12 @@ export def testRunnerFailWithJobFailure _ =
             | editRunnerInputCommand (\_ ("sh", "-c", "exit 42", Nil))
 
         def (Runner _ baseRun) = localRunner
-        require Pass result = baseRun job failingInput
+        def result = baseRun job failingInput
 
         # Report a runner error after the job completes
         def _ = unsafe_reportJobRunnerError job "Intentional runner error with job failure"
 
-        Pass result
+        result
 
     def testRunner = makeRunner "test-runner-fail-with-job-failure" run
 
@@ -78,17 +78,17 @@ export def testRunnerFailWithJobFailure _ =
     addErrorContext "runner-fail-with-job-failure" check
 
 # Test that RunnerOutput correctly includes and propagates runner status
-export def testRunnerOutputStatus _ =
+export def testRunnerOutputStatus _: Result Unit Error =
     # Create a custom runner that sets a specific runner status
     def run job input =
         def (Runner _ virtRun) = virtualRunner
-        require Pass result = virtRun job input
+        def result = virtRun job input
 
         # Set a specific runner status
         def customStatus = 123
         def _ = unsafe_primJobSetRunnerStatus job customStatus
 
-        Pass result
+        result
 
     def testRunner = makeRunner "test-runner-output-status" run
 
@@ -107,13 +107,14 @@ export def testRunnerOutputStatus _ =
     addErrorContext "runner-output-status" check
 
 # Test that a runner can finish a job but mark it as failed
-export def testRunnerFailFinish _ =
+export def testRunnerFailFinish _: Result Unit Error =
     def run job input =
         def (Runner _ virtRun) = virtualRunner
-        require Pass _ = virtRun job input
+        def result = virtRun job input
 
         # Force a failure outside of the actual job
-        failWithError "Mark job as failure"
+        result
+        | setRunnerOutputRunnerError (Some "Mark job as failure".makeError)
 
     def testRunner = makeRunner "test-runner-fail-finish" run
 
@@ -131,7 +132,7 @@ export def testRunnerFailFinish _ =
     addErrorContext "runner-fail-finish" check
 
 # Test that isJobOk returns true when there's no runner error
-export def testRunnerOkSuccess _ =
+export def testRunnerOkSuccess _: Result Unit Error =
     def job =
         makeExecPlan ("echo", "success", Nil) Nil
         | runJobWith localRunner
@@ -155,7 +156,7 @@ export def testWrapperRunnerStatus _: Result Unit Error =
     # Create an inner runner that sets a runner error and status
     def innerRun job input =
         def (Runner _ virtRun) = virtualRunner
-        require Pass result = virtRun job input
+        def result = virtRun job input
 
         # Set a runner error
         def _ = unsafe_reportJobRunnerError job "Inner runner error\n"
@@ -164,7 +165,7 @@ export def testWrapperRunnerStatus _: Result Unit Error =
         def customStatus = 42
         def _ = unsafe_primJobSetRunnerStatus job customStatus
 
-        Pass result
+        result
 
     def innerRunner = makeRunner "inner-runner" innerRun
 
@@ -173,7 +174,7 @@ export def testWrapperRunnerStatus _: Result Unit Error =
         # First run the job with the inner runner
         def innerInput = input
         def (Runner _ innerDoIt) = innerRunner
-        require Pass result = innerDoIt job innerInput
+        def result = innerDoIt job innerInput
 
         match (unsafe_getJobRunnerError job)
             Pass errorMsg if errorMsg !=* "" ->
@@ -182,9 +183,9 @@ export def testWrapperRunnerStatus _: Result Unit Error =
                 def _ = unsafe_reportJobRunnerError job newErrorMsg
 
                 # Keep the same runner status (should be 42 from inner runner)
-                Pass result
+                result
             _ ->
-                Pass result
+                result
 
     def wrapperRunner = makeRunner "wrapper-runner" wrapperRun
 
@@ -273,11 +274,11 @@ export def testRunnerCustomOutput _: Result Unit Error =
     # Create a custom runner that reports output information
     def run job input =
         def (Runner _ virtRun) = virtualRunner
-        require Pass result = virtRun job input
+        def result = virtRun job input
 
         def _ = unsafe_reportJobRunnerOutput job "Custom runner information: test data"
 
-        Pass result
+        result
 
     def testRunner = makeRunner "test-runner-custom-output" run
 
