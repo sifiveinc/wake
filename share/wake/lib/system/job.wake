@@ -436,7 +436,7 @@ export def unsafe_reportJobRunnerError (job: Job) (error: String): Job =
 # this out-of-band mechanism for both Wake related reporting as well as for runner scripts that are considered to
 # be an extension of the runner. A job's runner status is default set to be 0.
 def unsafe_primJobSetRunnerStatus (job: Job) (status: Option Error): Unit = match status
-    None -> Unit
+    None -> (\_ prim "job_clear_runner_status") job
     # Just pass in the String, since the database isn't going to store the stack trace anyway.
     Some err -> (\_ \_ prim "job_set_runner_status") job err.getErrorCause
 
@@ -449,7 +449,7 @@ export def unsafe_getJobRunnerStatus (job: Job): Result (Option String) Error =
     def raw job = prim "job_runner_status"
 
     raw job
-    | rmap (\status if status ==* "" then None else Some status)
+    | rmap getFail
 
 export def getJobInputs (job: Job): Result (List Path) Error =
     tree job 1

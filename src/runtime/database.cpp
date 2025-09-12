@@ -1589,32 +1589,37 @@ std::vector<JobReflection> Database::matching(
   return out;
 }
 
-void Database::set_runner_status(long job_id, const std::string& status) {
+void Database::set_runner_status(long job_id) {
   const char *why = "Could not set runner status";
-  if (status.empty()) {
-    // Bind NULL for empty string (success case)
-    int ret = sqlite3_bind_null(imp->set_runner_status, 1);
-    if (ret != SQLITE_OK) {
-      std::cerr << why << "; sqlite3_bind_null(1): " << sqlite3_errmsg(sqlite3_db_handle(imp->set_runner_status)) << std::endl;
-      exit(1);
-    }
-  } else {
-    bind_string(why, imp->set_runner_status, 1, status);
+  // Explicitly bind NULL (successful runner case)
+  int ret = sqlite3_bind_null(imp->set_runner_status, 1);
+  if (ret != SQLITE_OK) {
+    std::cerr << why << "; sqlite3_bind_null(1): " << sqlite3_errmsg(sqlite3_db_handle(imp->set_runner_status)) << std::endl;
+    exit(1);
   }
   bind_integer(why, imp->set_runner_status, 2, job_id);
   single_step(why, imp->set_runner_status, imp->debugdb);
 }
 
-std::string Database::get_runner_status(long job_id) {
-  std::string status;
+void Database::set_runner_status(long job_id, const std::string& status) {
+  const char *why = "Could not set runner status";
+  bind_string(why, imp->set_runner_status, 1, status);
+  bind_integer(why, imp->set_runner_status, 2, job_id);
+  single_step(why, imp->set_runner_status, imp->debugdb);
+}
+
+std::pair<bool, std::string> Database::get_runner_status(long job_id) {
   const char *why = "Could not get runner status";
   bind_integer(why, imp->get_runner_status, 1, job_id);
+  std::pair<bool, std::string> status{false, ""};
   if (sqlite3_step(imp->get_runner_status) == SQLITE_ROW) {
-    const char* text = reinterpret_cast<const char*>(sqlite3_column_text(imp->get_runner_status, 0));
-    if (text != nullptr) {
-      status = text;
+    if (SQLITE_NULL == sqlite3_column_type(imp->get_runner_status, 0)) {
+      // NULL in database - return false to indicate success (no error)
+      status = {false, ""};
+    } else {
+      // Non-NULL value (including empty string) - return true with the actual string
+      status = {true, rip_column(imp->get_runner_status, 0)};
     }
-    // If text is NULL, status remains empty string (success case)
   }
   finish_stmt(why, imp->get_runner_status, imp->debugdb);
   return status;

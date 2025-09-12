@@ -1,35 +1,33 @@
 # Test cases for runner functionality including runner output, runner errors, and runner status
 
-# Test that a runner can fail a job even if the command succeeds
+# Test that a runner failure depends only on the Some/None of the error, not a non-empty error message
 export def testRunnerFailWithEmptyError _: Result Unit Error =
     def run job input =
         def (Runner _ virtRun) = virtualRunner
         def result = virtRun job input
 
+        #def _ = unsafe_reportJobRunnerOutput job "Intentional runner error for testing"
+
         # Report a runner error after the job completes
         result
-        #| setRunnerOutputRunnerError (Some "".makeError)
+        | setRunnerOutputRunnerError (Some "".makeError)
 
-    def testRunner = makeRunner "test-runner-fail-success" run
+    def testRunner = makeRunner "test-runner-fail-empty-error" run
 
     def job =
-        makeExecPlan ("<test>", "runner-fail-success", Nil) Nil
+        makeExecPlan ("<test>", "runner-fail-empty-error", Nil) Nil
         | runJobWith testRunner
 
     def check =
-        #require False = job.isJobOk
-        #else failWithError "Expected isJobOk to return False for job with runner error"
-        require True = job.isJobOk
-        else failWithError "Expected isJobOk to return True for successful job"
+        require False = job.isJobOk
+        else failWithError "Expected isJobOk to return False for job with runner error"
         require Exited 0 = job.getJobStatus
         else failWithError "Expected job status to be 0, got {format job.getJobStatus}"
 
         # Runner status should be Some even though the error message is empty
         require Pass runnerStatus = job.unsafe_getJobRunnerStatus
-        #require Some "" = runnerStatus
-        #else failWithError "Expected empty but present runner status message, got: '{format runnerStatus}'"
-        require None = runnerStatus
-        else failWithError "Expected None runner status for successful job, got '{format runnerStatus}'"
+        require Some "" = runnerStatus
+        else failWithError "Expected empty but present runner status message, got: {format runnerStatus}"
 
         require Pass errorMsg = job.unsafe_getJobRunnerError
         #require True = errorMsg ==* "Intentional runner error for testing"
@@ -39,7 +37,7 @@ export def testRunnerFailWithEmptyError _: Result Unit Error =
 
         Pass Unit
 
-    addErrorContext "runner-fail-success" check
+    addErrorContext "runner-fail-empty-error" check
 
 # Test that a runner preserves job failure status when both job and runner fail
 export def testRunnerFailWithJobFailure _: Result Unit Error =

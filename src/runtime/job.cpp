@@ -1902,21 +1902,57 @@ static PRIMFN(prim_job_set_runner_status) {
   RETURN(claim_unit(runtime.heap));
 }
 
+static PRIMTYPE(type_job_clear_runner_status) {
+  return args.size() == 1 && args[0]->unify(Data::typeJob) && out->unify(Data::typeUnit);
+}
+
+static PRIMFN(prim_job_clear_runner_status) {
+  EXPECT(1);
+  JOB(job, 0);
+
+  job->db->set_runner_status(job->job);
+
+  runtime.heap.reserve(reserve_unit());
+  RETURN(claim_unit(runtime.heap));
+}
+
 static PRIMTYPE(type_job_runner_status) {
-  TypeVar result;
-  Data::typeResult.clone(result);
-  result[0].unify(Data::typeString);
-  result[1].unify(Data::typeError);
-  return args.size() == 1 && args[0]->unify(Data::typeJob) && out->unify(result);
+  TypeVar inner_result;
+  Data::typeResult.clone(inner_result);
+  inner_result[0].unify(Data::typeUnit);
+  inner_result[1].unify(Data::typeString);
+
+  TypeVar outer_result;
+  Data::typeResult.clone(outer_result);
+  outer_result[0].unify(inner_result);
+  outer_result[1].unify(Data::typeError);
+
+  return args.size() == 1 && args[0]->unify(Data::typeJob) && out->unify(outer_result);
 }
 
 static PRIMFN(prim_job_runner_status) {
   EXPECT(1);
   JOB(job, 0);
 
-  std::string status = job->db->get_runner_status(job->job);
-  runtime.heap.reserve(reserve_result() + String::reserve(status.size()));
-  RETURN(claim_result(runtime.heap, true, String::claim(runtime.heap, status)));
+  std::pair<bool, std::string> status_result = job->db->get_runner_status(job->job);
+  bool has_error = status_result.first;
+  std::string error_message = status_result.second;
+
+  // Create the inner `Result Unit String` (isomorphic to `Option String`)
+  HeapObject *inner_result;
+  if (has_error) {
+    // Failure case: runner error message present (including empty string) -> Fail String
+    runtime.heap.reserve(reserve_result() + String::reserve(error_message.size()));
+    inner_result = claim_result(runtime.heap, false, String::claim(runtime.heap, error_message));
+  } else {
+    // Success case: no runner error (NULL in database) -> Pass Unit
+    runtime.heap.reserve(reserve_result() + reserve_unit());
+    inner_result = claim_result(runtime.heap, true, claim_unit(runtime.heap));
+  }
+
+  // Wrap in outer Result for lookup-prim success -> Pass (Result Unit String)
+  runtime.heap.reserve(reserve_result());
+  RETURN(claim_result(runtime.heap, true, static_cast<Value*>(inner_result)));
 }
 
 static PRIMTYPE(type_access) {
@@ -2062,6 +2098,10 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   // Sets the runner status for a job
   prim_register(pmap, "job_set_runner_status", prim_job_set_runner_status,
                 type_job_set_runner_status, PRIM_IMPURE);
+
+  // Clears the runner status for a job (sets to NULL)
+  prim_register(pmap, "job_clear_runner_status", prim_job_clear_runner_status,
+                type_job_clear_runner_status, PRIM_IMPURE);
 
   // Gets the runner status for a job
   prim_register(pmap, "job_runner_status", prim_job_runner_status, type_job_runner_status,
