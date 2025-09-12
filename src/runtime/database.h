@@ -89,7 +89,7 @@ struct JobReflection {
   std::vector<FileReflection> inputs;
   std::vector<FileReflection> outputs;
   std::vector<JobTag> tags;
-  int runner_status;
+  std::string runner_status;
 
   JAST to_json() const;
   JAST to_structured_json() const;
@@ -186,9 +186,9 @@ struct Database {
 
   std::vector<std::pair<std::string, int>> get_interleaved_output(long job_id) const;
 
-  void set_runner_status(long job_id, int status);
+  void set_runner_status(long job_id, const std::string& status);
 
-  int get_runner_status(long job_id);
+  std::string get_runner_status(long job_id);
 };
 
 #endif

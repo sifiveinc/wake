@@ -1,7 +1,7 @@
 #ifndef WAKE_SCHEMA_H
 #define WAKE_SCHEMA_H
 
-#define SCHEMA_VERSION "8"
+#define SCHEMA_VERSION "9"
 
 // Increment the SCHEMA_VERSION every time the below string changes.
 // Also add migrations to the wake-migration tool if needed.
@@ -55,12 +55,11 @@ inline const char* getWakeSchemaSQL() {
          "  keep        integer not null default 0,"
          "  stale       integer not null default 0,"     // 0=false, 1=true
          "  is_atty     integer not null default 0,"     // 0=false, 1=true
-         "  runner_status integer not null default 0);"  // 0=success, non-zero=failure
+         "  runner_status text);"  // NULL=success, non-null string=failure message
          "create index if not exists job on jobs(directory, commandline, environment, stdin, "
          "signature, keep, job_id, stat_id);"
          "create index if not exists runner_status_idx on jobs(runner_status) WHERE runner_status "
-         "<> "
-         "0;"
+         "IS NOT NULL;"
          "create index if not exists jobstats on jobs(stat_id);"
          "create table if not exists filetree("
          "  tree_id  integer primary key autoincrement,"

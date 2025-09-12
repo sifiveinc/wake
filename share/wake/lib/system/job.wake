@@ -97,7 +97,7 @@ export def primJobLaunch (job: Job) (jobKey: JobKey) (usage: Usage): Unit =
 # Complete a job before launch with userland defined failure
 export def primJobFailLaunch (job: Job) (error: Error): Unit =
     def _ = (\_ \_ prim "job_fail_launch") job error
-    def _ = unsafe_reportJobRunnerFailure job (error.getErrorCause) 1
+    def _ = unsafe_reportJobRunnerError job (error.getErrorCause)
 
     Unit
 
@@ -107,10 +107,6 @@ export def markJobSetupFailure job err =
     def Unit = primJobFailLaunch job err
 
     Fail err
-
-# Complete a job after launch with userland defined failure
-export def primJobFailFinish (job: Job) (error: Error): Unit =
-    (\_ \_ prim "job_fail_finish") job error
 
 # Complete a job successfully by providing to the runtime the inputs/outputs/usage of the job
 export def primJobFinish (job: Job) (inputs: String) (outputs: String) (all_outputs: String) (usage: Usage): Unit =
@@ -173,15 +169,15 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
         def RunnerOutput inputs outputs cleanable reality runnerError =
             run job (RunnerInput label cmd vis env dir stdin res prefix usage isatty finputs foutputs)
 
-        def final _ = match runnerError
-            Some e -> primJobFailFinish job e
-            None ->
-                def hashedOutputs =
-                    outputs
-                    | computeHashes prefix
-                    | implode
+        def final _ =
+            def hashedOutputs =
+                outputs
+                | computeHashes prefix
+                | implode
 
-                primJobFinish job inputs.implode hashedOutputs cleanable.implode reality
+            def _ = unsafe_primJobSetRunnerStatus job runnerError
+
+            primJobFinish job inputs.implode hashedOutputs cleanable.implode reality
 
         # Make sure we don't hash files before the job has stopped running
         def _ = waitJobMerged final job
@@ -321,7 +317,7 @@ def guardPath job = match _
     _ ->
         # Check if it's a runner failure, if not then we know its a job failure
         def runnerFailure = match (unsafe_getJobRunnerStatus job)
-            Pass status if status != 0 -> "Runner failed with status {str status}"
+            Pass (Some msg) -> "Runner failed with error {msg}"
             _ -> "Non-zero exit status ({format job.getJobStatus})"
 
         failWithError "{runnerFailure} for job {str job.getJobId}: '{job.getJobDescription}'"
@@ -439,31 +435,21 @@ export def unsafe_reportJobRunnerError (job: Job) (error: String): Job =
 # Since runner status is not inherrient to a jobs execution, runners should manually set the status through
 # this out-of-band mechanism for both Wake related reporting as well as for runner scripts that are considered to
 # be an extension of the runner. A job's runner status is default set to be 0.
-#
-# Marked unsafe as this function should only be called for over-the-wall reporting for runners and because
-# of its uncacheablity as runner status is not cached.
-export def unsafe_primJobSetRunnerStatus (job: Job) (status: Integer): Unit =
-    (\_ \_ prim "job_set_runner_status") job status
+def unsafe_primJobSetRunnerStatus (job: Job) (status: Option Error): Unit = match status
+    None -> Unit
+    # Just pass in the String, since the database isn't going to store the stack trace anyway.
+    Some err -> (\_ \_ prim "job_set_runner_status") job err.getErrorCause
 
 # Get the runner status from a job.
 # The runner status code is used to determine if the runner that a job ran on succeeded (0) or failed (> 0).
 # Jobs that have a failed runner status are not cached.
 #
 # Marked unsafe as Runner status is not cached and cannot guarantee reproduciblity.
-export def unsafe_getJobRunnerStatus (job: Job): Result Integer Error =
-    (\j prim "job_runner_status") job
+export def unsafe_getJobRunnerStatus (job: Job): Result (Option String) Error =
+    def raw job = prim "job_runner_status"
 
-# Report a runner error and set runner status for a job.
-# This is a convenience function that calls both makeJobRunnerError and unsafe_primJobSetRunnerStatus. This function
-# is also utilized by primJobFailLaunch to report runner errors before a job is launched.
-#
-# Marked unsafe as this function should only be called for over-the-wall reporting for runners and because
-# of its uncacheablity as runner errors and runner status are not cached.
-export def unsafe_reportJobRunnerFailure (job: Job) (error: String) (status: Integer): Job =
-    def _ = unsafe_reportJobRunnerError job error
-    def _ = unsafe_primJobSetRunnerStatus job status
-
-    job
+    raw job
+    | rmap (\status if status ==* "" then None else Some status)
 
 export def getJobInputs (job: Job): Result (List Path) Error =
     tree job 1
@@ -506,7 +492,7 @@ export def isJobOk (job: Job): Boolean =
     if jobSuccess then
         match (unsafe_getJobRunnerStatus job)
             Fail _ -> False
-            Pass status -> status == 0
+            Pass status -> isNone status
     else
         False
 

@@ -1252,30 +1252,6 @@ static PRIMFN(prim_job_fail_launch) {
   RETURN(claim_unit(runtime.heap));
 }
 
-static PRIMFN(prim_job_fail_finish) {
-  EXPECT(2);
-  JOB(job, 0);
-
-  REQUIRE(job->state & STATE_MERGED);
-  REQUIRE(!(job->state & STATE_FINISHED));
-
-  size_t need = reserve_unit() + WJob::reserve();
-  runtime.heap.reserve(need);
-
-  job->bad_finish = args[1];
-  job->report.found = true;
-  job->report.status = 128;
-  job->report.runtime = 0;
-  job->report.cputime = 0;
-  job->report.membytes = 0;
-  job->report.ibytes = 0;
-  job->report.obytes = 0;
-  job->state |= STATE_FINISHED;
-
-  runtime.schedule(WJob::claim(runtime.heap, job));
-  RETURN(claim_unit(runtime.heap));
-}
-
 static PRIMTYPE(type_job_launch) {
   return args.size() == 12 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeString) &&
          args[2]->unify(Data::typeString) && args[3]->unify(Data::typeString) &&
@@ -1743,6 +1719,10 @@ static PRIMFN(prim_job_finish) {
   job->db->finish_job(job->job, inputs->as_str(), outputs->as_str(), all_outputs->as_str(),
                       int64_ns(job->start), int64_ns(job->stop), job->code.data[0], keep,
                       job->report);
+
+  // Runner status is left untouched to avoid overwriting any errors set by `prim_job_set_runner_status`
+  // if that was called first, with the safe fallback of a NULL database value on runner success.
+
   job->state |= STATE_FINISHED;
 
   runtime.schedule(WJob::claim(runtime.heap, job));
@@ -1907,18 +1887,16 @@ static PRIMFN(prim_job_record) {
 }
 
 static PRIMTYPE(type_job_set_runner_status) {
-  return args.size() == 2 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeInteger) &&
+  return args.size() == 2 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeString) &&
          out->unify(Data::typeUnit);
 }
 
 static PRIMFN(prim_job_set_runner_status) {
   EXPECT(2);
   JOB(job, 0);
-  INTEGER_MPZ(status, 1);
+  STRING(error_message, 1);
 
-  int status_val = mpz_get_si(status);
-  job->runner_status = status_val;
-  job->db->set_runner_status(job->job, status_val);
+  job->db->set_runner_status(job->job, error_message->as_str());
 
   runtime.heap.reserve(reserve_unit());
   RETURN(claim_unit(runtime.heap));
@@ -1927,7 +1905,7 @@ static PRIMFN(prim_job_set_runner_status) {
 static PRIMTYPE(type_job_runner_status) {
   TypeVar result;
   Data::typeResult.clone(result);
-  result[0].unify(Data::typeInteger);
+  result[0].unify(Data::typeString);
   result[1].unify(Data::typeError);
   return args.size() == 1 && args[0]->unify(Data::typeJob) && out->unify(result);
 }
@@ -1936,10 +1914,9 @@ static PRIMFN(prim_job_runner_status) {
   EXPECT(1);
   JOB(job, 0);
 
-  int status = job->db->get_runner_status(job->job);
-  MPZ status_mpz(status);
-  runtime.heap.reserve(reserve_result() + Integer::reserve(status_mpz));
-  RETURN(claim_result(runtime.heap, true, Integer::claim(runtime.heap, status_mpz)));
+  std::string status = job->db->get_runner_status(job->job);
+  runtime.heap.reserve(reserve_result() + String::reserve(status.size()));
+  RETURN(claim_result(runtime.heap, true, String::claim(runtime.heap, status)));
 }
 
 static PRIMTYPE(type_access) {
@@ -2143,10 +2120,6 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   // Explain to the wake runtime that the job has failed to launch. This can happen if
   // a pre-step of a runner fails in someway for instance.
   prim_register(pmap, "job_fail_launch", prim_job_fail_launch, type_job_fail, PRIM_IMPURE);
-
-  // Explain to the wake runtime that the job failed to finish. This can happen if a
-  // post-step of a runner fails in someway for instance.
-  prim_register(pmap, "job_fail_finish", prim_job_fail_finish, type_job_fail, PRIM_IMPURE);
 
   // Specifies the hash of a given file. In practice wake kicks off a job against `shim-wake`
   // to do the hashing.
