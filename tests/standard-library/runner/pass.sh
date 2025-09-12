@@ -1,5 +1,6 @@
 #! /bin/sh
 
+set -e
 WAKE="${1:+$1/wake}"
 
 # Since we are writing jobs to the database in this test we should clear it for each run if it

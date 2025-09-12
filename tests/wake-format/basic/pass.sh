@@ -1,5 +1,7 @@
 #! /bin/sh
 
+set -e
+
 tmp=$(mktemp ./basic.wake.XXXXXX)
 out=$(mktemp ./basic.wake.out.XXXXXX)
 

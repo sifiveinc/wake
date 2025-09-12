@@ -1,7 +1,9 @@
 #! /bin/sh
 
-ln ../json-test.wake .
+set -e
 WAKE="${1:+$1/wake}"
+
+ln -f ../json-test.wake .
 "${WAKE:-wake}" --quiet --stdout=warning,report 'jsonArrayTest (_.overrideJSON | Pass)' \
     recurse.json \
     override.json
