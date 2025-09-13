@@ -89,7 +89,7 @@ static void describe_metadata(const std::vector<JobReflection> &jobs, bool debug
         << "  In  bytes:     " << job.usage.ibytes << std::endl
         << "  Out bytes:     " << job.usage.obytes << std::endl
         << "  Status:        " << job.usage.status << std::endl
-        << "  Runner Status: " << job.runner_status << std::endl
+        << "  Runner Status: " << (job.runner_status.first ? job.runner_status.second : "success") << std::endl
         << "  Stdin:         " << job.stdin_file << std::endl;
     if (verbose) {
       out << "  Wake run:  " << job.wake_start.as_string() << " (" << job.wake_cmdline << ")"
@@ -200,7 +200,7 @@ static void describe_shell(const std::vector<JobReflection> &jobs, bool debug, b
         << "#   In  bytes:     " << job.usage.ibytes << std::endl
         << "#   Out bytes:     " << job.usage.obytes << std::endl
         << "#   Status:        " << job.usage.status << std::endl
-        << "#   Runner Status: " << job.runner_status << std::endl;
+        << "#   Runner Status: " << (job.runner_status.first ? job.runner_status.second : "success") << std::endl;
     if (verbose) {
       out << "#  Wake run:  " << job.wake_start.as_string() << " (" << job.wake_cmdline << ")"
           << std::endl;

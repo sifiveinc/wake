@@ -1190,7 +1190,12 @@ JAST JobReflection::to_structured_json() const {
   usage_json.add("membytes", usage.membytes);
   usage_json.add("ibytes", usage.ibytes);
   usage_json.add("obytes", usage.obytes);
-  usage_json.add("runner_status", runner_status);
+  // For JSON, represent runner_status as the string if error present, null if success
+  if (runner_status.first) {
+    usage_json.add("runner_status", runner_status.second);
+  } else {
+    usage_json.add("runner_status", JSON_NULLVAL);
+  }
 
   JAST &visible_json = json.add("visible_files", JSON_ARRAY);
   for (const auto &visible_file : visible) {
@@ -1331,7 +1336,13 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
   desc.usage.obytes = sqlite3_column_int64(query, 17);
 
   int runner_status_type = sqlite3_column_type(query, 18);
-  desc.runner_status = runner_status_type == SQLITE_NULL ? rip_column(query, 18) : "";
+  if (runner_status_type == SQLITE_NULL) {
+    // NULL in database - return false to indicate success (no error)
+    desc.runner_status = {false, ""};
+  } else {
+    // Non-NULL value (including empty string) - return true with the actual string
+    desc.runner_status = {true, rip_column(query, 18)};
+  }
 
   if (desc.stdin_file.empty()) desc.stdin_file = "/dev/null";
 

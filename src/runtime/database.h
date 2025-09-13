@@ -90,7 +90,7 @@ struct JobReflection {
   std::vector<FileReflection> inputs;
   std::vector<FileReflection> outputs;
   std::vector<JobTag> tags;
-  std::string runner_status;
+  std::pair<bool, std::string> runner_status;  // bool=true if error present, false if NULL
 
   JAST to_json() const;
   JAST to_structured_json() const;
