@@ -430,21 +430,29 @@ export def unsafe_reportJobRunnerOutput (job: Job) (output: String): Job =
 export def unsafe_reportJobRunnerError (job: Job) (error: String): Job =
     (\j \e prim "job_report_runner_error") job error
 
-# Set a runner status for a job
-# The runner status code is used to determine if the runner that a job ran on succeeded (0) or failed (> 0).
-# Since runner status is not inherrient to a jobs execution, runners should manually set the status through
-# this out-of-band mechanism for both Wake related reporting as well as for runner scripts that are considered to
-# be an extension of the runner. A job's runner status is default set to be 0.
+# Set a runner status message for a job.
+# This allows tracking of runner errors that are not directly related to the job's execution -- if
+# `None` the *runner* succeeded regardless of whether or not the Job did, while if `Some` then the
+# runner failed (whether before or after launching the job).  This should only be called by the
+# `runAlways` infrastructure, while any other (runner) code can simply pass the status message in the final
+# `RunnerOutput.RunnerError` field.
 def unsafe_primJobSetRunnerStatus (job: Job) (status: Option Error): Unit = match status
-    None -> (\_ prim "job_clear_runner_status") job
     # Just pass in the String, since the database isn't going to store the stack trace anyway.
     Some err -> (\_ \_ prim "job_set_runner_status") job err.getErrorCause
+    # This will typically be unnecessary since the default value for the database column is NULL
+    # (no runner error), and Wake should never cache a job with a runner error, but it's here just
+    # in case the same row gets reused and the runner status message in it needs to be cleared.
+    None -> (\_ prim "job_clear_runner_status") job
 
 # Get the runner status from a job.
-# The runner status code is used to determine if the runner that a job ran on succeeded (0) or failed (> 0).
+# The runner status is used to determine if the runner that a job ran on succeeded (`None`) or
+# failed (`Some`) and if the latter, why.
+#
 # Jobs that have a failed runner status are not cached.
 #
-# Marked unsafe as Runner status is not cached and cannot guarantee reproduciblity.
+# Marked unsafe as Runner status is not cached and cannot guarantee reproducibility.  In general,
+# this function should only be called by functions which construct and/or publish an execution
+# report, without the downstream logic depending on the contents of that report.
 export def unsafe_getJobRunnerStatus (job: Job): Result (Option String) Error =
     def raw job = prim "job_runner_status"
 

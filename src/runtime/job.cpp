@@ -1894,9 +1894,9 @@ static PRIMTYPE(type_job_set_runner_status) {
 static PRIMFN(prim_job_set_runner_status) {
   EXPECT(2);
   JOB(job, 0);
-  STRING(error_message, 1);
+  STRING(status_message, 1);
 
-  job->db->set_runner_status(job->job, error_message->as_str());
+  job->db->set_runner_status(job->job, status_message->as_str());
 
   runtime.heap.reserve(reserve_unit());
   RETURN(claim_unit(runtime.heap));
@@ -1936,14 +1936,14 @@ static PRIMFN(prim_job_runner_status) {
 
   std::pair<bool, std::string> status_result = job->db->get_runner_status(job->job);
   bool has_error = status_result.first;
-  std::string error_message = status_result.second;
+  std::string status_message = status_result.second;
 
   // Create the inner `Result Unit String` (isomorphic to `Option String`)
   HeapObject *inner_result;
   if (has_error) {
     // Failure case: runner error message present (including empty string) -> Fail String
-    runtime.heap.reserve(reserve_result() + String::reserve(error_message.size()));
-    inner_result = claim_result(runtime.heap, false, String::claim(runtime.heap, error_message));
+    runtime.heap.reserve(reserve_result() + String::reserve(status_message.size()));
+    inner_result = claim_result(runtime.heap, false, String::claim(runtime.heap, status_message));
   } else {
     // Success case: no runner error (NULL in database) -> Pass Unit
     runtime.heap.reserve(reserve_result() + reserve_unit());

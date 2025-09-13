@@ -1340,7 +1340,7 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
     // NULL in database - return false to indicate success (no error)
     desc.runner_status = {false, ""};
   } else {
-    // Non-NULL value (including empty string) - return true with the actual string
+    // Non-NULL value (including empty string) - return true with the actual status message
     desc.runner_status = {true, rip_column(query, 18)};
   }
 
@@ -1612,9 +1612,9 @@ void Database::set_runner_status(long job_id) {
   single_step(why, imp->set_runner_status, imp->debugdb);
 }
 
-void Database::set_runner_status(long job_id, const std::string& status) {
+void Database::set_runner_status(long job_id, const std::string& status_message) {
   const char *why = "Could not set runner status";
-  bind_string(why, imp->set_runner_status, 1, status);
+  bind_string(why, imp->set_runner_status, 1, status_message);
   bind_integer(why, imp->set_runner_status, 2, job_id);
   single_step(why, imp->set_runner_status, imp->debugdb);
 }
@@ -1628,7 +1628,7 @@ std::pair<bool, std::string> Database::get_runner_status(long job_id) {
       // NULL in database - return false to indicate success (no error)
       status = {false, ""};
     } else {
-      // Non-NULL value (including empty string) - return true with the actual string
+      // Non-NULL value (including empty string) - return true with the actual status message
       status = {true, rip_column(imp->get_runner_status, 0)};
     }
   }

@@ -188,7 +188,7 @@ struct Database {
   std::vector<std::pair<std::string, int>> get_interleaved_output(long job_id) const;
 
   void set_runner_status(long job_id);  // Sets to NULL (successful runner case)
-  void set_runner_status(long job_id, const std::string& status);
+  void set_runner_status(long job_id, const std::string& status_message);
 
   std::pair<bool, std::string> get_runner_status(long job_id);  // bool=true if error present, false if NULL
 };

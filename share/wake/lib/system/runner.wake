@@ -90,6 +90,11 @@ export tuple RunnerOutput =
     export CleanableOutputs: List String
     # The actual resource usage of the job that will be written to the database
     export Usage: Usage
+    # If the runner failed before or after launching the job, this will contain the error message
+    # as a status *separate* from the job's exit status.  Since it's all happening inside Wake,
+    # this can carry a more descriptive message than the standard numeric exit code -- however,
+    # the contents of that message should very rarely be incorporated into control-flow logic as
+    # it could very easily be unreproducible.
     export RunnerError: Option Error
 
 # A Runner describes a way to invoke a Plan to get a Job
@@ -128,7 +133,7 @@ export def localRunner: Runner =
         # Wait for the job to complete before calling fnOutputs
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
-            # Set the runner status to be a success (`None`) - its the callers responsibility
+            # Set the runner status to be a success (`None`) - it's the callers responsibility
             # to set the appropriate status if the job that ran is an extension of a runner
             Pass reality -> Pair reality None
 
@@ -155,7 +160,7 @@ export def virtualRunner: Runner =
         # Wait for the job to complete before calling fnOutputs
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
-            # Set the runner status to be a success (`None`) - its the callers responsibility
+            # Set the runner status to be a success (`None`) - it's the callers responsibility
             # to set the appropriate status if the job that ran is an extension of a runner
             Pass reality -> Pair reality None
 
