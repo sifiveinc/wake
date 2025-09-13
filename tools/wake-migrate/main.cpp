@@ -175,8 +175,14 @@ static std::vector<Migration> get_migrations() {
          if (!exec_sql(db, "ALTER TABLE jobs_new RENAME TO jobs;")) return false;
 
          // Step 4: Recreate indexes
-         if (!exec_sql(db, "CREATE INDEX job on jobs(directory, commandline, environment, stdin, signature, keep, job_id, stat_id);")) return false;
-         if (!exec_sql(db, "CREATE INDEX runner_status_idx on jobs(runner_status) WHERE runner_status IS NOT NULL;")) return false;
+         if (!exec_sql(db,
+                       "CREATE INDEX job on jobs(directory, commandline, environment, stdin, "
+                       "signature, keep, job_id, stat_id);"))
+           return false;
+         if (!exec_sql(db,
+                       "CREATE INDEX runner_status_idx on jobs(runner_status) WHERE runner_status "
+                       "IS NOT NULL;"))
+           return false;
          if (!exec_sql(db, "CREATE INDEX jobstats on jobs(stat_id);")) return false;
 
          return true;

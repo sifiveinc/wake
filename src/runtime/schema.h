@@ -53,8 +53,8 @@ inline const char* getWakeSchemaSQL() {
          "  starttime   integer not null default 0,"
          "  endtime     integer not null default 0,"
          "  keep        integer not null default 0,"
-         "  stale       integer not null default 0,"     // 0=false, 1=true
-         "  is_atty     integer not null default 0,"     // 0=false, 1=true
+         "  stale       integer not null default 0,"  // 0=false, 1=true
+         "  is_atty     integer not null default 0,"  // 0=false, 1=true
          "  runner_status text);"  // NULL=success, non-null string=failure message
          "create index if not exists job on jobs(directory, commandline, environment, stdin, "
          "signature, keep, job_id, stat_id);"

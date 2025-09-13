@@ -1720,8 +1720,9 @@ static PRIMFN(prim_job_finish) {
                       int64_ns(job->start), int64_ns(job->stop), job->code.data[0], keep,
                       job->report);
 
-  // Runner status is left untouched to avoid overwriting any errors set by `prim_job_set_runner_status`
-  // if that was called first, with the safe fallback of a NULL database value on runner success.
+  // Runner status is left untouched to avoid overwriting any errors set by
+  // `prim_job_set_runner_status` if that was called first, with the safe fallback of a NULL
+  // database value on runner success.
 
   job->state |= STATE_FINISHED;
 
@@ -1952,7 +1953,7 @@ static PRIMFN(prim_job_runner_status) {
 
   // Wrap in outer Result for lookup-prim success -> Pass (Result Unit String)
   runtime.heap.reserve(reserve_result());
-  RETURN(claim_result(runtime.heap, true, static_cast<Value*>(inner_result)));
+  RETURN(claim_result(runtime.heap, true, static_cast<Value *>(inner_result)));
 }
 
 static PRIMTYPE(type_access) {

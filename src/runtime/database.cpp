@@ -1605,14 +1605,15 @@ void Database::set_runner_status(long job_id) {
   // Explicitly bind NULL (successful runner case)
   int ret = sqlite3_bind_null(imp->set_runner_status, 1);
   if (ret != SQLITE_OK) {
-    std::cerr << why << "; sqlite3_bind_null(1): " << sqlite3_errmsg(sqlite3_db_handle(imp->set_runner_status)) << std::endl;
+    std::cerr << why << "; sqlite3_bind_null(1): "
+              << sqlite3_errmsg(sqlite3_db_handle(imp->set_runner_status)) << std::endl;
     exit(1);
   }
   bind_integer(why, imp->set_runner_status, 2, job_id);
   single_step(why, imp->set_runner_status, imp->debugdb);
 }
 
-void Database::set_runner_status(long job_id, const std::string& status_message) {
+void Database::set_runner_status(long job_id, const std::string &status_message) {
   const char *why = "Could not set runner status";
   bind_string(why, imp->set_runner_status, 1, status_message);
   bind_integer(why, imp->set_runner_status, 2, job_id);

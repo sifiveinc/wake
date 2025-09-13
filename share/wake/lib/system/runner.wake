@@ -26,7 +26,8 @@ export tuple Usage =
     export InBytes: Integer
     export OutBytes: Integer
 
-export def emptyUsage = Usage 0 0.0 0.0 0 0 0
+export def emptyUsage =
+    Usage 0 0.0 0.0 0 0 0
 
 export def getUsageThreads (Usage _ run cpu _ _ _: Usage): Double =
     if run ==. 0.0 then
