@@ -1598,7 +1598,7 @@ static PRIMFN(prim_job_report_runner_error) {
   STRING(error_message, 1);
 
   job->db->save_output(job->job, 4, error_message->c_str(), error_message->size(), 0);
-  job->state |= STATE_RUNNER_ERR;
+  // Don't set STATE_RUNNER_ERR here - that should only be set when the stream is closed
 
   runtime.heap.reserve(WJob::reserve());
   runtime.schedule(WJob::claim(runtime.heap, job));
@@ -1617,7 +1617,7 @@ static PRIMFN(prim_job_report_runner_output) {
   STRING(output_message, 1);
 
   job->db->save_output(job->job, 3, output_message->c_str(), output_message->size(), 0);
-  job->state |= STATE_RUNNER_OUT;
+  // Don't set STATE_RUNNER_OUT here - that should only be set when the stream is closed
 
   runtime.heap.reserve(WJob::reserve());
   runtime.schedule(WJob::claim(runtime.heap, job));
