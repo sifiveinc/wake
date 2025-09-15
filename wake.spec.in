@@ -39,6 +39,7 @@ mkdir -p %{buildroot}/var/cache/wake
 /usr/bin/wake-format
 /usr/bin/wake-migrate
 /usr/bin/job-cache
+/usr/bin/wake-unit
 /usr/lib/wake
 /usr/share/wake
 %dir /var/cache/wake
