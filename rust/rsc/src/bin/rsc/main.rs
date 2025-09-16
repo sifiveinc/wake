@@ -753,10 +753,12 @@ mod tests {
                 "output_symlinks": [],
                 "output_files":[],
                 "stdout_blob": {
+                    "content_hash": "0",
                     "id": blob_id,
                     "url": format!("test://{0}/InsecureKey", store_id),
                 },
                 "stderr_blob": {
+                    "content_hash": "0",
                     "id": blob_id,
                     "url": format!("test://{0}/InsecureKey", store_id),
                 },
