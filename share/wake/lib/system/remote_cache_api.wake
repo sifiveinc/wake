@@ -638,13 +638,17 @@ def resolveUriResponse (dbSchemeFn: (String => String => Result a Error)) (fileS
 export def rscApiGetStringBlob ((CacheSearchBlob blobId uri contentHash): CacheSearchBlob): Result String Error =
     def resolveStringFileScheme scheme path =
         def url = "{scheme}://{path}"
+
         require Pass binaryPath =
             buildHttpRequest url
             | setMethod HttpMethodGet
             | makeBinaryRequest
+
         read binaryPath
 
-    require Pass content = uri | resolveUriResponse resolveDbScheme resolveStringFileScheme
+    require Pass content =
+        uri
+        | resolveUriResponse resolveDbScheme resolveStringFileScheme
 
     def actualHash = hashString content
 
@@ -653,8 +657,11 @@ export def rscApiGetStringBlob ((CacheSearchBlob blobId uri contentHash): CacheS
         def _ =
             require True = shouldDebugRemoteCache Unit
 
-            def _ = breadcrumb "rsc: Hash mismatch for blob {blobId}. Expected: {contentHash}, Got: {actualHash}"
+            def _ =
+                breadcrumb "rsc: Hash mismatch for blob {blobId}. Expected: {contentHash}, Got: {actualHash}"
+
             True
+
         failWithError "rsc: Hash mismatch for blob {blobId}. Expected: {contentHash}, Got: {actualHash}"
 
     Pass content
@@ -678,15 +685,19 @@ export def rscApiGetFileBlob ((CacheSearchBlob blobId uri contentHash): CacheSea
 
     # Verify content hash if provided
     require Pass actualHash = rsciHashFile blobPath.getPathName
+
     require True = actualHash ==* contentHash
     else
         def _ =
             require True = shouldDebugRemoteCache Unit
 
-            def _ = breadcrumb "rsc: Hash mismatch for blob {blobPath.getPathName}. Expected: {contentHash}, Got: {actualHash}"
+            def _ =
+                breadcrumb "rsc: Hash mismatch for blob {blobPath.getPathName}. Expected: {contentHash}, Got: {actualHash}"
+
             True
 
-        failWithError "rsc: Hash mismatch for blob {blobPath.getPathName}. Expected: {contentHash}, Got: {actualHash}"
+        failWithError
+        "rsc: Hash mismatch for blob {blobPath.getPathName}. Expected: {contentHash}, Got: {actualHash}"
 
     def fixupScript =
         """
@@ -871,7 +882,8 @@ def uploadBlobRequest (api: RemoteCacheApi) (setBlob: HttpRequest => HttpRequest
 def addFormDataWithHash (name: String) (file: String) (contentType: Option String) (hash: String) (req: HttpRequest): HttpRequest =
     req
     | unsafe_addFormData name (HttpFormDataFile file) contentType
-    | addStringFormData "content_hash" hash None
+    # Since the hash string is in hex, it is safe to pass as a string to curl
+    | unsafe_addStringFormData "content_hash" hash None
 
 # Converts a CacheSearchRequest to JSON
 def getCacheSearchRequestJson (req: CacheSearchRequest): JValue =
@@ -1004,7 +1016,9 @@ def mkCacheSearchResponse (json: JValue): Result CacheSearchResponse Error =
         else failWithError "rsc: JSON response has incorrect schema. '{v | format}' must have string key 'url'"
 
         require Pass (JString contentHash) = jField v "content_hash"
-        else failWithError "rsc: JSON response has incorrect schema. '{v | format}' must have string key 'content_hash'"
+        else
+            failWithError
+            "rsc: JSON response has incorrect schema. '{v | format}' must have string key 'content_hash'"
 
         CacheSearchBlob id url contentHash
         | Pass

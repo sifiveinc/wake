@@ -120,8 +120,9 @@ export def setBody (body: String): HttpRequest => HttpRequest =
 export def addFormData (name: String) (value: Path) (contentType: Option String): HttpRequest => HttpRequest =
     unsafe_addFormData name (HttpFormDataFile value.getPathName) contentType
 
-# Adds a string to the request's form data
-export def addStringFormData (name: String) (value: String) (contentType: Option String): HttpRequest => HttpRequest =
+# Adds a string to the request's form data. This is marked unsafe as it is the callers responsibility to ensure the string
+# is shell safe.
+export def unsafe_addStringFormData (name: String) (value: String) (contentType: Option String): HttpRequest => HttpRequest =
     unsafe_addFormData name (HttpFormDataString value) contentType
 
 # Adds form data content to the request's form data field.
