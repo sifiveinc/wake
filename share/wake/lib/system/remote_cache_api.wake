@@ -63,7 +63,7 @@ tuple CacheSearchRequest =
 tuple CacheSearchBlob =
     # The id of the blob on the remote server
     Id: String
-    # The uri where the blob may be downloaded from
+    # The uri where the blob may be downloaded from. Not guaranteed to be http/https
     Uri: String
     # The content hash of the blob used for verification
     ContentHash: String
@@ -346,9 +346,8 @@ export def rscApiPostStringBlob (name: String) (value: String) (api: RemoteCache
     def hash = hashString value
 
     require Pass temp = writeTempFile name value
-    require Pass hashFile = writeTempFile "content_hash" hash
 
-    def setBlobFn = addFormDataWithHash name temp.getPathName contentType hashFile
+    def setBlobFn = addFormDataWithHash name temp.getPathName contentType hash
 
     uploadBlobRequest api setBlobFn
 
@@ -362,14 +361,16 @@ export def rscApiPostStringBlob (name: String) (value: String) (api: RemoteCache
 export def rscApiPostFileBlob (name: String) (file: String) (api: RemoteCacheApi): Result String Error =
     require Pass _ = guardRemoteCacheDisabled Unit
 
+    # We must use unsafe here since we cannot elevate *file* to a Path without either copying it
+    # or triggering the 'job output by multiple files' error.
+
     def contentType = match (unsafe_stat file)
         Pass (Stat _ _ size) -> contentTypeFromSize size
         Fail _ -> None
 
     require Pass hash = rsciHashFile file
-    require Pass hashFile = writeTempFile "content_hash" hash
 
-    def setBlobFn = addFormDataWithHash name file contentType hashFile
+    def setBlobFn = addFormDataWithHash name file contentType hash
 
     uploadBlobRequest api setBlobFn
 
@@ -867,10 +868,10 @@ def uploadBlobRequest (api: RemoteCacheApi) (setBlob: HttpRequest => HttpRequest
     Pass id
 
 # Helper to add form data with hash
-def addFormDataWithHash (name: String) (file: String) (contentType: Option String) (hashFile: Path) (req: HttpRequest): HttpRequest =
+def addFormDataWithHash (name: String) (file: String) (contentType: Option String) (hash: String) (req: HttpRequest): HttpRequest =
     req
-    | unsafe_addFormData name file contentType
-    | unsafe_addFormData "content_hash" hashFile.getPathName None
+    | unsafe_addFormData name (HttpFormDataFile file) contentType
+    | addStringFormData "content_hash" hash None
 
 # Converts a CacheSearchRequest to JSON
 def getCacheSearchRequestJson (req: CacheSearchRequest): JValue =

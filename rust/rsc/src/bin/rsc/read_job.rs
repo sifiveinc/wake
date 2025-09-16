@@ -44,7 +44,6 @@ async fn resolve_blobs<T: ConnectionTrait>(
     const CHUNK_SIZE: usize = 50_000;
 
     let mut resolved_map = HashMap::new();
-
     for chunk in ids.chunks(CHUNK_SIZE) {
         // Fetch chunked blobs in a single query
         let blob_map: HashMap<Uuid, entity::blob::Model> = Blob::find()
@@ -112,7 +111,6 @@ pub async fn read_job(
                     tracing::info!(%hash, "Miss");
                     return Ok(None);
                 };
-
                 let output_files = matching_job.find_related(output_file::Entity).all(txn).await?;
                 let output_symlinks = matching_job.find_related(output_symlink::Entity).all(txn).await?;
                 let output_dirs = matching_job.find_related(output_dir::Entity).all(txn).await?;
@@ -121,7 +119,6 @@ pub async fn read_job(
             })
         })
         .await;
-
     let hash_copy = hash_for_spawns.clone();
     let Some((matching_job, output_files, output_symlinks, output_dirs)) = fetch_result.ok().flatten() else {
         tokio::spawn(async move {
