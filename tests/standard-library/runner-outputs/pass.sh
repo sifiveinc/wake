@@ -1,5 +1,6 @@
 #! /bin/sh
 
+set -e
 WAKE="${1:+$1/wake}"
 
 rm -f wake.db wake.log
@@ -12,4 +13,3 @@ rm -f wake.db wake.log
 "${WAKE:-wake}" --stdout=warning,report testWrapperRunnerStatus
 "${WAKE:-wake}" --stdout=warning,report testFdOutputs
 "${WAKE:-wake}" --stdout=warning,report testRunnerCustomOutput
-"${WAKE:-wake}" --stdout=warning,report --failed
