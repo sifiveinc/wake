@@ -60,7 +60,7 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
     def job_cache_add str = prim "job_cache_add"
 
     def run (job: Job) (input: RunnerInput): Result RunnerOutput Error =
-        def (RunnerInput label cmd vis env dir stdin _ prefix _ _ _ _) = input
+        def (RunnerInput label cmd vis _ env dir stdin _ prefix _ _ _ _) = input
 
         def mkVisJson (Path path hash) =
             JObject (

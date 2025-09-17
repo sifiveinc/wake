@@ -308,11 +308,11 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
 ## --- Helper functions ---
 
 # Creates a CacheSearchRequest from the various inputs to a runner
-def mkSearchRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _usage isAtty _ _): RunnerInput) (hidden: String) =
+def mkSearchRequest ((RunnerInput label cmd vis _ env dir stdin _res _prefix _usage isAtty _ _): RunnerInput) (hidden: String) =
     CacheSearchRequest label cmd dir env hidden isAtty stdin vis
 
 # Creates a CachePostJobRequest from the various inputs and outputs of a runner
-def mkPostJobRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ isAtty _ _): RunnerInput) (output: RunnerOutput) (hidden: String) (stdoutBlobId: String) (stderrBlobId: String) (files: List CachePostRequestOutputFile) (directories: List CachePostRequestOutputDirectory) (symlinks: List CachePostRequestOutputSymlink) =
+def mkPostJobRequest ((RunnerInput label cmd vis _ env dir stdin _res _prefix _ isAtty _ _): RunnerInput) (output: RunnerOutput) (hidden: String) (stdoutBlobId: String) (stderrBlobId: String) (files: List CachePostRequestOutputFile) (directories: List CachePostRequestOutputDirectory) (symlinks: List CachePostRequestOutputSymlink) =
     def Usage status runtime cputime mem ibytes obytes = output.getRunnerOutputUsage
 
     CachePostRequest
@@ -337,7 +337,7 @@ def mkPostJobRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ is
     obytes
 
 # Creates a CacheAllowedRequest from the various inputs and outputs of a runner
-def mkCacheAllowedRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ isAtty _ _): RunnerInput) (output: RunnerOutput) (hidden: String) =
+def mkCacheAllowedRequest ((RunnerInput label cmd vis _ env dir stdin _res _prefix _ isAtty _ _): RunnerInput) (output: RunnerOutput) (hidden: String) =
     def Usage status runtime cputime mem _ibytes obytes = output.getRunnerOutputUsage
 
     CacheAllowedRequest label cmd dir env hidden isAtty stdin vis status runtime cputime mem obytes

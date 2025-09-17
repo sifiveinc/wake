@@ -61,6 +61,8 @@ bool json_as_struct(const std::string &json, json_args &result) {
 
   for (auto &x : jast.get("visible").children) result.visible.push_back(x.second.value);
 
+  for (auto &x : jast.get("modifiable").children) result.modifiable.push_back(x.second.value);
+
   JAST timeout_entry = jast.get("command-timeout");
   if (timeout_entry.kind == JSON_INTEGER) {
     int timeout = std::stoi(timeout_entry.value);
@@ -154,7 +156,7 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     return false;
   }
 
-  if (!args.daemon.connect(args.visible, args.isolate_pids)) return false;
+  if (!args.daemon.connect(args.visible, args.modifiable, args.isolate_pids)) return false;
 
   struct timeval start;
   gettimeofday(&start, 0);

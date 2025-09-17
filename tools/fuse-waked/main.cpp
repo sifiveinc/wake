@@ -64,6 +64,7 @@ static std::set<std::string> hardlinks = {};
 
 struct Job {
   std::set<std::string> files_visible;
+  std::set<std::string> files_modifiable;
   std::set<std::string> files_read;
   std::set<std::string> files_wrote;
   std::string json_in;
@@ -75,7 +76,7 @@ struct Job {
 
   Job() : ibytes(0), obytes(0), json_in_uses(0), json_out_uses(0), uses(0) {}
 
-  void parse();
+  void parse(int rootfd);
   void dump();
 
   bool is_writeable(const std::string &path);
@@ -84,7 +85,7 @@ struct Job {
   bool should_erase() const;
 };
 
-void Job::parse() {
+void Job::parse(int rootfd) {
   JAST jast;
   std::stringstream s;
   if (!JAST::parse(json_in, s, jast)) {
@@ -97,6 +98,21 @@ void Job::parse() {
   for (auto &x : jast.get("visible").children)
     if (!x.second.value.empty() && x.second.value[0] != '/')
       files_visible.insert(std::move(x.second.value));
+
+  // Parse modifiable files from JSON...
+  files_modifiable.clear();
+  for (auto &x : jast.get("modifiable").children) {
+    if (!x.second.value.empty() && x.second.value[0] != '/') {
+      std::string path = x.second.value;
+      files_modifiable.insert(path);
+      // ...and add to files_wrote for idempotent behavior - these are canonically outputs which
+      // were "owned" by a previous run, and so we adopt them as outputs for this run as well.
+      // However, only add each file if it actually exists.
+      if (faccessat(rootfd, path.c_str(), F_OK, 0) == 0) {
+        files_wrote.insert(std::move(path));
+      }
+    }
+  }
 }
 
 void Job::dump() {
@@ -108,6 +124,11 @@ void Job::dump() {
   s << "{\"ibytes\":" << ibytes << ",\"obytes\":" << obytes << ",\"inputs\":[";
 
   for (auto &x : files_wrote) files_read.erase(x);
+  // Although files_modifiable are conceptually inputs as well, they should be pruned from the
+  // reported inputs to ensure idempotent behavior; besides, the primary use of files_read is to
+  // reduce the files_visible list to just what played a role in the job's execution, and the
+  // elements of files_modifiable are *not* part of files_visible.
+  for (auto &x : files_modifiable) files_read.erase(x);
 
   first = true;
   for (auto &x : files_read) {
@@ -157,7 +178,8 @@ bool Job::is_visible(const std::string &path) {
 }
 
 bool Job::is_writeable(const std::string &path) {
-  return files_wrote.find(path) != files_wrote.end();
+  return files_wrote.find(path) != files_wrote.end() ||
+         files_modifiable.find(path) != files_modifiable.end();
 }
 
 bool Job::is_readable(const std::string &path) { return is_visible(path) || is_writeable(path); }
@@ -305,6 +327,12 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
 
   int res = fstatat(context.rootfd, key.second.c_str(), stbuf, AT_SYMLINK_NOFOLLOW);
   if (res == -1) res = -errno;
+
+  // If file is only visible (not writeable), remove write permissions from the reported mode
+  if (!it->second.is_writeable(key.second)) {
+    stbuf->st_mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
+  }
+
   return res;
 }
 
@@ -622,13 +650,19 @@ static int wakefuse_unlink_trace(const char *path) {
   return out;
 }
 
-// Check if the directory has children that were written and not yet deleted.
+// Check if the directory has children that were written or are modifiable and not yet deleted.
 // Note: we don't check the 'files_visible' list as when the directory itself or
-// a file within that directory is visible then is_writable() would have already failed.
+// a file within that directory is visible then is_writeable() would have already failed.
 static bool has_written_children(const std::string &dir, Job &job) {
   auto i = job.files_wrote.lower_bound(dir + "/");
-  return i != job.files_wrote.end() && i->size() > dir.size() &&
-         0 == i->compare(0, dir.size(), dir);
+  if (i != job.files_wrote.end() && i->size() > dir.size() &&
+      0 == i->compare(0, dir.size(), dir)) {
+    return true;
+  }
+
+  auto j = job.files_modifiable.lower_bound(dir + "/");
+  return j != job.files_modifiable.end() && j->size() > dir.size() &&
+         0 == j->compare(0, dir.size(), dir);
 }
 
 static int wakefuse_rmdir(const char *path) {
@@ -1164,7 +1198,7 @@ static int wakefuse_release(const char *path, struct fuse_file_info *fi) {
         --context.uses;
         break;
       case 'i':
-        if (--s.job->second.json_in_uses == 0) s.job->second.parse();
+        if (--s.job->second.json_in_uses == 0) s.job->second.parse(context.rootfd);
         break;
       case 'o':
         --s.job->second.json_out_uses;

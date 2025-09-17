@@ -45,7 +45,7 @@ struct daemon_client {
 
   daemon_client(const std::string &base_dir);
 
-  bool connect(std::vector<std::string> &visible, bool close_live_file);
+  bool connect(std::vector<std::string> &visible, std::vector<std::string> &modifiable, bool close_live_file);
   bool disconnect(std::string &result);
 
  protected:
@@ -58,6 +58,7 @@ struct json_args {
   wcl::optional<int> command_timeout;  // timeout in seconds.
   std::vector<std::string> environment;
   std::vector<std::string> visible;
+  std::vector<std::string> modifiable;
   std::string directory;
   std::string stdin_file;
 

@@ -138,7 +138,7 @@ def writeRunner (content: String) =
     def primWrite (mode: Integer) (path: String) (content: String): Result String String =
         (\_ \_ \_ prim "write") mode path content
 
-    def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
+    def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
         # Command must be ("<write>", "-m", "{string mode}", "{string path}", Nil)
         require "<write>", "-m", smode, path, Nil = cmd
         else panic "writeImp violated command-line contract"
@@ -285,7 +285,7 @@ def mkdirRunner: Runner =
     def primMkdir (mode: Integer) (path: String): Result String String =
         (\_ \_ prim "mkdir") mode path
 
-    def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
+    def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
         # Command must be ("<mkdir>", "-m", "{string mode}", "{string path}", Nil)
         require "<mkdir>", "-m", smode, path, Nil = cmd
         else panic "mkdirImp violated command-line contract"
