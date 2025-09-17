@@ -112,14 +112,14 @@ static bool bind_mount(const std::string &source, const std::string &destination
 static bool validate_mount(const std::string &op, const std::string &source) {
   static const std::vector<std::string> mount_ops{
       // must be sorted
-      "bind", "create-dir", "create-file", "squashfs", "tmpfs", "workspace"};
+      "autofs-resolve", "bind", "create-dir", "create-file", "squashfs", "tmpfs", "workspace"};
 
   if (!std::binary_search(mount_ops.begin(), mount_ops.end(), op)) {
     std::cerr << "unknown mount type: '" << op << "'" << std::endl;
     return false;
   }
 
-  if ((op != "bind" && op != "squashfs") && !source.empty()) {
+  if ((op != "bind" && op != "squashfs" && op != "autofs-resolve") && !source.empty()) {
     std::cerr << "mount: " << op << " can not have 'source' option" << std::endl;
     return false;
   }
@@ -384,6 +384,9 @@ bool do_mounts(const std::vector<mount_op> &mount_ops, const std::string &fuse_m
                std::vector<std::string> &environments) {
   std::string mount_prefix;
   for (auto &x : mount_ops) {
+    // Skip autofs-resolve operations in do_mounts since they're handled before namespace setup
+    if (x.type == "autofs-resolve") continue;
+
     if (x.destination == "/") {
       // All mount ops from here onward will have a prefixed destination.
       // The prefix will be pivoted to after the final mount op.
