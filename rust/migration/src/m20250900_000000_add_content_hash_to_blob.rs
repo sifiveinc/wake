@@ -14,7 +14,6 @@ impl MigrationTrait for Migration {
                         ColumnDef::new(Blob::ContentHash)
                             .string()
                             .not_null()
-                            .default("")
                     )
                     .to_owned(),
             )

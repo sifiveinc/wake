@@ -368,7 +368,7 @@ export def rscApiPostFileBlob (name: String) (file: String) (api: RemoteCacheApi
         Pass (Stat _ _ size) -> contentTypeFromSize size
         Fail _ -> None
 
-    require Pass hash = rsciHashFile file
+    require Pass hash = rscHashFile file
 
     def setBlobFn = addFormDataWithHash name file contentType hash
 
@@ -630,28 +630,8 @@ def resolveUriResponse (dbSchemeFn: (String => String => Result a Error)) (fileS
 
     schemeFn scheme path
 
-# rscApiGetStringBlob: Downloads a blob and returns the contents as a string
-#
-# ```
-#  rscApiGetStringBlob (RemoteCacheBlob "asdf" "https://...") = Pass "foo\nbar\nbat"
-# ```
-export def rscApiGetStringBlob ((CacheSearchBlob blobId uri contentHash): CacheSearchBlob): Result String Error =
-    def resolveStringFileScheme scheme path =
-        def url = "{scheme}://{path}"
-
-        require Pass binaryPath =
-            buildHttpRequest url
-            | setMethod HttpMethodGet
-            | makeBinaryRequest
-
-        read binaryPath
-
-    require Pass content =
-        uri
-        | resolveUriResponse resolveDbScheme resolveStringFileScheme
-
-    def actualHash = hashString content
-
+# Verifies that the actual hash matches the expected content hash
+def verifyBlobHash (blobId: String) (actualHash: String) (contentHash: String): Result Unit Error =
     require True = actualHash ==* contentHash
     else
         def _ =
@@ -663,6 +643,32 @@ export def rscApiGetStringBlob ((CacheSearchBlob blobId uri contentHash): CacheS
             True
 
         failWithError "rsc: Hash mismatch for blob {blobId}. Expected: {contentHash}, Got: {actualHash}"
+
+    Pass Unit
+
+# rscApiGetStringBlob: Downloads a blob and returns the contents as a string
+#
+# ```
+#  rscApiGetStringBlob (RemoteCacheBlob "asdf" "https://...") = Pass "foo\nbar\nbat"
+# ```
+export def rscApiGetStringBlob ((CacheSearchBlob blobId uri contentHash): CacheSearchBlob): Result String Error =
+    def resolveStringFileScheme scheme path =
+        def blobUrl = "{scheme}://{path}"
+
+        require Pass binaryPath =
+            buildHttpRequest blobUrl
+            | setMethod HttpMethodGet
+            | makeBinaryRequest
+
+        read binaryPath
+
+    require Pass content =
+        uri
+        | resolveUriResponse resolveDbScheme resolveStringFileScheme
+
+    def actualHash = hashString content
+
+    require Pass _ = verifyBlobHash blobId actualHash contentHash
 
     Pass content
 
@@ -684,20 +690,8 @@ export def rscApiGetFileBlob ((CacheSearchBlob blobId uri contentHash): CacheSea
     require Pass blobPath = (uri | resolveUriResponse resolveDbSchemeToFile resolveBlobFileScheme)
 
     # Verify content hash if provided
-    require Pass actualHash = rsciHashFile blobPath.getPathName
-
-    require True = actualHash ==* contentHash
-    else
-        def _ =
-            require True = shouldDebugRemoteCache Unit
-
-            def _ =
-                breadcrumb "rsc: Hash mismatch for blob {blobPath.getPathName}. Expected: {contentHash}, Got: {actualHash}"
-
-            True
-
-        failWithError
-        "rsc: Hash mismatch for blob {blobPath.getPathName}. Expected: {contentHash}, Got: {actualHash}"
+    require Pass actualHash = rscHashFile blobPath.getPathName
+    require Pass _ = verifyBlobHash blobId actualHash contentHash
 
     def fixupScript =
         """
@@ -883,7 +877,7 @@ def addFormDataWithHash (name: String) (file: String) (contentType: Option Strin
     req
     | unsafe_addFormData name (HttpFormDataFile file) contentType
     # Since the hash string is in hex, it is safe to pass as a string to curl
-    | unsafe_addStringFormData "content_hash" hash None
+    | addStringFormData "content_hash" hash
 
 # Converts a CacheSearchRequest to JSON
 def getCacheSearchRequestJson (req: CacheSearchRequest): JValue =
@@ -1147,7 +1141,7 @@ def hashUsage =
     Usage 0 0.0 0.1 0 0 0
 
 # RSC version of computing hashes for files, similar to Hashcode target in path.wake
-def rsciHashFile (file: String): Result String Error =
+def rscHashFile (file: String): Result String Error =
     def hashPlan cmd =
         Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
 

@@ -120,10 +120,9 @@ export def setBody (body: String): HttpRequest => HttpRequest =
 export def addFormData (name: String) (value: Path) (contentType: Option String): HttpRequest => HttpRequest =
     unsafe_addFormData name (HttpFormDataFile value.getPathName) contentType
 
-# Adds a string to the request's form data. This is marked unsafe as it is the callers responsibility to ensure the string
-# is shell safe.
-export def unsafe_addStringFormData (name: String) (value: String) (contentType: Option String): HttpRequest => HttpRequest =
-    unsafe_addFormData name (HttpFormDataString value) contentType
+# Adds a string to the request's form data. It is the callers responsibility to ensure the string is shell safe.
+export def addStringFormData (name: String) (value: String): HttpRequest => HttpRequest =
+    unsafe_addFormData name (HttpFormDataString value) None
 
 # Adds form data content to the request's form data field.
 #
@@ -226,7 +225,7 @@ def makeCurlCmd ((HttpRequest url method headers body formData maxTime connectTi
 
         match content
             HttpFormDataFile file -> "--form", "{name}=@\"{file}\"{typeFlag}", Nil
-            HttpFormDataString str -> "--form", "{name}={str}{typeFlag}", Nil
+            HttpFormDataString str -> "--form-string", "{name}={str}", Nil
 
     def bodyToCurlFlag body =
         require True = body.strlen >= 5000
