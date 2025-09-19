@@ -16,6 +16,7 @@ mod m20240805_163520_create_blob_id_fk_indexes;
 mod m20240809_213440_add_job_audit_table;
 mod m20240819_193352_add_output_indexes;
 mod m20240919_214610_add_hidden_to_output_dir;
+mod m20250900_000000_add_content_hash_to_blob;
 
 pub struct Migrator;
 
@@ -39,6 +40,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20240809_213440_add_job_audit_table::Migration),
             Box::new(m20240819_193352_add_output_indexes::Migration),
             Box::new(m20240919_214610_add_hidden_to_output_dir::Migration),
+            Box::new(m20250900_000000_add_content_hash_to_blob::Migration),
         ]
     }
 }

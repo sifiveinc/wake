@@ -219,6 +219,7 @@ impl JobKeyHash for AllowJobPayload {
 pub struct PostBlobResponsePart {
     pub id: Uuid,
     pub name: String,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -232,6 +233,7 @@ pub enum PostBlobResponse {
 pub struct ResolvedBlob {
     pub id: Uuid,
     pub url: String,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
