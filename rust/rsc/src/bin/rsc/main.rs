@@ -261,7 +261,8 @@ fn launch_blob_eviction(
             // This gives clients time to reference a blob before it gets evicted.
             let ttl = (Utc::now() - Duration::from_secs(config.blob_eviction.ttl)).naive_utc();
 
-            let blobs = match database::delete_unreferenced_blobs(
+            // Get blob candidates for deletion
+            let blob_candidates = match database::get_unreferenced_blobs_for_eviction(
                 conn.as_ref(),
                 ttl,
                 config.blob_eviction.chunk_size,
@@ -270,20 +271,26 @@ fn launch_blob_eviction(
             {
                 Ok(b) => b,
                 Err(err) => {
-                    tracing::error!(%err, "Failed to delete blobs for eviction");
+                    tracing::error!(%err, "Failed to get blob candidates for eviction");
                     should_sleep = true;
                     continue; // Try again on the next tick
                 }
             };
 
-            let deleted = blobs.len();
+            let candidate_count = blob_candidates.len();
+            should_sleep = candidate_count == 0;
 
-            should_sleep = deleted == 0;
+            if candidate_count == 0 {
+                tracing::info!("No blobs found for eviction");
+                continue;
+            }
 
-            tracing::info!(%deleted, "N blobs deleted for eviction");
+            tracing::info!(%candidate_count, "Found blob candidates for eviction");
 
-            // Delete blobs from blob store
-            let chunked: Vec<Vec<database::DeletedBlob>> = blobs
+            // Delete from blob storage first to ensure no untracked files are left behind
+            let mut successfully_deleted_blob_ids = Vec::new();
+
+            let chunked: Vec<Vec<database::BlobCandidate>> = blob_candidates
                 .into_iter()
                 .chunks(config.blob_eviction.file_chunk_size)
                 .into_iter()
@@ -292,26 +299,45 @@ fn launch_blob_eviction(
 
             for chunk in chunked {
                 let thread_store = blob_stores.clone();
+                let mut chunk_success_ids = Vec::new();
 
-                tokio::spawn(async move {
-                    for blob in chunk {
-                        let store = match thread_store.get(&blob.store_id) {
-                            Some(s) => s.clone(),
-                            None => {
-                                let blob = blob.clone();
-                                tracing::info!(%blob.store_id, %blob.key, "Blob has been orphaned!");
-                                tracing::error!(%blob.store_id, "Blob's store id missing from activated stores");
-                                continue;
-                            }
-                        };
-
-                        store.delete_key(blob.key.clone()).await.unwrap_or_else(|err| {
-                            let blob = blob.clone();
+                // Process chunk synchronously to collect successful deletions
+                for blob in chunk {
+                    let store = match thread_store.get(&blob.store_id) {
+                        Some(s) => s.clone(),
+                        None => {
                             tracing::info!(%blob.store_id, %blob.key, "Blob has been orphaned!");
-                            tracing::error!(%err, "Failed to delete blob from store for eviction. See above for blob info");
-                        });
+                            tracing::error!(%blob.store_id, "Blob's store id missing from activated stores");
+                            continue;
+                        }
+                    };
+
+                    match store.delete_key(blob.key.clone()).await {
+                        Ok(_) => {
+                            tracing::debug!(%blob.key, "Successfully deleted blob from storage");
+                            chunk_success_ids.push(blob.id);
+                        }
+                        Err(err) => {
+                            tracing::error!(%err, %blob.key, %blob.store_id, "Failed to delete blob from storage");
+                        }
                     }
-                });
+                }
+
+                successfully_deleted_blob_ids.extend(chunk_success_ids);
+            }
+
+            // Delete from database only the successfully deleted blobs
+            if !successfully_deleted_blob_ids.is_empty() {
+                match database::delete_blobs_by_ids(conn.as_ref(), &successfully_deleted_blob_ids).await {
+                    Ok(deleted_count) => {
+                        tracing::info!(%deleted_count, "Successfully deleted blobs from database after storage deletion");
+                    }
+                    Err(err) => {
+                        tracing::error!(%err, "Failed to delete blob records from database after successful storage deletion - this may cause inconsistency");
+                    }
+                }
+            } else {
+                tracing::warn!("No blobs were successfully deleted from storage");
             }
         }
     });
