@@ -21,12 +21,15 @@
 
 #include "database.h"
 
+#include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sqlite3.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <iostream>
 #include <set>
 #include <sstream>
@@ -134,15 +137,21 @@ struct Database::detail {
         get_runner_status(0) {}
 };
 
-static void close_db(Database::detail *imp) {
-  if (imp->db) {
-    int ret = sqlite3_close(imp->db);
-    if (ret != SQLITE_OK) {
-      std::cerr << "Could not close wake.db: " << sqlite3_errmsg(imp->db) << std::endl;
-      return;
-    }
+static void close_db(Database *db) {
+  if (!db || !db->imp || !db->imp->db) {
+    return;
   }
-  imp->db = 0;
+
+  db->checkpoint(true);  // Blocking checkpoint on close for full sync
+  db->release_build_lock();
+
+  int ret = sqlite3_close(db->imp->db);
+  if (ret != SQLITE_OK) {
+    std::cerr << "Could not close wake.db: " << sqlite3_errmsg(db->imp->db) << std::endl;
+    return;
+  }
+
+  db->imp->db = 0;
 }
 
 Database::Database(bool debugdb) : imp(new detail(debugdb)) {}
@@ -168,25 +177,34 @@ static int schema_cb(void *data, int columns, char **values, char **labels) {
   return -1;
 }
 
-std::string Database::open(bool wait, bool memory, bool tty) {
+std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   if (imp->db) return "";
+
+  // Try to acquire build lock for write operations
+  if (!readonly) {
+    if (!try_acquire_build_lock(wait, tty)) {
+      return "Failed to acquire build lock";
+    }
+  }
+
   // Increment the SCHEMA_VERSION every time the below string changes.
   const char *schema_sql = WAKE_SCHEMA_SQL;
+  int flags = readonly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE;
 
   bool waiting = false;
   int ret;
 
   while (true) {
-    ret = sqlite3_open_v2(memory ? ":memory:" : "wake.db", &imp->db, SQLITE_OPEN_READWRITE, 0);
+    ret = sqlite3_open_v2(memory ? ":memory:" : "wake.db", &imp->db, flags, 0);
     if (ret != SQLITE_OK) {
       if (!imp->db) return "sqlite3_open: out of memory";
       std::string out = sqlite3_errmsg(imp->db);
-      close_db(imp.get());
+      close_db(this);
       return out;
     }
 
 #if SQLITE_VERSION_NUMBER >= 3007011
-    if (sqlite3_db_readonly(imp->db, 0)) {
+    if (sqlite3_db_readonly(imp->db, 0) && !readonly) {
       return "read-only";
     }
 #endif
@@ -218,7 +236,7 @@ std::string Database::open(bool wait, bool memory, bool tty) {
       sqlite3_finalize(st);
 
       if (rc == SQLITE_BUSY) {
-        close_db(imp.get());
+        close_db(this);
         if (!wait) return "Database wake.db is busy.";
         if (tty) {
           if (waiting)
@@ -236,7 +254,7 @@ std::string Database::open(bool wait, bool memory, bool tty) {
     int db_ver = header_ver ? header_ver : legacy_ver;
 
     if (db_ver && db_ver != atoi(SCHEMA_VERSION)) {
-      close_db(imp.get());
+      close_db(this);
       return db_ver > atoi(SCHEMA_VERSION)
                  ? "wake.db was created by a newer version of Wake; please upgrade Wake."
                  : "wake.db was created by an older version of Wake; please remove it or run "
@@ -244,6 +262,14 @@ std::string Database::open(bool wait, bool memory, bool tty) {
     }
 
     char *fail = nullptr;
+
+    if (readonly) {
+      if (waiting) {
+        std::cerr << std::endl;
+      }
+      break;
+    }
+
     ret = sqlite3_exec(imp->db, schema_sql, 0, 0, &fail);
     if (ret == SQLITE_OK) {
       if (waiting) {
@@ -268,7 +294,7 @@ std::string Database::open(bool wait, bool memory, bool tty) {
         sqlite3_exec(imp->db, set_version, 0, 0, 0);
         break;
       } else {
-        close_db(imp.get());
+        close_db(this);
         return "produced by an incompatible version of wake; please remove it or run 'wake-migrate "
                "wake.db' to upgrade it.";
       }
@@ -276,7 +302,7 @@ std::string Database::open(bool wait, bool memory, bool tty) {
 
     // We must close the DB so that we don't hold it shared, preventing an eventual exclusive
     // winner.
-    close_db(imp.get());
+    close_db(this);
 
     std::string out = fail;
     sqlite3_free(fail);
@@ -537,8 +563,80 @@ void Database::close() {
   FINALIZE(get_interleaved_output);
   FINALIZE(set_runner_status);
   FINALIZE(get_runner_status);
+  close_db(this);
+}
 
-  close_db(imp.get());
+bool Database::try_acquire_build_lock(bool wait, bool tty) {
+  const char *lock_file = ".wake-build-lock";
+  bool waiting = false;
+
+  while (true) {
+    int fd = ::open(lock_file, O_CREAT | O_EXCL | O_WRONLY, 0644);
+
+    if (fd != -1) {
+      // Successfully acquired lock
+      char pid_str[32];
+      snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
+      ::write(fd, pid_str, strlen(pid_str));
+      ::close(fd);
+
+      if (waiting) {
+        std::cerr << std::endl;
+      }
+
+      build_lock_acquired = true;
+      return true;
+    }
+
+    if (errno != EEXIST) {
+      std::cerr << "Failed to create build lock: " << strerror(errno) << std::endl;
+      return false;
+    }
+
+    // Lock exists - check if process is still alive
+    if (!is_lock_valid(lock_file)) {
+      unlink(lock_file);  // Stale lock, remove and retry
+      continue;
+    }
+
+    if (!wait) {
+      std::cerr << "Another wake target is running. Use '--wait' to queue." << std::endl;
+      return false;
+    }
+
+    if (tty) {
+      if (waiting) {
+        std::cerr << ".";
+      } else {
+        waiting = true;
+        std::cerr << "Another wake target is running; waiting .";
+      }
+    }
+
+    sleep(1);
+  }
+}
+
+void Database::release_build_lock() {
+  if (build_lock_acquired) {
+    unlink(".wake-build-lock");
+    build_lock_acquired = false;
+  }
+}
+
+bool Database::is_lock_valid(const char *lock_file) {
+  FILE *f = fopen(lock_file, "r");
+  if (!f) return false;
+
+  int pid;
+  if (fscanf(f, "%d", &pid) != 1) {
+    fclose(f);
+    return false;
+  }
+  fclose(f);
+
+  // Check if process exists
+  return kill(pid, 0) == 0;
 }
 
 static void finish_stmt(const char *why, sqlite3_stmt *stmt, bool debug) {
@@ -574,10 +672,25 @@ static void finish_stmt(const char *why, sqlite3_stmt *stmt, bool debug) {
 
 static void single_step(const char *why, sqlite3_stmt *stmt, bool debug) {
   int ret;
+  int retries = 0;
+  const int max_retries = 3;
 
-  ret = sqlite3_step(stmt);
+  while (true) {
+    ret = sqlite3_step(stmt);
+    if ((ret == SQLITE_BUSY || ret == SQLITE_LOCKED) && retries < max_retries) {
+      retries++;
+      std::cerr << "DB retry " << retries << " for: " << why << std::endl;
+      usleep(100000 * retries);  // 100ms, 200ms, 300ms backoff
+      sqlite3_reset(stmt);
+      continue;
+    }
+    break;
+  }
+
   if (ret != SQLITE_DONE) {
     std::cerr << why << "; sqlite3_step: " << sqlite3_errmsg(sqlite3_db_handle(stmt)) << std::endl;
+    std::cerr << "Error code: " << ret << " (SQLITE_BUSY=" << SQLITE_BUSY
+              << ", SQLITE_LOCKED=" << SQLITE_LOCKED << ")" << std::endl;
     std::cerr << "The failing statement was: ";
 #if SQLITE_VERSION_NUMBER >= 3014000
     char *tmp = sqlite3_expanded_sql(stmt);
@@ -696,10 +809,40 @@ void Database::clean() {
   single_step("Could not clean database dups", imp->delete_dups, imp->debugdb);
   single_step("Could not clean database stats", imp->delete_stats, imp->debugdb);
 
+  // Add checkpoint after cleanup operations
+  checkpoint(false);  // Non-blocking checkpoint for sync point
+
   // This cannot be a prepared statement, because pragmas may run on prepare
   char *fail;
   int ret = sqlite3_exec(imp->db, "pragma incremental_vacuum;", 0, 0, &fail);
   if (ret != SQLITE_OK) std::cerr << "Could not recover space: " << fail << std::endl;
+}
+
+void Database::checkpoint(bool blocking) {
+  if (!imp->db) return;
+
+  int mode = blocking ? SQLITE_CHECKPOINT_RESTART : SQLITE_CHECKPOINT_PASSIVE;
+  int wal_pages, checkpointed_pages;
+
+  int ret = sqlite3_wal_checkpoint_v2(imp->db, nullptr, mode, &wal_pages, &checkpointed_pages);
+
+  if (imp->debugdb && ret == SQLITE_OK) {
+    std::cerr << "Checkpoint: " << checkpointed_pages << "/" << wal_pages << " pages transferred"
+              << std::endl;
+  }
+}
+
+void Database::execute(const std::string &sql) {
+  if (!imp->db) return;
+
+  char *fail = nullptr;
+  int ret = sqlite3_exec(imp->db, sql.c_str(), nullptr, nullptr, &fail);
+  if (ret != SQLITE_OK) {
+    std::string error = fail ? fail : sqlite3_errmsg(imp->db);
+    sqlite3_free(fail);
+    std::cerr << "SQL execution failed: " << error << std::endl;
+  }
+  sqlite3_free(fail);
 }
 
 void Database::begin_txn() const {
@@ -965,6 +1108,11 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   end_txn();
 
   if (fail) exit(1);
+
+  static int job_count = 0;
+  if (++job_count % 50 == 0) {  // Keep WAL manageable by checkpoinging every 50 jobs
+    checkpoint(false);
+  }
 }
 
 std::vector<std::string> Database::clear_jobs() {

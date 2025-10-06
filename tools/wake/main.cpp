@@ -230,6 +230,10 @@ void query_jobs(const CommandLineOptions &clo, Database &db) {
 void inspect_database(const CommandLineOptions &clo, Database &db) {
   // tagdag and history are db inspection queries, but are very different from the
   // rest of the queries which operate on the jobs table.
+
+  // Enable read_uncommitted introspection for non-blocking, immediate reads
+  db.execute("PRAGMA read_uncommitted=1");
+
   if (clo.tagdag) {
     output_tagdag(db, clo.tagdag);
   } else if (clo.history) {
@@ -479,22 +483,24 @@ int main(int argc, char **argv) {
 
   // Initialize Wake logging subsystem
 
-  // Log all events to wake.log
-  auto res = JsonSubscriber::fd_t::open("wake.log");
-  if (!res) {
-    std::cerr << "Unable to init logging: wake.log failed to open: " << strerror(res.error())
-              << std::endl;
-    return 1;
+  // Only log to wake.log for non-inspection operations
+  if (!is_db_inspection) {
+    // Log all events to wake.log
+    auto res = JsonSubscriber::fd_t::open("wake.log");
+    if (!res) {
+      std::cerr << "Unable to init logging: wake.log failed to open: " << strerror(res.error())
+                << std::endl;
+      return 1;
+    }
+    wcl::log::subscribe(std::make_unique<JsonSubscriber>(std::move(*res)));
+    wcl::log::info("Initialized logging")();
   }
-  wcl::log::subscribe(std::make_unique<JsonSubscriber>(std::move(*res)));
 
   // Log urgent events to cerr
   auto cerr_subscriber = std::make_unique<wcl::log::SimpleFormatSubscriber>(std::cerr.rdbuf());
   auto filter_subscriber = std::make_unique<wcl::log::FilterSubscriber>(
       std::move(cerr_subscriber), [](const auto &e) { return e.get(wcl::log::URGENT) != nullptr; });
   wcl::log::subscribe(std::move(filter_subscriber));
-
-  wcl::log::info("Initialized logging")();
 
   // Now check for any flags that override config options
   WakeConfigOverrides config_override;
@@ -552,7 +558,7 @@ int main(int argc, char **argv) {
   }
 
   Database db(clo.debugdb);
-  std::string fail = db.open(clo.wait, !clo.workspace, clo.tty);
+  std::string fail = db.open(clo.wait, !clo.workspace, clo.tty, is_db_inspection);
   if (!fail.empty()) {
     std::cerr << "Failed to open wake.db: " << fail << std::endl;
     return 1;
