@@ -58,7 +58,7 @@ export def primJobCreate (label: String) (jobKey: JobKey) (keep: Integer) (echo:
 
 # Immediately complete a job with the provided outputs without launching a process
 export def primJobVirtual (job: Job) (stdout: String) (stderr: String) (usage: Usage): Unit =
-    def Usage status runtime cputime membytes ibytes obytes = usage
+    def Usage jobStatus runtime cputime membytes ibytes obytes = usage
     def runner_out = ""
     def runner_err = ""
 
@@ -68,7 +68,7 @@ export def primJobVirtual (job: Job) (stdout: String) (stderr: String) (usage: U
     stderr
     runner_out
     runner_err
-    status
+    jobStatus
     runtime
     cputime
     membytes
@@ -78,7 +78,7 @@ export def primJobVirtual (job: Job) (stdout: String) (stderr: String) (usage: U
 # Launch the job via a child process. Values such as command or environment can be freely changed from the initial reservation.
 export def primJobLaunch (job: Job) (jobKey: JobKey) (usage: Usage): Unit =
     def JobKey dir stdin env cmd _signature _visible isatty = jobKey
-    def Usage status runtime cputime membytes ibytes obytes = usage
+    def Usage jobStatus runtime cputime membytes ibytes obytes = usage
 
     (\_ \_ \_ \_ \_ \_ \_ \_ \_ \_ \_ \_ prim "job_launch")
     job
@@ -86,7 +86,7 @@ export def primJobLaunch (job: Job) (jobKey: JobKey) (usage: Usage): Unit =
     stdin
     env
     cmd
-    status
+    jobStatus
     runtime
     cputime
     membytes
@@ -110,14 +110,14 @@ export def markJobSetupFailure job err =
 
 # Complete a job successfully by providing to the runtime the inputs/outputs/usage of the job
 export def primJobFinish (job: Job) (inputs: String) (outputs: String) (all_outputs: String) (usage: Usage): Unit =
-    def Usage status runtime cputime membytes ibytes obytes = usage
+    def Usage jobStatus runtime cputime membytes ibytes obytes = usage
 
     (\_ \_ \_ \_ \_ \_ \_ \_ \_ \_ prim "job_finish")
     job
     inputs
     outputs
     all_outputs
-    status
+    jobStatus
     runtime
     cputime
     membytes
@@ -175,7 +175,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 | computeHashes prefix
                 | implode
 
-            def _ = unsafe_primJobSetRunnerStatus job runnerError
+            def _ = unsafe_primJobSetRunnerStatusMessage job runnerError
 
             primJobFinish job inputs.implode hashedOutputs cleanable.implode reality
 
@@ -268,8 +268,8 @@ export def setJobInspectVisibilityHidden (job: Job): Job =
     job
     | setJobTag "inspect.visibility" "hidden"
 
-def toUsage (Pair (Pair status runtime) (Pair (Pair cputime membytes) (Pair ibytes obytes))) =
-    Usage status runtime cputime membytes ibytes obytes
+def toUsage (Pair (Pair jobStatus runtime) (Pair (Pair cputime membytes) (Pair ibytes obytes))) =
+    Usage jobStatus runtime cputime membytes ibytes obytes
 
 def getJobReality (job: Job): Result Usage Error =
     def raw job = prim "job_reality"
@@ -316,7 +316,7 @@ def guardPath job = match _
     Pass l if job.isJobOk -> findFailFn treeOk l
     _ ->
         # Check if it's a runner failure, if not then we know its a job failure
-        def runnerFailure = match (unsafe_getJobRunnerStatus job)
+        def runnerFailure = match (unsafe_getJobRunnerStatusMessage job)
             Pass (Some msg) -> "Runner failed with error {msg}"
             _ -> "Non-zero exit status ({format job.getJobStatus})"
 
@@ -434,9 +434,9 @@ export def unsafe_reportJobRunnerError (job: Job) (error: String): Job =
 # This allows tracking of runner errors that are not directly related to the job's execution -- if
 # `None` the *runner* succeeded regardless of whether or not the Job did, while if `Some` then the
 # runner failed (whether before or after launching the job).  This should only be called by the
-# `runAlways` infrastructure, while any other (runner) code can simply pass the status message in the final
-# `RunnerOutput.RunnerError` field.
-def unsafe_primJobSetRunnerStatus (job: Job) (status: Option Error): Unit = match status
+# `runAlways` infrastructure, while any other (runner) code can simply pass the status message in
+# the final `RunnerOutput.RunnerError` field.
+def unsafe_primJobSetRunnerStatusMessage (job: Job) (runnerStatus: Option Error): Unit = match runnerStatus
     # Just pass in the String, since the database isn't going to store the stack trace anyway.
     Some err -> (\_ \_ prim "job_set_runner_status") job err.getErrorCause
     # This will typically be unnecessary since the default value for the database column is NULL
@@ -453,7 +453,7 @@ def unsafe_primJobSetRunnerStatus (job: Job) (status: Option Error): Unit = matc
 # Marked unsafe as Runner status is not cached and cannot guarantee reproducibility.  In general,
 # this function should only be called by functions which construct and/or publish an execution
 # report, without the downstream logic depending on the contents of that report.
-export def unsafe_getJobRunnerStatus (job: Job): Result (Option String) Error =
+export def unsafe_getJobRunnerStatusMessage (job: Job): Result (Option String) Error =
     def raw job = prim "job_runner_status"
 
     raw job
@@ -498,9 +498,9 @@ export def isJobOk (job: Job): Boolean =
 
     # If the job succeeded, also check if the runner was successful
     if jobSuccess then
-        match (unsafe_getJobRunnerStatus job)
+        match (unsafe_getJobRunnerStatusMessage job)
             Fail _ -> False
-            Pass status -> isNone status
+            Pass runnerStatus -> isNone runnerStatus
     else
         False
 
@@ -512,12 +512,12 @@ export data Status =
 export def getJobStatus (job: Job): Status = match (getJobReport job)
     Fail f -> Aborted f
     Pass u ->
-        def status = u.getUsageStatus
+        def jobStatus = u.getUsageStatus
 
-        if status >= 0 then
-            Exited status
+        if jobStatus >= 0 then
+            Exited jobStatus
         else
-            Signaled (-status)
+            Signaled (-jobStatus)
 
 # Location of the wake executable
 export def wakePath: String =

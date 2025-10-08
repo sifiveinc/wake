@@ -1509,8 +1509,8 @@ std::vector<JobReflection> Database::matching(
   // clang-format off
   // | job_id | label | run_id | use_id | endtime | commandline | runner_status | status | runtime |       tags       |
   // -----------------------------------------------------------------------------------------------------------------------
-  // |    1   |  foo  |   1    |    1   |  1234   | ls lah .    |       0       |   0    |   2.8   | <d>a=b<d>c=d<d>  |
-  // |    2   |  bar  |   1    |    1   |  0000   | cat f.txt   |       1       |   0    |   0.0   |      null        |
+  // |    1   |  foo  |   1    |    1   |  1234   | ls lah .    | NULL          |   0    |   2.8   | <d>a=b<d>c=d<d>  |
+  // |    2   |  bar  |   1    |    1   |  0000   | cat f.txt   | "Job failed"  |   0    |   0.0   |      null        |
   // clang-format on
   //
   // The subtable is constructed by joining the jobs table with the minimal set of other dependent

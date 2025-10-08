@@ -135,7 +135,7 @@ export def localRunner: Runner =
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
             # Set the runner status to be a success (`None`) - it's the callers responsibility
-            # to set the appropriate status if the job that ran is an extension of a runner
+            # to set the appropriate status message if the job that ran is an extension of a runner
             Pass reality -> Pair reality None
 
         # Caller needs to fill this in from nothing
@@ -162,7 +162,7 @@ export def virtualRunner: Runner =
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
             # Set the runner status to be a success (`None`) - it's the callers responsibility
-            # to set the appropriate status if the job that ran is an extension of a runner
+            # to set the appropriate status message if the job that ran is an extension of a runner
             Pass reality -> Pair reality None
 
         # Caller needs to fill this in from nothing
@@ -248,7 +248,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
 
             RunnerOutput Nil Nil Nil emptyUsage (Some runnerError)
 
-        def Usage status runtime cputime membytes inbytes outbytes = record
+        def Usage jobStatus runtime cputime membytes inbytes outbytes = record
 
         def json =
             JObject (
@@ -264,7 +264,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                 "isolate-pids" :-> JBoolean False,
                 "mount-ops" :-> JArray (JObject ("type" :-> JString "workspace", "destination" :-> JString ".", Nil), Nil),
                 "usage" :-> JObject (
-                    "status" :-> JInteger status,
+                    "status" :-> JInteger jobStatus,
                     "runtime" :-> JDouble runtime,
                     "cputime" :-> JDouble cputime,
                     "membytes" :-> JInteger membytes,
@@ -309,13 +309,13 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         # Dispatch to the local runner via composition and get the outputs
         def (Runner _ localRun) = localRunner
         def localOutput = localRun job localInput
-        def statusCode = localOutput.getRunnerOutputUsage.getUsageStatus
+        def runnerStatusCode = localOutput.getRunnerOutputUsage.getUsageStatus
 
         # The `localRunner` output reflects the status of the runner itself, not the job, and so we
         # need to save that separately and extract the job status from the result file.
-        require 0 = statusCode
+        require 0 = runnerStatusCode
         else
-            Some "Non-zero exit status ({str statusCode}) for JSON runner on {specFile}".makeError
+            Some "Non-zero exit status ({str runnerStatusCode}) for JSON runner on {specFile}".makeError
             | RunnerOutput Nil Nil (specFile, Nil) emptyUsage
 
         require Pass content = parseJSONFile (Path resultFile "BadHash")

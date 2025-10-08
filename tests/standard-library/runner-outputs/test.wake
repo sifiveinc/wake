@@ -25,7 +25,7 @@ export def testRunnerFailWithEmptyError _: Result Unit Error =
         else failWithError "Expected job status to be 0, got {format job.getJobStatus}"
 
         # Runner status should be Some even though the error message is empty
-        require Pass runnerStatus = job.unsafe_getJobRunnerStatus
+        require Pass runnerStatus = job.unsafe_getJobRunnerStatusMessage
         require Some "" = runnerStatus
         else failWithError "Expected empty but present runner status message, got: {format runnerStatus}"
 
@@ -65,7 +65,7 @@ export def testRunnerFailWithJobFailure _: Result Unit Error =
         else failWithError "Expected job status 42, got {format job.getJobStatus}"
 
         # Runner status should be the given message since there was a runner error
-        require Pass runnerStatus = job.unsafe_getJobRunnerStatus
+        require Pass runnerStatus = job.unsafe_getJobRunnerStatusMessage
         require Some errorStatus = runnerStatus
         else failWithError "Expected Some runner status, got None"
         require True = errorStatus ==* "Intentional runner error with job failure"
@@ -104,7 +104,7 @@ export def testRunnerFailFinish _: Result Unit Error =
         else failWithError "Expected job status to be 0, got {format job.getJobStatus}"
 
         # Runner status should be the given message since a runner error is independent from job success
-        require Pass runnerStatus = job.unsafe_getJobRunnerStatus
+        require Pass runnerStatus = job.unsafe_getJobRunnerStatusMessage
         require Some errorStatus = runnerStatus
         else failWithError "Expected Some runner status, got None"
         require True = errorStatus ==* "Mark job as failure"
@@ -126,7 +126,7 @@ export def testRunnerOkSuccess _: Result Unit Error =
         else failWithError "Expected isJobOk to return True for successful job"
 
         # Runner status should be None (success)
-        require Pass runnerStatus = job.unsafe_getJobRunnerStatus
+        require Pass runnerStatus = job.unsafe_getJobRunnerStatusMessage
         require None = runnerStatus
         else failWithError "Expected None runner status for successful job, got '{format runnerStatus}'"
 
@@ -180,7 +180,7 @@ export def testWrapperRunnerStatus _: Result Unit Error =
         else failWithError "Expected job 'echo test' to fail due to inner runner error"
 
         # Verify the runner status is preserved from the inner runner
-        require Pass runnerStatus = job.unsafe_getJobRunnerStatus
+        require Pass runnerStatus = job.unsafe_getJobRunnerStatusMessage
         require Some errorStatus = runnerStatus
         else failWithError "Expected Some runner status, got None"
         require True = errorStatus ==* "Inner runner error"
@@ -299,7 +299,7 @@ export def testRunnerCustomOutput _: Result Unit Error =
         require Pass _ = job.getJobOutputs
 
         # Runner status should be None since there was no runner error (just a print to the error stream)
-        require Pass runnerStatus = job.unsafe_getJobRunnerStatus
+        require Pass runnerStatus = job.unsafe_getJobRunnerStatusMessage
         require None = runnerStatus
         else failWithError "Expected None runner status for successful job, got '{format runnerStatus}'"
 

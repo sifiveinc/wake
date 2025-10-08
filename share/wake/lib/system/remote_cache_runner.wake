@@ -316,7 +316,7 @@ def mkSearchRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _usag
 
 # Creates a CachePostJobRequest from the various inputs and outputs of a runner
 def mkPostJobRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ isAtty _ _): RunnerInput) (output: RunnerOutput) (hidden: String) (stdoutBlobId: String) (stderrBlobId: String) (files: List CachePostRequestOutputFile) (directories: List CachePostRequestOutputDirectory) (symlinks: List CachePostRequestOutputSymlink) =
-    def Usage status runtime cputime mem ibytes obytes = output.getRunnerOutputUsage
+    def Usage jobStatus runtime cputime mem ibytes obytes = output.getRunnerOutputUsage
 
     CachePostRequest
     label
@@ -332,7 +332,7 @@ def mkPostJobRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ is
     files
     stdoutBlobId
     stderrBlobId
-    status
+    jobStatus
     runtime
     cputime
     mem
@@ -341,9 +341,9 @@ def mkPostJobRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ is
 
 # Creates a CacheAllowedRequest from the various inputs and outputs of a runner
 def mkCacheAllowedRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ isAtty _ _): RunnerInput) (output: RunnerOutput) (hidden: String) =
-    def Usage status runtime cputime mem _ibytes obytes = output.getRunnerOutputUsage
+    def Usage jobStatus runtime cputime mem _ibytes obytes = output.getRunnerOutputUsage
 
-    CacheAllowedRequest label cmd dir env hidden isAtty stdin vis status runtime cputime mem obytes
+    CacheAllowedRequest label cmd dir env hidden isAtty stdin vis jobStatus runtime cputime mem obytes
 
 data ThirdByGroup =
     ThirdByGroupFirst

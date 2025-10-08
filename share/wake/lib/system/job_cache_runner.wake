@@ -66,8 +66,8 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
     def job_cache_add str = prim "job_cache_add"
 
     # For simplicity, still allow early-exit from this function by using a `Result` type; since both
-    # sides are the same and will be unified before it's passed to `makeRunner` below, the choice of
-    # `Pass` or `Fail` for any specific return value is arbitrary.
+    # sides are the same `RunnerOutput` and will be unified before it's passed to `makeRunner` below,
+    # the choice of `Pass` or `Fail` for any specific `require` guard is arbitrary.
     def run (job: Job) (input: RunnerInput): Result RunnerOutput RunnerOutput =
         def (RunnerInput label cmd vis env dir stdin _ prefix _ _ _ _) = input
 
@@ -152,7 +152,7 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
         # Now we need to run the job
         def baseOutput = baseDoIt job input
         def RunnerOutput inputs outputs _ usage runnerError = baseOutput
-        def Usage status runtime cputime mem ibytes obytes = usage
+        def Usage jobStatus runtime cputime mem ibytes obytes = usage
         def inputsTree = listToTree scmpCanonical inputs
 
         def mkOutputFileJson src =
@@ -198,7 +198,7 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
                 "input_files" :-> jobCacheReadFiles,
                 "input_dirs" :-> JArray Nil, # TODO: This will need some fuse work to make good on
                 "output_files" :-> jobCacheOutputFiles,
-                "status" :-> JInteger status,
+                "status" :-> JInteger jobStatus,
                 "runtime" :-> JDouble runtime,
                 "cputime" :-> JDouble cputime,
                 "mem" :-> JInteger mem,
@@ -222,7 +222,7 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
                 True
 
             # Caching a failed job is a waste of space, never do that
-            require True = status == 0
+            require True = jobStatus == 0
             else Pass ""
 
             require None = runnerError
@@ -239,6 +239,9 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
         | setRunnerOutputInputs (map getPathName vis)
         | Pass
 
+    # Unify both sides of the return value; `Pass` and `Fail` here are effectively meaningless
+    # metadata that primarily serve to just provide a type-safe way to short-circuit out of `run`,
+    # and the `RunnerOutput` they contain is largely indistinguishable.
     def getEither = match _
         Pass x -> x
         Fail x -> x
@@ -256,7 +259,7 @@ def parseJobCacheMatch (job: Job) (jobCacheJsonOut: JValue): Result JobCacheMatc
     require Pass match_info = jField jobCacheJsonOut "match"
     require Pass output_info = jField match_info "output_info"
 
-    require Pass status =
+    require Pass jobStatus =
         jField output_info "status"
         | jInteger
 
@@ -305,6 +308,6 @@ def parseJobCacheMatch (job: Job) (jobCacheJsonOut: JValue): Result JobCacheMatc
         | jString
 
     def outputs = output_files ++ output_dirs ++ output_symlinks
-    def predict = Usage status runtime cputime mem ibytes obytes
+    def predict = Usage jobStatus runtime cputime mem ibytes obytes
 
     Pass (JobCacheMatch inputs outputs stdout stderr predict)
