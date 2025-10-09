@@ -1233,7 +1233,7 @@ static PRIMFN(prim_job_fail_launch) {
   EXPECT(2);
   JOB(job, 0);
 
-  REQUIRE(job->state == 0);
+  REQUIRE((job->state & ~(STATE_RUNNER_OUT | STATE_RUNNER_ERR)) == 0);
 
   size_t need = reserve_unit() + WJob::reserve();
   runtime.heap.reserve(need);
@@ -1276,7 +1276,7 @@ static PRIMFN(prim_job_launch) {
   parse_usage(&job->predict, args + 5, runtime, scope);
   job->predict.found = true;
 
-  REQUIRE(job->state == 0);
+  REQUIRE((job->state & ~(STATE_RUNNER_OUT | STATE_RUNNER_ERR)) == 0);
 
   auto &heap = jobtable->imp->pending;
   heap.emplace_back(new Task(runtime.heap.root(job), dir->as_str(), stdin_file->as_str(),
@@ -1334,7 +1334,7 @@ static PRIMFN(prim_job_virtual) {
   if (!runner_err_payload->empty())
     job->db->save_output(job->job, 4, runner_err_payload->c_str(), runner_err_payload->size(), 0);
 
-  REQUIRE(job->state == 0);
+  REQUIRE((job->state & ~(STATE_RUNNER_OUT | STATE_RUNNER_ERR)) == 0);
 
   std::stringstream s;
   s << pretty_cmd(job->cmdline->as_str());
@@ -1598,7 +1598,7 @@ static PRIMFN(prim_job_report_runner_error) {
   STRING(error_message, 1);
 
   job->db->save_output(job->job, 4, error_message->c_str(), error_message->size(), 0);
-  // Don't set STATE_RUNNER_ERR here - that should only be set when the stream is closed
+  job->state |= STATE_RUNNER_ERR;
 
   runtime.heap.reserve(WJob::reserve());
   runtime.schedule(WJob::claim(runtime.heap, job));
@@ -1617,7 +1617,7 @@ static PRIMFN(prim_job_report_runner_output) {
   STRING(output_message, 1);
 
   job->db->save_output(job->job, 3, output_message->c_str(), output_message->size(), 0);
-  // Don't set STATE_RUNNER_OUT here - that should only be set when the stream is closed
+  job->state |= STATE_RUNNER_OUT;
 
   runtime.heap.reserve(WJob::reserve());
   runtime.schedule(WJob::claim(runtime.heap, job));
