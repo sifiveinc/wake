@@ -180,7 +180,7 @@ def computeHashes (prefix: String) (files: List String): List String =
 
     def hashPlan cmd vis =
         Plan
-        "<hash>"
+        "hash: #{prefix}"
         cmd
         vis
         Nil
@@ -196,7 +196,7 @@ def computeHashes (prefix: String) (files: List String): List String =
         identity
         False
 
-    def stdin_file_path = "to_hash.{prefix}.stdin"
+    def stdin_file_path = ".build/tmp/to_hash.{prefix}.stdin"
 
     # We construct a different plan depending on if we could use command line arguments or not
     require Pass plan = match use_file
