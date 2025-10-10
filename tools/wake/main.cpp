@@ -230,10 +230,6 @@ void query_jobs(const CommandLineOptions &clo, Database &db) {
 void inspect_database(const CommandLineOptions &clo, Database &db) {
   // tagdag and history are db inspection queries, but are very different from the
   // rest of the queries which operate on the jobs table.
-
-  // Enable read_uncommitted introspection for non-blocking, immediate reads
-  db.execute("PRAGMA read_uncommitted=1");
-
   if (clo.tagdag) {
     output_tagdag(db, clo.tagdag);
   } else if (clo.history) {

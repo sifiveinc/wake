@@ -137,12 +137,40 @@ struct Database::detail {
         get_runner_status(0) {}
 };
 
+class WaitingIndicator {
+ private:
+  bool waiting = false;
+  bool tty;
+
+ public:
+  WaitingIndicator(bool tty_) : tty(tty_) {}
+
+  void show_waiting(const std::string &message) {
+    if (!tty) return;
+
+    if (!waiting) {
+      waiting = true;
+      std::cerr << message << " .";
+    } else {
+      std::cerr << ".";
+    }
+  }
+
+  void finish() {
+    if (waiting && tty) {
+      std::cerr << std::endl;
+      waiting = false;
+    }
+  }
+
+  ~WaitingIndicator() { finish(); }
+};
+
 static void close_db(Database *db) {
   if (!db || !db->imp || !db->imp->db) {
     return;
   }
 
-  db->checkpoint(true);  // Blocking checkpoint on close for full sync
   db->release_build_lock();
 
   int ret = sqlite3_close(db->imp->db);
@@ -154,7 +182,8 @@ static void close_db(Database *db) {
   db->imp->db = 0;
 }
 
-Database::Database(bool debugdb) : imp(new detail(debugdb)) {}
+Database::Database(bool debugdb, int _checkpoint_interval)
+    : imp(new detail(debugdb)), checkpoint_interval(_checkpoint_interval) {}
 Database::~Database() { close(); }
 
 static int schema_cb(void *data, int columns, char **values, char **labels) {
@@ -191,7 +220,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *schema_sql = WAKE_SCHEMA_SQL;
   int flags = readonly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE;
 
-  bool waiting = false;
+  WaitingIndicator indicator(tty);
   int ret;
 
   while (true) {
@@ -238,14 +267,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       if (rc == SQLITE_BUSY) {
         close_db(this);
         if (!wait) return "Database wake.db is busy.";
-        if (tty) {
-          if (waiting)
-            std::cerr << '.';
-          else {
-            waiting = true;
-            std::cerr << "Database wake.db is busy; waiting .";
-          }
-        }
+        indicator.show_waiting("Database wake.db is busy; waiting");
         sleep(1);
         continue;
       }
@@ -264,17 +286,13 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
     char *fail = nullptr;
 
     if (readonly) {
-      if (waiting) {
-        std::cerr << std::endl;
-      }
+      indicator.finish();
       break;
     }
 
     ret = sqlite3_exec(imp->db, schema_sql, 0, 0, &fail);
     if (ret == SQLITE_OK) {
-      if (waiting) {
-        std::cerr << std::endl;
-      }
+      indicator.finish();
 
       // stamp the PRAGMA user_version
       {
@@ -308,20 +326,11 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
     sqlite3_free(fail);
 
     if (!wait || ret != SQLITE_BUSY) {
-      if (waiting) {
-        std::cerr << std::endl;
-      }
+      indicator.finish();
       return "Could not apply schema version " + std::string(SCHEMA_VERSION) +
              " to the wake.db. Please remove the wake.db and try again: " + out;
     } else {
-      if (tty) {
-        if (waiting) {
-          std::cerr << ".";
-        } else {
-          waiting = true;
-          std::cerr << "Database wake.db is busy; waiting .";
-        }
-      }
+      indicator.show_waiting("Database wake.db is busy; waiting");
       sleep(1);
     }
   }
@@ -568,7 +577,7 @@ void Database::close() {
 
 bool Database::try_acquire_build_lock(bool wait, bool tty) {
   const char *lock_file = ".wake-build-lock";
-  bool waiting = false;
+  WaitingIndicator indicator(tty);
 
   while (true) {
     int fd = ::open(lock_file, O_CREAT | O_EXCL | O_WRONLY, 0644);
@@ -580,10 +589,7 @@ bool Database::try_acquire_build_lock(bool wait, bool tty) {
       ::write(fd, pid_str, strlen(pid_str));
       ::close(fd);
 
-      if (waiting) {
-        std::cerr << std::endl;
-      }
-
+      indicator.finish();
       build_lock_acquired = true;
       return true;
     }
@@ -600,19 +606,12 @@ bool Database::try_acquire_build_lock(bool wait, bool tty) {
     }
 
     if (!wait) {
-      std::cerr << "Another wake target is running. Use '--wait' to queue." << std::endl;
+      std::cerr << "Another wake target is running. Exiting early because of '--no-wait' argument."
+                << std::endl;
       return false;
     }
 
-    if (tty) {
-      if (waiting) {
-        std::cerr << ".";
-      } else {
-        waiting = true;
-        std::cerr << "Another wake target is running; waiting .";
-      }
-    }
-
+    indicator.show_waiting("Another wake target is running; waiting");
     sleep(1);
   }
 }
@@ -830,19 +829,6 @@ void Database::checkpoint(bool blocking) {
     std::cerr << "Checkpoint: " << checkpointed_pages << "/" << wal_pages << " pages transferred"
               << std::endl;
   }
-}
-
-void Database::execute(const std::string &sql) {
-  if (!imp->db) return;
-
-  char *fail = nullptr;
-  int ret = sqlite3_exec(imp->db, sql.c_str(), nullptr, nullptr, &fail);
-  if (ret != SQLITE_OK) {
-    std::string error = fail ? fail : sqlite3_errmsg(imp->db);
-    sqlite3_free(fail);
-    std::cerr << "SQL execution failed: " << error << std::endl;
-  }
-  sqlite3_free(fail);
 }
 
 void Database::begin_txn() const {
@@ -1110,7 +1096,8 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   if (fail) exit(1);
 
   static int job_count = 0;
-  if (++job_count % 50 == 0) {  // Keep WAL manageable by checkpoinging every 50 jobs
+  if (++job_count % checkpoint_interval ==
+      0) {  // Keep WAL manageable by checkpoinging each interval
     checkpoint(false);
   }
 }

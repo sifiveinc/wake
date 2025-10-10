@@ -113,7 +113,7 @@ struct Database {
   struct detail;
   std::unique_ptr<detail> imp;
 
-  Database(bool debugdb);
+  Database(bool debugdb, int _checkpoint_interval = 50);
   ~Database();
 
   std::string open(bool wait, bool memory, bool tty, bool readonly = false);
@@ -131,9 +131,6 @@ struct Database {
   // blocking=true: RESTART mode, waits for all readers to finish
   // blocking=false: PASSIVE mode, non-blocking sync attempt
   void checkpoint(bool blocking = false);
-
-  // Execute a raw SQL statement
-  void execute(const std::string &sql);
 
   void begin_txn() const;
   void end_txn() const;
@@ -208,6 +205,7 @@ struct Database {
  private:
   bool is_lock_valid(const char *lock_file);
   bool build_lock_acquired = false;
+  int checkpoint_interval;
 };
 
 #endif
