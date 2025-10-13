@@ -80,6 +80,8 @@ export def testRunnerFailWithJobFailure _: Result Unit Error =
 
     addErrorContext "runner-fail-with-job-failure" check
 
+    addErrorContext "runner-output-status" check
+
 # Test that a runner can finish a job but mark it as failed
 export def testRunnerFailFinish _: Result Unit Error =
     def run job input =

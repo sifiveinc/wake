@@ -528,6 +528,7 @@ mod tests {
             id: NotSet,
             created_at: Set((Utc::now() - Duration::days(5)).naive_utc()),
             updated_at: Set((Utc::now() - Duration::days(5)).naive_utc()),
+            content_hash: Set("fakeblobhash".into()),
             key: Set("InsecureKey".into()),
             size: Set(11),
             store_id: Set(store_id),
@@ -752,10 +753,12 @@ mod tests {
                 "output_symlinks": [],
                 "output_files":[],
                 "stdout_blob": {
+                    "content_hash": "fakeblobhash",
                     "id": blob_id,
                     "url": format!("test://{0}/InsecureKey", store_id),
                 },
                 "stderr_blob": {
+                    "content_hash": "fakeblobhash",
                     "id": blob_id,
                     "url": format!("test://{0}/InsecureKey", store_id),
                 },
