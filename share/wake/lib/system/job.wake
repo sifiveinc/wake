@@ -436,13 +436,14 @@ export def unsafe_reportJobRunnerError (job: Job) (error: String): Job =
 # runner failed (whether before or after launching the job).  This should only be called by the
 # `runAlways` infrastructure, while any other (runner) code can simply pass the status message in
 # the final `RunnerOutput.RunnerError` field.
-def unsafe_primJobSetRunnerStatusMessage (job: Job) (runnerStatus: Option Error): Unit = match runnerStatus
-    # Just pass in the String, since the database isn't going to store the stack trace anyway.
-    Some err -> (\_ \_ prim "job_set_runner_status") job err.getErrorCause
-    # This will typically be unnecessary since the default value for the database column is NULL
-    # (no runner error), and Wake should never cache a job with a runner error, but it's here just
-    # in case the same row gets reused and the runner status message in it needs to be cleared.
-    None -> (\_ prim "job_clear_runner_status") job
+def unsafe_primJobSetRunnerStatusMessage (job: Job) (runnerStatus: Option Error): Unit =
+    match runnerStatus
+        # Just pass in the String, since the database isn't going to store the stack trace anyway.
+        Some err -> (\_ \_ prim "job_set_runner_status") job err.getErrorCause
+        # This will typically be unnecessary since the default value for the database column is NULL
+        # (no runner error), and Wake should never cache a job with a runner error, but it's here just
+        # in case the same row gets reused and the runner status message in it needs to be cleared.
+        None -> (\_ prim "job_clear_runner_status") job
 
 # Get the runner status from a job.
 # The runner status is used to determine if the runner that a job ran on succeeded (`None`) or
