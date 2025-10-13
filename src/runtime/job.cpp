@@ -1233,6 +1233,8 @@ static PRIMFN(prim_job_fail_launch) {
   EXPECT(2);
   JOB(job, 0);
 
+  // Test the job state is still its initial value (i.e. it hasn't already entered processing),
+  // except that it may have previously reported runner messages (as those bits are masked out).
   REQUIRE((job->state & ~(STATE_RUNNER_OUT | STATE_RUNNER_ERR)) == 0);
 
   size_t need = reserve_unit() + WJob::reserve();
@@ -1276,6 +1278,8 @@ static PRIMFN(prim_job_launch) {
   parse_usage(&job->predict, args + 5, runtime, scope);
   job->predict.found = true;
 
+  // Test the job state is still its initial value (i.e. it hasn't already entered processing),
+  // except that it may have previously reported runner messages (as those bits are masked out).
   REQUIRE((job->state & ~(STATE_RUNNER_OUT | STATE_RUNNER_ERR)) == 0);
 
   auto &heap = jobtable->imp->pending;
@@ -1334,6 +1338,8 @@ static PRIMFN(prim_job_virtual) {
   if (!runner_err_payload->empty())
     job->db->save_output(job->job, 4, runner_err_payload->c_str(), runner_err_payload->size(), 0);
 
+  // Test the job state is still its initial value (i.e. it hasn't already entered processing),
+  // except that it may have previously reported runner messages (as those bits are masked out).
   REQUIRE((job->state & ~(STATE_RUNNER_OUT | STATE_RUNNER_ERR)) == 0);
 
   std::stringstream s;
