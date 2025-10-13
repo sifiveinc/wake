@@ -1,3 +1,4 @@
+
 use crate::blob;
 use crate::types::{
     AllowJobPayload, Dir, JobKeyHash, ReadJobPayload, ReadJobResponse, ResolvedBlob,
@@ -18,40 +19,36 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tracing;
 use std::time::Instant;
-use lazy_static::lazy_static;
-use prometheus::{register_counter, register_histogram, Counter, Histogram};
-
-lazy_static! {
-    /// Counts how many cache hits we've had.
-    pub static ref CACHE_HITS: Counter = register_counter!(
-        "cache_hits",
-        "Number of cache hits"
-    ).unwrap();
-
-    /// Counts how many cache misses we've had.
-    pub static ref CACHE_MISSES: Counter = register_counter!(
-        "cache_misses",
-        "Number of cache misses"
-    ).unwrap();
-
-    /// Tracks latencies (in milliseconds) for read_job requests.
-    pub static ref HIT_LATENCY_MS: Histogram = register_histogram!(
-        "hit_latency_ms",
-        "Histogram of cache hit latencies in milliseconds"
-    ).unwrap();
-
-    pub static ref MISS_LATENCY_MS: Histogram = register_histogram!(
-        "miss_latency_ms",
-        "Histogram of cache miss latencies in milliseconds"
-    ).unwrap();
-}
-
+use crate::metrics::{
+    CACHE_HITS,
+    CACHE_MISSES,
+    HIT_LATENCY_MS,
+    MISS_LATENCY_MS,
+    CACHE_RUNTIME_SAVINGS_SECONDS,
+    CACHE_CPUTIME_SAVINGS_SECONDS,
+    CACHE_MEMORY_SAVINGS_BYTES,
+    CACHE_IO_READ_SAVINGS_BYTES,
+    CACHE_IO_WRITE_SAVINGS_BYTES,
+    CACHE_HIT_RUNTIME_HISTOGRAM,
+    CACHE_HIT_CPUTIME_HISTOGRAM,
+};
 
 #[tracing::instrument(skip_all)]
-fn update_hit_counters(start_time: Instant) {
+fn update_hit_counters(start_time: Instant, job: &job::Model) {
     CACHE_HITS.inc();
     let elapsed_ms = start_time.elapsed().as_millis() as f64;
     HIT_LATENCY_MS.observe(elapsed_ms);
+
+    // Record cache savings metrics
+    CACHE_RUNTIME_SAVINGS_SECONDS.inc_by(job.runtime);
+    CACHE_CPUTIME_SAVINGS_SECONDS.inc_by(job.cputime);
+    CACHE_MEMORY_SAVINGS_BYTES.inc_by(job.memory as f64);
+    CACHE_IO_READ_SAVINGS_BYTES.inc_by(job.i_bytes as f64);
+    CACHE_IO_WRITE_SAVINGS_BYTES.inc_by(job.o_bytes as f64);
+
+    // Record histograms for cache hit performance characteristics
+    CACHE_HIT_RUNTIME_HISTOGRAM.observe(job.runtime);
+    CACHE_HIT_CPUTIME_HISTOGRAM.observe(job.cputime);
 }
 
 #[tracing::instrument(skip_all)]
@@ -169,7 +166,7 @@ pub async fn read_job(
         tokio::spawn(async move {
             record_miss(hash_copy, conn.clone()).await;
         });
-        
+
         update_miss_counters(start);
 
         return (StatusCode::NOT_FOUND, Json(ReadJobResponse::NoMatch));
@@ -213,9 +210,9 @@ pub async fn read_job(
         Ok(files) => files,
         Err(err) => {
             tracing::error!(%err, "Failed to resolve all output files. Resolving job as a cache miss.");
-            
+
             update_miss_counters(start);
-            
+
             return (StatusCode::NOT_FOUND, Json(ReadJobResponse::NoMatch));
         }
     };
@@ -278,7 +275,7 @@ pub async fn read_job(
     tokio::spawn(async move {
         record_hit(job_id, hash_copy, conn.clone()).await;
     });
-    update_hit_counters(start);
+    update_hit_counters(start, &matching_job);
     (StatusCode::OK, Json(response))
 }
 

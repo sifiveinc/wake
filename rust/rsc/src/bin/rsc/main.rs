@@ -24,6 +24,7 @@ mod blob;
 mod blob_store_impls;
 mod config;
 mod dashboard;
+mod metrics;
 mod read_job;
 mod types;
 
