@@ -113,16 +113,24 @@ struct Database {
   struct detail;
   std::unique_ptr<detail> imp;
 
-  Database(bool debugdb);
+  Database(bool debugdb, int _checkpoint_interval = 50);
   ~Database();
 
-  std::string open(bool wait, bool memory, bool tty);
+  std::string open(bool wait, bool memory, bool tty, bool readonly = false);
   void close();
 
   void entropy(uint64_t *key, int words);
 
   void prepare(const std::string &cmdline);  // prepare for job execution
   void clean();                              // finished execution; sweep stale jobs
+
+  // Force SQLite WAL checkpoint to sync changes to main database file
+  // Needed to prevent WAL from growing unbounded during long builds
+  // and ensure data is persisted to the main database file
+  //
+  // blocking=true: RESTART mode, waits for all readers to finish
+  // blocking=false: PASSIVE mode, non-blocking sync attempt
+  void checkpoint(bool blocking = false);
 
   void begin_txn() const;
   void end_txn() const;
@@ -189,6 +197,15 @@ struct Database {
   void set_runner_status(long job_id, int status);
 
   int get_runner_status(long job_id);
+
+  // Build locking for non-inspection commands
+  bool try_acquire_build_lock(bool wait, bool tty);
+  void release_build_lock();
+
+ private:
+  bool is_lock_valid(const char *lock_file);
+  bool build_lock_acquired = false;
+  int checkpoint_interval;
 };
 
 #endif

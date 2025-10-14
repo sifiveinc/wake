@@ -1,7 +1,7 @@
 #ifndef WAKE_SCHEMA_H
 #define WAKE_SCHEMA_H
 
-#define SCHEMA_VERSION "8"
+#define SCHEMA_VERSION "9"
 
 // Increment the SCHEMA_VERSION every time the below string changes.
 // Also add migrations to the wake-migration tool if needed.
@@ -9,7 +9,8 @@ inline const char* getWakeSchemaSQL() {
   return "pragma auto_vacuum=incremental;"
          "pragma journal_mode=wal;"
          "pragma synchronous=0;"
-         "pragma locking_mode=exclusive;"
+         "pragma locking_mode=normal;"
+         "pragma busy_timeout=30000;"
          "pragma foreign_keys=on;"
          "create table if not exists entropy("
          "  row_id integer primary key autoincrement,"

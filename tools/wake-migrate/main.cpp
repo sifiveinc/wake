@@ -128,6 +128,15 @@ static std::vector<Migration> get_migrations() {
        },
        "Add runner_status partial index"},
 
+      // Version 8 -> 9: Update locking mode and add busy timeout
+      {8, 9,
+       [](sqlite3* db) -> bool {
+         // PRAGMA changes are applied by WAKE_SCHEMA_SQL after migration
+         // No schema modifications needed, just version bump
+         return true;
+       },
+       "Update locking mode to normal and add busy timeout"},
+
   };
 }
 
