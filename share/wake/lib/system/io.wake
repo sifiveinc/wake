@@ -159,19 +159,19 @@ def writeRunner (content: String) =
 
         def writeTask = primWrite mode path content
 
-        # Wait for the virtual job to complete
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
             Pass reality -> Pair reality None
 
-        match writeTask
-            Fail msg -> RunnerOutput Nil Nil Nil usage (Some msg.makeError)
-            Pass path ->
-                def fileInputs =
-                    vis
-                    | map getPathName
-                    | fnInputs
+        def fileInputs =
+            vis
+            | map getPathName
+            | fnInputs
 
+        # Wait for the virtual job to complete
+        match writeTask
+            Fail msg -> RunnerOutput fileInputs Nil Nil usage (Some msg.makeError)
+            Pass path ->
                 def cleanable = (path, Nil)
                 def fileOutputs = fnOutputs cleanable
 
@@ -311,7 +311,6 @@ def mkdirRunner: Runner =
 
         def mkdirTask = primMkdir mode path
 
-        # Wait for the virtual job to complete
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
             Pass reality -> Pair reality None
@@ -321,6 +320,7 @@ def mkdirRunner: Runner =
             | map getPathName
             | fnInputs
 
+        # Wait for the virtual job to complete
         match mkdirTask
             Fail msg -> RunnerOutput fileInputs Nil Nil usage (Some msg.makeError)
             Pass path ->

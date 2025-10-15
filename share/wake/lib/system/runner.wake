@@ -131,18 +131,20 @@ export def localRunner: Runner =
             | map getPathName
             | fnInputs
 
-        # Wait for the job to complete before calling fnOutputs
+        # Caller needs to fill this in from nothing
+        def cleanable = Nil
+        def fileOutputs = fnOutputs cleanable
+
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
             # Set the runner status to be a success (`None`) - it's the callers responsibility
             # to set the appropriate status message if the job that ran is an extension of a runner
             Pass reality -> Pair reality None
 
-        # Caller needs to fill this in from nothing
-        def cleanable = Nil
-        def fileOutputs = fnOutputs cleanable
+        # Wait for the job to complete
+        def return _ = RunnerOutput fileInputs fileOutputs cleanable usage runnerError
 
-        RunnerOutput fileInputs fileOutputs cleanable usage runnerError
+        waitJobMerged return job
 
     makeRunner "local" run
 
@@ -158,34 +160,22 @@ export def virtualRunner: Runner =
             | map getPathName
             | fnInputs
 
-        # Wait for the job to complete before calling fnOutputs
+        # Caller needs to fill this in from nothing
+        def cleanable = Nil
+        def fileOutputs = fnOutputs cleanable
+
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
             # Set the runner status to be a success (`None`) - it's the callers responsibility
             # to set the appropriate status message if the job that ran is an extension of a runner
             Pass reality -> Pair reality None
 
-        # Caller needs to fill this in from nothing
-        def cleanable = Nil
-        def fileOutputs = fnOutputs cleanable
+        # Wait for the job to complete
+        def return _ = RunnerOutput fileInputs fileOutputs cleanable usage runnerError
 
-        RunnerOutput fileInputs fileOutputs cleanable usage runnerError
+        waitJobMerged return job
 
     makeRunner "virtual" run
-
-# wrapRunner: Deprecated. Do not use this function.
-#
-# It will be deleted in the next release. See makeRunner for migration
-export def wrapRunner name pre post (Runner _ run) =
-    def doit job preInput = match (pre preInput)
-        Pair runInput state ->
-            def runOutput = run job runInput
-            def final _ = post (Pair runOutput state)
-
-            # Don't run any 'post' steps until the Job has stopped running
-            waitJobMerged final job
-
-    Runner name doit
 
 # Implement FUSE-based Runner
 export def fuseRunner: Runner =
@@ -309,35 +299,39 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         # Dispatch to the local runner via composition and get the outputs
         def (Runner _ localRun) = localRunner
         def localOutput = localRun job localInput
-        def runnerStatusCode = localOutput.getRunnerOutputUsage.getUsageStatus
 
         # The `localRunner` output reflects the status of the runner itself, not the job, and so we
         # need to save that separately and extract the job status from the result file.
+        # In the failure case, though, the runner's usage might provide a slightly better fallback
+        # for resource usage than simply returning all zeros.
+        def runnerUsage = localOutput.getRunnerOutputUsage
+        def runnerStatusCode = runnerUsage.getUsageStatus
+
         require 0 = runnerStatusCode
         else
             Some "Non-zero exit status ({str runnerStatusCode}) for JSON runner on {specFile}".makeError
-            | RunnerOutput Nil Nil (specFile, Nil) emptyUsage
+            | RunnerOutput Nil Nil (specFile, Nil) runnerUsage
 
         require Pass content = parseJSONFile (Path resultFile "BadHash")
         else
             Some "Failed to parse output {resultFile} for JSON runner".makeError
-            | RunnerOutput Nil Nil (specFile, Nil) emptyUsage
+            | RunnerOutput Nil Nil (specFile, Nil) runnerUsage
 
         def field name = match _ _
             _ (Fail f) -> Fail f
             None (Pass fn) -> Fail "{script} produced {resultFile}, which is missing usage/{name}"
             (Some x) (Pass fn) -> Pass (fn x)
 
-        def usage = content // `usage`
+        def jsonUsage = content // `usage`
 
-        def usageResult =
+        def jobUsageResult =
             Pass (Usage _ _ _ _ _ _)
-            | field "status" (usage // `status` | getJInteger)
-            | field "runtime" (usage // `runtime` | getJDouble)
-            | field "cputime" (usage // `cputime` | getJDouble)
-            | field "membytes" (usage // `membytes` | getJInteger)
-            | field "inbytes" (usage // `inbytes` | getJInteger)
-            | field "outbytes" (usage // `outbytes` | getJInteger)
+            | field "status" (jsonUsage // `status` | getJInteger)
+            | field "runtime" (jsonUsage // `runtime` | getJDouble)
+            | field "cputime" (jsonUsage // `cputime` | getJDouble)
+            | field "membytes" (jsonUsage // `membytes` | getJInteger)
+            | field "inbytes" (jsonUsage // `inbytes` | getJInteger)
+            | field "outbytes" (jsonUsage // `outbytes` | getJInteger)
 
         def getK exp =
             content // exp
@@ -351,10 +345,12 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         def filteredOutputs = fnOutputs jsonOutputs
         def cleanableOutputs = specFile, resultFile, jsonOutputs
 
-        match usageResult
-            Pass usage -> RunnerOutput filteredInputs filteredOutputs cleanableOutputs usage None
+        match jobUsageResult
+            Pass jobUsage ->
+                None
+                | RunnerOutput filteredInputs filteredOutputs cleanableOutputs jobUsage
             Fail msg ->
                 Some msg.makeError
-                | RunnerOutput filteredInputs filteredOutputs cleanableOutputs emptyUsage
+                | RunnerOutput filteredInputs filteredOutputs cleanableOutputs runnerUsage
 
     makeRunner "json-{script}" run

@@ -53,36 +53,35 @@ def getPath input =
     jField elem "path"
     | jString
 
-def errorToOutput (result: Result a Error): Result a RunnerOutput =
-    require Fail err = result
-
-    RunnerOutput Nil Nil Nil emptyUsage (Some err)
-    | Fail
-
 # wakeroot is the absolute sandbox-path from which input and output files will
 # be interpreted as being relative to if they're in fact relative.
 export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakeroot: String) ((Runner name baseDoIt): Runner): Runner =
     def job_cache_read str = prim "job_cache_read"
     def job_cache_add str = prim "job_cache_add"
 
-    # For simplicity, still allow early-exit from this function by using a `Result` type; since both
-    # sides are the same `RunnerOutput` and will be unified before it's passed to `makeRunner` below,
-    # the choice of `Pass` or `Fail` for any specific `require` guard is arbitrary.
-    def run (job: Job) (input: RunnerInput): Result RunnerOutput RunnerOutput =
-        def (RunnerInput label cmd vis env dir stdin _ prefix _ _ _ _) = input
+    def mkVisJson (Path path hash) =
+        JObject (
+            "path" :-> JString path,
+            "hash" :-> JString hash,
+        )
 
-        def mkVisJson (Path path hash) =
-            JObject (
-                "path" :-> JString path,
-                "hash" :-> JString hash,
-            )
+    def mkOutputFileJson src =
+        JObject (
+            "src" :-> JString src,
+            "path" :-> JString "{wakeroot}/{src}",
+        )
 
+    def isDebugOn =
+        require Some value = getenv "DEBUG_WAKE_SHARED_CACHE"
+        else False
+
+        value ==~ "1"
+
+    def setup (job: Job) (input: RunnerInput) =
+        def (RunnerInput _ cmd vis env dir stdin _ _ _ _ _ _) = input
         def jobCacheVisible = JArray (map mkVisJson vis)
 
-        require Pass hashKey =
-            hashFn input
-            | rmapFail (markJobSetupFailure job)
-            | errorToOutput
+        require Pass hashKey = hashFn input
 
         def jobCacheJsonIn =
             prettyJSON
@@ -110,37 +109,22 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
 
             Pass (jobCacheJsonOut; cacheHit)
 
-        require Pass (jobCacheJsonOut; cacheHit) =
-            jobCacheJsonOutResult
+        require Pass (jobCacheJsonOut; cacheHit) = jobCacheJsonOutResult
+
+        Pass (cacheHit; hashKey; jobCacheJsonIn; jobCacheJsonOut)
+
+    def run (job: Job) (input: RunnerInput): RunnerOutput =
+        def (RunnerInput label _ vis _ _ _ _ prefix _ _ _ _) = input
+
+        def setupResult =
+            setup job input
             | rmapFail (markJobSetupFailure job)
-            | errorToOutput
 
-        def isDebugOn =
-            require Some value = getenv "DEBUG_WAKE_SHARED_CACHE"
-            else False
-
-            value ==~ "1"
+        require Pass (cacheHit; hashKey; jobCacheJsonIn; jobCacheJsonOut) = setupResult
+        else RunnerOutput Nil Nil Nil emptyUsage setupResult.getFail
 
         require False = cacheHit
-        else
-            def _ =
-                require True = isDebugOn
-
-                def _ = write ".cache-hit/read.{prefix}.json" "//{label}\n{jobCacheJsonIn}"
-
-                def _ =
-                    write ".cache-hit/out.{prefix}.json" "//{label}\n{prettyJSON jobCacheJsonOut}"
-
-                True
-
-            require Pass (JobCacheMatch inputs outputs stdout stderr predict) =
-                parseJobCacheMatch job jobCacheJsonOut
-                | rmapFail (markJobSetupFailure job)
-                | errorToOutput
-
-            def _ = primJobVirtual job stdout stderr predict
-
-            Pass (RunnerOutput inputs outputs Nil predict None)
+        else returnCacheHit job input jobCacheJsonIn jobCacheJsonOut
 
         def _ =
             require True = isDebugOn
@@ -151,15 +135,53 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
 
         # Now we need to run the job
         def baseOutput = baseDoIt job input
+
+        # We put this in a def so that it does not block the return below.
+        # This ensures that the effect still occurs and blocks wake finishing but the job
+        # itself is not blocked by writing to the cache. This allows us to tolerate a lot
+        # of slow down on cache writing. The one limitation is that if a failure occurs in
+        # the process of caching the job, it cannot be reported via the RunnerOutput and
+        # instead is limited to being reported via the fd4 stream.
+        def _ =
+            def reportCacheFailure err =
+                def _ = unsafe_reportJobRunnerError job (err.getErrorCause)
+
+                Fail err
+
+            addToCache job input hashKey baseOutput
+            | rmapFail reportCacheFailure
+
+        baseOutput
+        | setRunnerOutputInputs (map getPathName vis)
+
+    def returnCacheHit (job: Job) (input: RunnerInput) (jobCacheJsonIn: String) (jobCacheJsonOut: JValue): RunnerOutput =
+        def (RunnerInput label _ _ _ _ _ _ prefix _ _ _ _) = input
+
+        def _ =
+            require True = isDebugOn
+
+            def _ = write ".cache-hit/read.{prefix}.json" "//{label}\n{jobCacheJsonIn}"
+            def _ = write ".cache-hit/out.{prefix}.json" "//{label}\n{prettyJSON jobCacheJsonOut}"
+
+            True
+
+        def cacheMatchResult = parseJobCacheMatch job jobCacheJsonOut
+
+        require Pass (JobCacheMatch inputs outputs stdout stderr predict) = cacheMatchResult
+        else RunnerOutput Nil Nil Nil emptyUsage cacheMatchResult.getFail
+
+        def _ = primJobVirtual job stdout stderr predict
+
+        waitJobMerged (\Unit RunnerOutput inputs outputs Nil predict None) job
+
+    def addToCache (job: Job) (input: RunnerInput) (hashKey: String) (baseOutput: RunnerOutput): Result String Error =
+        def (RunnerInput label cmd vis env dir stdin _ prefix _ _ _ _) = input
         def RunnerOutput inputs outputs _ usage runnerError = baseOutput
         def Usage jobStatus runtime cputime mem ibytes obytes = usage
         def inputsTree = listToTree scmpCanonical inputs
 
-        def mkOutputFileJson src =
-            JObject (
-                "src" :-> JString src,
-                "path" :-> JString "{wakeroot}/{src}",
-            )
+        require Pass stdout = job.getJobFailedStdoutRaw
+        require Pass stderr = job.getJobFailedStderrRaw
 
         def jobCacheOutputFiles = JArray (map mkOutputFileJson outputs)
 
@@ -167,24 +189,6 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
             def readPaths = filter (tcontains _.getPathName inputsTree) vis
 
             JArray (map mkVisJson readPaths)
-
-        def failedStreamOutput result =
-            require Fail err = result
-
-            require None = baseOutput.getRunnerOutputRunnerError
-            else Fail baseOutput
-
-            baseOutput
-            | setRunnerOutputRunnerError (Some err)
-            | Fail
-
-        require Pass stdout =
-            job.getJobFailedStdoutRaw
-            | failedStreamOutput
-
-        require Pass stderr =
-            job.getJobFailedStderrRaw
-            | failedStreamOutput
 
         def jobCacheAddJson =
             prettyJSON
@@ -209,44 +213,29 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
                 "client_cwd" :-> JString workspace,
             )
 
-        # We put this in a def so that it does not block the return below.
-        # This ensures that the effect still occurs and blocks wake finishing but the job
-        # itself is not blocked by writing to the cache. This allows us to tolorate a lot
-        # of slow down on cache writing.
         def _ =
-            def _ =
-                require True = isDebugOn
+            require True = isDebugOn
 
-                def _ = write ".cache-misses/write.{prefix}.json" "//{label}\n{jobCacheAddJson}"
+            def _ = write ".cache-misses/write.{prefix}.json" "//{label}\n{jobCacheAddJson}"
 
-                True
+            True
 
-            # Caching a failed job is a waste of space, never do that
-            require True = jobStatus == 0
-            else Pass ""
+        # Caching a failed job is a waste of space, never do that
+        require True = jobStatus == 0
+        else Pass ""
 
-            require None = runnerError
-            else Pass ""
+        require None = runnerError
+        else Pass ""
 
-            # Sometimes we want a read-only cache. For instance read-only pre-merge
-            # with read-write post-merge.
-            require None = getenv "WAKE_LOCAL_JOB_CACHE_READ_ONLY"
-            else Pass ""
+        # Sometimes we want a read-only cache. For instance read-only pre-merge
+        # with read-write post-merge.
+        require None = getenv "WAKE_LOCAL_JOB_CACHE_READ_ONLY"
+        else Pass ""
 
-            job_cache_add jobCacheAddJson
+        job_cache_add jobCacheAddJson
+        | rmapFail (Fail _.makeError)
 
-        baseOutput
-        | setRunnerOutputInputs (map getPathName vis)
-        | Pass
-
-    # Unify both sides of the return value; `Pass` and `Fail` here are effectively meaningless
-    # metadata that primarily serve to just provide a type-safe way to short-circuit out of `run`,
-    # and the `RunnerOutput` they contain is largely indistinguishable.
-    def getEither = match _
-        Pass x -> x
-        Fail x -> x
-
-    makeRunner "job-cache: {name}" (run _ _ | getEither)
+    makeRunner "job-cache: {name}" run
 
 tuple JobCacheMatch =
     Inputs: List String
