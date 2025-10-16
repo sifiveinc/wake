@@ -1233,7 +1233,9 @@ static PRIMFN(prim_job_fail_launch) {
   EXPECT(2);
   JOB(job, 0);
 
-  REQUIRE(job->state == 0);
+  // Test the job state is still its initial value (i.e. it hasn't already entered processing),
+  // except that it may have previously reported runner messages (as those bits are masked out).
+  REQUIRE((job->state & ~(STATE_RUNNER_OUT | STATE_RUNNER_ERR)) == 0);
 
   size_t need = reserve_unit() + WJob::reserve();
   runtime.heap.reserve(need);
@@ -1247,30 +1249,6 @@ static PRIMFN(prim_job_fail_launch) {
   job->reality.ibytes = 0;
   job->reality.obytes = 0;
   job->state = STATE_FORKED | STATE_STDOUT | STATE_STDERR | STATE_MERGED;
-
-  runtime.schedule(WJob::claim(runtime.heap, job));
-  RETURN(claim_unit(runtime.heap));
-}
-
-static PRIMFN(prim_job_fail_finish) {
-  EXPECT(2);
-  JOB(job, 0);
-
-  REQUIRE(job->state & STATE_MERGED);
-  REQUIRE(!(job->state & STATE_FINISHED));
-
-  size_t need = reserve_unit() + WJob::reserve();
-  runtime.heap.reserve(need);
-
-  job->bad_finish = args[1];
-  job->report.found = true;
-  job->report.status = 128;
-  job->report.runtime = 0;
-  job->report.cputime = 0;
-  job->report.membytes = 0;
-  job->report.ibytes = 0;
-  job->report.obytes = 0;
-  job->state |= STATE_FINISHED;
 
   runtime.schedule(WJob::claim(runtime.heap, job));
   RETURN(claim_unit(runtime.heap));
@@ -1300,7 +1278,9 @@ static PRIMFN(prim_job_launch) {
   parse_usage(&job->predict, args + 5, runtime, scope);
   job->predict.found = true;
 
-  REQUIRE(job->state == 0);
+  // Test the job state is still its initial value (i.e. it hasn't already entered processing),
+  // except that it may have previously reported runner messages (as those bits are masked out).
+  REQUIRE((job->state & ~(STATE_RUNNER_OUT | STATE_RUNNER_ERR)) == 0);
 
   auto &heap = jobtable->imp->pending;
   heap.emplace_back(new Task(runtime.heap.root(job), dir->as_str(), stdin_file->as_str(),
@@ -1358,7 +1338,9 @@ static PRIMFN(prim_job_virtual) {
   if (!runner_err_payload->empty())
     job->db->save_output(job->job, 4, runner_err_payload->c_str(), runner_err_payload->size(), 0);
 
-  REQUIRE(job->state == 0);
+  // Test the job state is still its initial value (i.e. it hasn't already entered processing),
+  // except that it may have previously reported runner messages (as those bits are masked out).
+  REQUIRE((job->state & ~(STATE_RUNNER_OUT | STATE_RUNNER_ERR)) == 0);
 
   std::stringstream s;
   s << pretty_cmd(job->cmdline->as_str());
@@ -1743,6 +1725,11 @@ static PRIMFN(prim_job_finish) {
   job->db->finish_job(job->job, inputs->as_str(), outputs->as_str(), all_outputs->as_str(),
                       int64_ns(job->start), int64_ns(job->stop), job->code.data[0], keep,
                       job->report);
+
+  // Runner status is left untouched to avoid overwriting any errors set by
+  // `prim_job_set_runner_status` if that was called first, with the safe fallback of a NULL
+  // database value on runner success.
+
   job->state |= STATE_FINISHED;
 
   runtime.schedule(WJob::claim(runtime.heap, job));
@@ -1907,39 +1894,72 @@ static PRIMFN(prim_job_record) {
 }
 
 static PRIMTYPE(type_job_set_runner_status) {
-  return args.size() == 2 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeInteger) &&
+  return args.size() == 2 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeString) &&
          out->unify(Data::typeUnit);
 }
 
 static PRIMFN(prim_job_set_runner_status) {
   EXPECT(2);
   JOB(job, 0);
-  INTEGER_MPZ(status, 1);
+  STRING(status_message, 1);
 
-  int status_val = mpz_get_si(status);
-  job->runner_status = status_val;
-  job->db->set_runner_status(job->job, status_val);
+  job->db->set_runner_status(job->job, status_message->as_str());
+
+  runtime.heap.reserve(reserve_unit());
+  RETURN(claim_unit(runtime.heap));
+}
+
+static PRIMTYPE(type_job_clear_runner_status) {
+  return args.size() == 1 && args[0]->unify(Data::typeJob) && out->unify(Data::typeUnit);
+}
+
+static PRIMFN(prim_job_clear_runner_status) {
+  EXPECT(1);
+  JOB(job, 0);
+
+  job->db->set_runner_status(job->job);
 
   runtime.heap.reserve(reserve_unit());
   RETURN(claim_unit(runtime.heap));
 }
 
 static PRIMTYPE(type_job_runner_status) {
-  TypeVar result;
-  Data::typeResult.clone(result);
-  result[0].unify(Data::typeInteger);
-  result[1].unify(Data::typeError);
-  return args.size() == 1 && args[0]->unify(Data::typeJob) && out->unify(result);
+  TypeVar inner_result;
+  Data::typeResult.clone(inner_result);
+  inner_result[0].unify(Data::typeUnit);
+  inner_result[1].unify(Data::typeString);
+
+  TypeVar outer_result;
+  Data::typeResult.clone(outer_result);
+  outer_result[0].unify(inner_result);
+  outer_result[1].unify(Data::typeError);
+
+  return args.size() == 1 && args[0]->unify(Data::typeJob) && out->unify(outer_result);
 }
 
 static PRIMFN(prim_job_runner_status) {
   EXPECT(1);
   JOB(job, 0);
 
-  int status = job->db->get_runner_status(job->job);
-  MPZ status_mpz(status);
-  runtime.heap.reserve(reserve_result() + Integer::reserve(status_mpz));
-  RETURN(claim_result(runtime.heap, true, Integer::claim(runtime.heap, status_mpz)));
+  std::pair<bool, std::string> status_result = job->db->get_runner_status(job->job);
+  bool has_error = status_result.first;
+  std::string status_message = status_result.second;
+
+  // Create the inner `Result Unit String` (isomorphic to `Option String`)
+  HeapObject *inner_result;
+  if (has_error) {
+    // Failure case: runner error message present (including empty string) -> Fail String
+    runtime.heap.reserve(reserve_result() + String::reserve(status_message.size()));
+    inner_result = claim_result(runtime.heap, false, String::claim(runtime.heap, status_message));
+  } else {
+    // Success case: no runner error (NULL in database) -> Pass Unit
+    runtime.heap.reserve(reserve_result() + reserve_unit());
+    inner_result = claim_result(runtime.heap, true, claim_unit(runtime.heap));
+  }
+
+  // Wrap in outer Result for lookup-prim success -> Pass (Result Unit String)
+  runtime.heap.reserve(reserve_result());
+  RETURN(claim_result(runtime.heap, true, static_cast<Value *>(inner_result)));
 }
 
 static PRIMTYPE(type_access) {
@@ -2086,6 +2106,10 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   prim_register(pmap, "job_set_runner_status", prim_job_set_runner_status,
                 type_job_set_runner_status, PRIM_IMPURE);
 
+  // Clears the runner status for a job (sets to NULL)
+  prim_register(pmap, "job_clear_runner_status", prim_job_clear_runner_status,
+                type_job_clear_runner_status, PRIM_IMPURE);
+
   // Gets the runner status for a job
   prim_register(pmap, "job_runner_status", prim_job_runner_status, type_job_runner_status,
                 PRIM_PURE);
@@ -2143,10 +2167,6 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   // Explain to the wake runtime that the job has failed to launch. This can happen if
   // a pre-step of a runner fails in someway for instance.
   prim_register(pmap, "job_fail_launch", prim_job_fail_launch, type_job_fail, PRIM_IMPURE);
-
-  // Explain to the wake runtime that the job failed to finish. This can happen if a
-  // post-step of a runner fails in someway for instance.
-  prim_register(pmap, "job_fail_finish", prim_job_fail_finish, type_job_fail, PRIM_IMPURE);
 
   // Specifies the hash of a given file. In practice wake kicks off a job against `shim-wake`
   // to do the hashing.

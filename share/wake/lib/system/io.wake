@@ -138,7 +138,7 @@ def writeRunner (content: String) =
     def primWrite (mode: Integer) (path: String) (content: String): Result String String =
         (\_ \_ \_ prim "write") mode path content
 
-    def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
+    def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
         # Command must be ("<write>", "-m", "{string mode}", "{string path}", Nil)
         require "<write>", "-m", smode, path, Nil = cmd
         else panic "writeImp violated command-line contract"
@@ -148,29 +148,34 @@ def writeRunner (content: String) =
 
         # Actually trigger the effects required by the job
         require Some mode = int smode
-        else failWithError "write {path}: Unable to convert mode to Integer ({smode})"
+        else
+            Some "write {path}: Unable to convert mode to Integer ({smode})".makeError
+            | RunnerOutput Nil Nil Nil emptyUsage
 
         require True = mode >= 0 && mode <= 0x1ff
-        else failWithError "write {path}: Invalid mode ({strOctal mode})"
+        else
+            Some "write {path}: Invalid mode ({strOctal mode})".makeError
+            | RunnerOutput Nil Nil Nil emptyUsage
 
         def writeTask = primWrite mode path content
 
+        def Pair usage runnerError = match job.getJobReality
+            Fail err -> Pair emptyUsage (Some err)
+            Pass reality -> Pair reality None
+
+        def fileInputs =
+            vis
+            | map getPathName
+            | fnInputs
+
         # Wait for the virtual job to complete
-        require Pass reality = job.getJobReality
-
         match writeTask
-            Fail f -> failWithError f
+            Fail msg -> RunnerOutput fileInputs Nil Nil usage (Some msg.makeError)
             Pass path ->
-                def fileInputs =
-                    vis
-                    | map getPathName
-                    | fnInputs
-
                 def cleanable = (path, Nil)
                 def fileOutputs = fnOutputs cleanable
 
-                RunnerOutput fileInputs fileOutputs cleanable reality 0
-                | Pass
+                RunnerOutput fileInputs fileOutputs cleanable usage runnerError
 
     makeRunner "write" run
 
@@ -285,7 +290,7 @@ def mkdirRunner: Runner =
     def primMkdir (mode: Integer) (path: String): Result String String =
         (\_ \_ prim "mkdir") mode path
 
-    def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): Result RunnerOutput Error =
+    def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
         # Command must be ("<mkdir>", "-m", "{string mode}", "{string path}", Nil)
         require "<mkdir>", "-m", smode, path, Nil = cmd
         else panic "mkdirImp violated command-line contract"
@@ -295,29 +300,34 @@ def mkdirRunner: Runner =
 
         # Actually trigger the effects required by the job
         require Some mode = int smode
-        else failWithError "write {path}: Unable to convert mode to Integer ({smode})"
+        else
+            Some "write {path}: Unable to convert mode to Integer ({smode})".makeError
+            | RunnerOutput Nil Nil Nil emptyUsage
 
         require True = mode >= 0 && mode <= 0x1ff
-        else failWithError "mkdir {path}: Invalid mode ({smode})"
+        else
+            Some "mkdir {path}: Invalid mode ({smode})".makeError
+            | RunnerOutput Nil Nil Nil emptyUsage
 
         def mkdirTask = primMkdir mode path
 
+        def Pair usage runnerError = match job.getJobReality
+            Fail err -> Pair emptyUsage (Some err)
+            Pass reality -> Pair reality None
+
+        def fileInputs =
+            vis
+            | map getPathName
+            | fnInputs
+
         # Wait for the virtual job to complete
-        require Pass reality = job.getJobReality
-
         match mkdirTask
-            Fail f -> failWithError f
+            Fail msg -> RunnerOutput fileInputs Nil Nil usage (Some msg.makeError)
             Pass path ->
-                def fileInputs =
-                    vis
-                    | map getPathName
-                    | fnInputs
-
                 def cleanable = (path, Nil)
                 def fileOutputs = fnOutputs cleanable
 
-                RunnerOutput fileInputs fileOutputs cleanable reality 0
-                | Pass
+                RunnerOutput fileInputs fileOutputs cleanable usage runnerError
 
     makeRunner "mkdir" run
 

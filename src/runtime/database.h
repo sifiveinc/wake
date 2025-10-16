@@ -20,6 +20,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "json/json5.h"
@@ -89,7 +90,7 @@ struct JobReflection {
   std::vector<FileReflection> inputs;
   std::vector<FileReflection> outputs;
   std::vector<JobTag> tags;
-  int runner_status;
+  std::pair<bool, std::string> runner_status;  // bool=true if error present, false if NULL
 
   JAST to_json() const;
   JAST to_structured_json() const;
@@ -194,9 +195,11 @@ struct Database {
 
   std::vector<std::pair<std::string, int>> get_interleaved_output(long job_id) const;
 
-  void set_runner_status(long job_id, int status);
+  void set_runner_status(long job_id);  // Sets to NULL (successful runner case)
+  void set_runner_status(long job_id, const std::string &status_message);
 
-  int get_runner_status(long job_id);
+  // bool=true if error present, false if NULL
+  std::pair<bool, std::string> get_runner_status(long job_id);
 
   // Build locking for non-inspection commands
   bool try_acquire_build_lock(bool wait, bool tty);

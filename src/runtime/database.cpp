@@ -1325,7 +1325,12 @@ JAST JobReflection::to_structured_json() const {
   usage_json.add("membytes", usage.membytes);
   usage_json.add("ibytes", usage.ibytes);
   usage_json.add("obytes", usage.obytes);
-  usage_json.add("runner_status", runner_status);
+  // For JSON, represent runner_status as the string if error present, null if success
+  if (runner_status.first) {
+    usage_json.add("runner_status", runner_status.second);
+  } else {
+    usage_json.add("runner_status", JSON_NULLVAL);
+  }
 
   JAST &visible_json = json.add("visible_files", JSON_ARRAY);
   for (const auto &visible_file : visible) {
@@ -1464,7 +1469,16 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
   desc.usage.membytes = sqlite3_column_int64(query, 15);
   desc.usage.ibytes = sqlite3_column_int64(query, 16);
   desc.usage.obytes = sqlite3_column_int64(query, 17);
-  desc.runner_status = sqlite3_column_int64(query, 18);
+
+  int runner_status_type = sqlite3_column_type(query, 18);
+  if (runner_status_type == SQLITE_NULL) {
+    // NULL in database - return false to indicate success (no error)
+    desc.runner_status = {false, ""};
+  } else {
+    // Non-NULL value (including empty string) - return true with the actual status message
+    desc.runner_status = {true, rip_column(query, 18)};
+  }
+
   if (desc.stdin_file.empty()) desc.stdin_file = "/dev/null";
 
   desc.std_writes = db->get_interleaved_output(desc.job);
@@ -1630,8 +1644,8 @@ std::vector<JobReflection> Database::matching(
   // clang-format off
   // | job_id | label | run_id | use_id | endtime | commandline | runner_status | status | runtime |       tags       |
   // -----------------------------------------------------------------------------------------------------------------------
-  // |    1   |  foo  |   1    |    1   |  1234   | ls lah .    |       0       |   0    |   2.8   | <d>a=b<d>c=d<d>  |
-  // |    2   |  bar  |   1    |    1   |  0000   | cat f.txt   |       1       |   0    |   0.0   |      null        |
+  // |    1   |  foo  |   1    |    1   |  1234   | ls lah .    | NULL          |   0    |   2.8   | <d>a=b<d>c=d<d>  |
+  // |    2   |  bar  |   1    |    1   |  0000   | cat f.txt   | "Job failed"  |   0    |   0.0   |      null        |
   // clang-format on
   //
   // The subtable is constructed by joining the jobs table with the minimal set of other dependent
@@ -1721,19 +1735,38 @@ std::vector<JobReflection> Database::matching(
   return out;
 }
 
-void Database::set_runner_status(long job_id, int status) {
+void Database::set_runner_status(long job_id) {
   const char *why = "Could not set runner status";
-  bind_integer(why, imp->set_runner_status, 1, status);
+  // Explicitly bind NULL (successful runner case)
+  int ret = sqlite3_bind_null(imp->set_runner_status, 1);
+  if (ret != SQLITE_OK) {
+    std::cerr << why << "; sqlite3_bind_null(1): "
+              << sqlite3_errmsg(sqlite3_db_handle(imp->set_runner_status)) << std::endl;
+    exit(1);
+  }
   bind_integer(why, imp->set_runner_status, 2, job_id);
   single_step(why, imp->set_runner_status, imp->debugdb);
 }
 
-int Database::get_runner_status(long job_id) {
-  int status = 0;
+void Database::set_runner_status(long job_id, const std::string &status_message) {
+  const char *why = "Could not set runner status";
+  bind_string(why, imp->set_runner_status, 1, status_message);
+  bind_integer(why, imp->set_runner_status, 2, job_id);
+  single_step(why, imp->set_runner_status, imp->debugdb);
+}
+
+std::pair<bool, std::string> Database::get_runner_status(long job_id) {
   const char *why = "Could not get runner status";
   bind_integer(why, imp->get_runner_status, 1, job_id);
+  std::pair<bool, std::string> status{false, ""};
   if (sqlite3_step(imp->get_runner_status) == SQLITE_ROW) {
-    status = sqlite3_column_int(imp->get_runner_status, 0);
+    if (SQLITE_NULL == sqlite3_column_type(imp->get_runner_status, 0)) {
+      // NULL in database - return false to indicate success (no error)
+      status = {false, ""};
+    } else {
+      // Non-NULL value (including empty string) - return true with the actual status message
+      status = {true, rip_column(imp->get_runner_status, 0)};
+    }
   }
   finish_stmt(why, imp->get_runner_status, imp->debugdb);
   return status;

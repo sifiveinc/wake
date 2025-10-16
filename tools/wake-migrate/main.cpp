@@ -128,14 +128,67 @@ static std::vector<Migration> get_migrations() {
        },
        "Add runner_status partial index"},
 
-      // Version 8 -> 9: Update locking mode and add busy timeout
+      // Version 8 -> 9: Change runner_status from INTEGER to TEXT (nullable)
+      // Additionally updates locking mode and adds busy timeout, both in metadata
       {8, 9,
        [](sqlite3* db) -> bool {
-         // PRAGMA changes are applied by WAKE_SCHEMA_SQL after migration
-         // No schema modifications needed, just version bump
+         // SQLite doesn't support ALTER COLUMN, so we need to recreate the table
+
+         // Step 1: Create new jobs table with TEXT runner_status
+         const char* create_new_table = R"(
+           CREATE TABLE jobs_new(
+             job_id      integer primary key autoincrement,
+             run_id      integer not null references runs(run_id),
+             use_id      integer not null references runs(run_id),
+             label       text    not null,
+             directory   text    not null,
+             commandline blob    not null,
+             environment blob    not null,
+             stdin       text    not null,
+             signature   integer not null,
+             stack       blob    not null,
+             stat_id     integer references stats(stat_id),
+             starttime   integer not null default 0,
+             endtime     integer not null default 0,
+             keep        integer not null default 0,
+             stale       integer not null default 0,
+             is_atty     integer not null default 0,
+             runner_status text
+           );
+         )";
+
+         if (!exec_sql(db, create_new_table)) return false;
+
+         // Step 2: Copy data, converting integer runner_status to text
+         // 0 -> NULL (success), non-zero -> string representation (failure)
+         const char* copy_data = R"(
+           INSERT INTO jobs_new SELECT
+             job_id, run_id, use_id, label, directory, commandline, environment,
+             stdin, signature, stack, stat_id, starttime, endtime, keep, stale, is_atty,
+             CASE WHEN runner_status = 0 THEN NULL ELSE 'Numeric return code ' || CAST(runner_status AS TEXT) END
+           FROM jobs;
+         )";
+
+         if (!exec_sql(db, copy_data)) return false;
+
+         // Step 3: Drop old table and rename new one
+         if (!exec_sql(db, "DROP TABLE jobs;")) return false;
+         if (!exec_sql(db, "ALTER TABLE jobs_new RENAME TO jobs;")) return false;
+
+         // Step 4: Recreate indexes
+         if (!exec_sql(db,
+                       "CREATE INDEX job on jobs(directory, commandline, environment, stdin, "
+                       "signature, keep, job_id, stat_id);"))
+           return false;
+         if (!exec_sql(db,
+                       "CREATE INDEX runner_status_idx on jobs(runner_status) WHERE runner_status "
+                       "IS NOT NULL;"))
+           return false;
+         if (!exec_sql(db, "CREATE INDEX jobstats on jobs(stat_id);")) return false;
+
          return true;
        },
-       "Update locking mode to normal and add busy timeout"},
+       "Convert runner_status from INTEGER to TEXT"},
 
   };
 }

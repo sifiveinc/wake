@@ -38,30 +38,30 @@ export target rscRunner (rscApi: RemoteCacheApi): Runner =
 export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => Result String Error) (wakeroot: String) ((Runner name baseDoIt): Runner): Runner =
     def runJobAndUpload job input hashKey =
         # Run the job to get the results
-        require Pass output = baseDoIt job (Pass input)
+        def output = baseDoIt job input
 
         # Don't cache failing jobs
         require True = output.getRunnerOutputUsage.getUsageStatus == 0
-        else Pass output
+        else output
 
-        require True = output.getRunnerOutputRunnerStatus == 0
-        else Pass output
+        require None = output.getRunnerOutputRunnerError
+        else output
 
         # If pushing to the cache is not enabled don't bother
         require True = rscApi.getRemoteCacheApiCanPush
-        else Pass output
+        else output
 
         # If the server denies caching the job then skip
         require Pass True =
             (rscApi | rscApiCheckJobAllowed (mkCacheAllowedRequest input output hashKey))
-        else Pass output
+        else output
 
         # Post the job to the server. This is left as 'def _' so that wake won't block progess
         # on it but it will stil be joined on before wake exits. Regardless of the result this
         # call should return the passing output to allow the build to continue
         def _ = postJob rscApi job wakeroot hashKey input output
 
-        Pass output
+        output
 
     def rehydrateJob details label input job =
         def _ =
@@ -247,14 +247,17 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         #     by the same job. If so, upload the target as a "hidden" output file. On rehydration
         #     retore the file as normal but don't list it in the outputs.
         ## -------------------------------------------------------------------------------------- ##
-        Pass (RunnerOutput inputs outputs cleanableOutputs predict 0)
+        Pass (RunnerOutput inputs outputs cleanableOutputs predict None)
 
-    def run (job: Job) (input: RunnerInput): Result RunnerOutput Error =
+    def run (job: Job) (input: RunnerInput): RunnerOutput =
         def label = input.getRunnerInputLabel
 
-        require Pass hashKey =
+        def hashKeyResult =
             hashFn input
             | rmapFail (markJobSetupFailure job)
+
+        require Pass hashKey = hashKeyResult
+        else RunnerOutput Nil Nil Nil emptyUsage hashKeyResult.getFail
 
         # If pulling from the cache is not enabled don't bother searching.
         require True = rscApi.getRemoteCacheApiCanPull
@@ -276,7 +279,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
 
             # This job isn't getting cached. That's probably preferable since the server
             # request failed but good to keep in mind.
-            baseDoIt job (Pass input)
+            baseDoIt job input
 
         # If a valid response is received from the server then handle it
         def cacheLookupSucceeded response = match response
@@ -293,10 +296,10 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
                 runJobAndUpload job input hashKey
             Match details -> match (rehydrateJob details label input job)
                 # If the rehydration succeeds return the job directly
-                Pass x -> Pass x
+                Pass x -> x
                 # Otherwise if hydration fails for any reason just run the job as normal.
                 # There is no point in attempting to push since the server just said its cached
-                Fail _ -> baseDoIt job (Pass input)
+                Fail _ -> baseDoIt job input
 
         # Search the remote cache for the job
         match (rscApi | rscApiFindMatchingJob (mkSearchRequest input hashKey))
@@ -313,7 +316,7 @@ def mkSearchRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _usag
 
 # Creates a CachePostJobRequest from the various inputs and outputs of a runner
 def mkPostJobRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ isAtty _ _): RunnerInput) (output: RunnerOutput) (hidden: String) (stdoutBlobId: String) (stderrBlobId: String) (files: List CachePostRequestOutputFile) (directories: List CachePostRequestOutputDirectory) (symlinks: List CachePostRequestOutputSymlink) =
-    def Usage status runtime cputime mem ibytes obytes = output.getRunnerOutputUsage
+    def Usage jobStatus runtime cputime mem ibytes obytes = output.getRunnerOutputUsage
 
     CachePostRequest
     label
@@ -329,7 +332,7 @@ def mkPostJobRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ is
     files
     stdoutBlobId
     stderrBlobId
-    status
+    jobStatus
     runtime
     cputime
     mem
@@ -338,9 +341,9 @@ def mkPostJobRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ is
 
 # Creates a CacheAllowedRequest from the various inputs and outputs of a runner
 def mkCacheAllowedRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ isAtty _ _): RunnerInput) (output: RunnerOutput) (hidden: String) =
-    def Usage status runtime cputime mem _ibytes obytes = output.getRunnerOutputUsage
+    def Usage jobStatus runtime cputime mem _ibytes obytes = output.getRunnerOutputUsage
 
-    CacheAllowedRequest label cmd dir env hidden isAtty stdin vis status runtime cputime mem obytes
+    CacheAllowedRequest label cmd dir env hidden isAtty stdin vis jobStatus runtime cputime mem obytes
 
 data ThirdByGroup =
     ThirdByGroupFirst
