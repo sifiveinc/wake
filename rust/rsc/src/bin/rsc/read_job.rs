@@ -1,3 +1,4 @@
+
 use crate::blob;
 use crate::types::{
     AllowJobPayload, Dir, JobKeyHash, ReadJobPayload, ReadJobResponse, ResolvedBlob,
@@ -17,6 +18,45 @@ use sea_orm::{
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tracing;
+use std::time::Instant;
+use crate::metrics::{
+    CACHE_HITS,
+    CACHE_MISSES,
+    HIT_LATENCY_MS,
+    MISS_LATENCY_MS,
+    CACHE_RUNTIME_SAVINGS_SECONDS,
+    CACHE_CPUTIME_SAVINGS_SECONDS,
+    CACHE_MEMORY_SAVINGS_BYTES,
+    CACHE_IO_READ_SAVINGS_BYTES,
+    CACHE_IO_WRITE_SAVINGS_BYTES,
+    CACHE_HIT_RUNTIME_HISTOGRAM,
+    CACHE_HIT_CPUTIME_HISTOGRAM,
+};
+
+#[tracing::instrument(skip_all)]
+fn update_hit_counters(start_time: Instant, job: &job::Model) {
+    CACHE_HITS.inc();
+    let elapsed_ms = start_time.elapsed().as_millis() as f64;
+    HIT_LATENCY_MS.observe(elapsed_ms);
+
+    // Record cache savings metrics
+    CACHE_RUNTIME_SAVINGS_SECONDS.inc_by(job.runtime);
+    CACHE_CPUTIME_SAVINGS_SECONDS.inc_by(job.cputime);
+    CACHE_MEMORY_SAVINGS_BYTES.inc_by(job.memory as f64);
+    CACHE_IO_READ_SAVINGS_BYTES.inc_by(job.i_bytes as f64);
+    CACHE_IO_WRITE_SAVINGS_BYTES.inc_by(job.o_bytes as f64);
+
+    // Record histograms for cache hit performance characteristics
+    CACHE_HIT_RUNTIME_HISTOGRAM.observe(job.runtime);
+    CACHE_HIT_CPUTIME_HISTOGRAM.observe(job.cputime);
+}
+
+#[tracing::instrument(skip_all)]
+fn update_miss_counters(start_time: Instant) {
+    CACHE_MISSES.inc();
+    let elapsed_ms = start_time.elapsed().as_millis() as f64;
+    MISS_LATENCY_MS.observe(elapsed_ms);
+}
 
 #[tracing::instrument(skip(hash, conn))]
 async fn record_hit(job_id: Uuid, hash: String, conn: Arc<DatabaseConnection>) {
@@ -95,6 +135,8 @@ pub async fn read_job(
     conn: Arc<DatabaseConnection>,
     blob_stores: HashMap<Uuid, Arc<dyn blob::DebugBlobStore + Sync + Send>>,
 ) -> (StatusCode, Json<ReadJobResponse>) {
+    let start = Instant::now();
+
     let hash = payload.hash();
     let hash_for_spawns = hash.clone();
 
@@ -124,6 +166,9 @@ pub async fn read_job(
         tokio::spawn(async move {
             record_miss(hash_copy, conn.clone()).await;
         });
+
+        update_miss_counters(start);
+
         return (StatusCode::NOT_FOUND, Json(ReadJobResponse::NoMatch));
     };
 
@@ -137,6 +182,9 @@ pub async fn read_job(
         Ok(map) => map,
         Err(err) => {
             tracing::error!(%err, "Failed to resolve blobs. Resolving job as a cache miss.");
+
+            update_miss_counters(start);
+
             return (StatusCode::NOT_FOUND, Json(ReadJobResponse::NoMatch));
         }
     };
@@ -162,6 +210,9 @@ pub async fn read_job(
         Ok(files) => files,
         Err(err) => {
             tracing::error!(%err, "Failed to resolve all output files. Resolving job as a cache miss.");
+
+            update_miss_counters(start);
+
             return (StatusCode::NOT_FOUND, Json(ReadJobResponse::NoMatch));
         }
     };
@@ -189,6 +240,7 @@ pub async fn read_job(
         Some(blob) => blob.clone(),
         None => {
             tracing::error!("Failed to resolve stdout blob. Resolving job as a cache miss.");
+            update_miss_counters(start);
             return (StatusCode::NOT_FOUND, Json(ReadJobResponse::NoMatch));
         }
     };
@@ -197,6 +249,7 @@ pub async fn read_job(
         Some(blob) => blob.clone(),
         None => {
             tracing::error!("Failed to resolve stderr blob. Resolving job as a cache miss.");
+            update_miss_counters(start);
             return (StatusCode::NOT_FOUND, Json(ReadJobResponse::NoMatch));
         }
     };
@@ -222,7 +275,7 @@ pub async fn read_job(
     tokio::spawn(async move {
         record_hit(job_id, hash_copy, conn.clone()).await;
     });
-
+    update_hit_counters(start, &matching_job);
     (StatusCode::OK, Json(response))
 }
 

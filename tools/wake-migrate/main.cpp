@@ -129,6 +129,7 @@ static std::vector<Migration> get_migrations() {
        "Add runner_status partial index"},
 
       // Version 8 -> 9: Change runner_status from INTEGER to TEXT (nullable)
+      // Additionally updates locking mode and adds busy timeout, both in metadata
       {8, 9,
        [](sqlite3* db) -> bool {
          // SQLite doesn't support ALTER COLUMN, so we need to recreate the table
