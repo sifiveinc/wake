@@ -2,7 +2,7 @@ wake (@VERSION@-1) unstable; urgency=medium
 
   * Auto-generated release package.
 
- -- Abrar Quazi <abrar.quazi@sifive.com>  Thu, 20 Oct 2025 15:00:00 -0800
+ -- Abrar Quazi <abrar.quazi@sifive.com>  Mon, 20 Oct 2025 15:00:00 -0800
 
 wake (46.0.0-1) unstable; urgency=medium
 
