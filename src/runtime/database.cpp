@@ -171,8 +171,6 @@ static void close_db(Database *db) {
     return;
   }
 
-  db->release_build_lock();
-
   int ret = sqlite3_close(db->imp->db);
   if (ret != SQLITE_OK) {
     std::cerr << "Could not close wake.db: " << sqlite3_errmsg(db->imp->db) << std::endl;
@@ -573,6 +571,7 @@ void Database::close() {
   FINALIZE(set_runner_status);
   FINALIZE(get_runner_status);
   close_db(this);
+  release_build_lock();
 }
 
 bool Database::try_acquire_build_lock(bool wait, bool tty) {
