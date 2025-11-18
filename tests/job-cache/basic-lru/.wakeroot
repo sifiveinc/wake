@@ -1,7 +1,0 @@
-{
-  "eviction_config": {
-    "type": "lru",
-    "max_cache_size": 80,
-    "low_cache_size": 50
-  }
-}
