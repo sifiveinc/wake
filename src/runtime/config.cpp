@@ -215,8 +215,6 @@ POLICY_STATIC_DEFINES(LabelFilterPolicy)
 POLICY_STATIC_DEFINES(SharedCacheMissOnFailure)
 POLICY_STATIC_DEFINES(LogHeaderAlignPolicy)
 POLICY_STATIC_DEFINES(BulkLoggingDirPolicy)
-POLICY_STATIC_DEFINES(EvictionConfigPolicy)
-POLICY_STATIC_DEFINES(SharedCacheTimeoutConfig)
 POLICY_STATIC_DEFINES(InterpreterRuntimeWarningPolicy)
 
 /********************************************************************
@@ -275,53 +273,6 @@ void BulkLoggingDirPolicy::set(BulkLoggingDirPolicy& p, const JAST& json) {
   auto json_bulk_dir = json.expect_string();
   if (json_bulk_dir) {
     p.bulk_logging_dir = *json_bulk_dir;
-  }
-}
-
-void EvictionConfigPolicy::set(EvictionConfigPolicy& p, const JAST& json) {
-  auto type = json.get_opt("type");
-  if (!type) {
-    return;
-  }
-  auto type_str = (*type)->expect_string();
-  if (!type_str) {
-    return;
-  }
-  if (*type_str == "ttl") {
-    auto json_ttl = json.get("seconds_to_live").expect_integer();
-    if (json_ttl) {
-      p.eviction_config.ttl.seconds_to_live = *json_ttl;
-      p.eviction_config.type = job_cache::EvictionPolicyType::TTL;
-    }
-  }
-
-  if (*type_str == "lru") {
-    auto json_low = json.get("low_cache_size").expect_integer();
-    auto json_max = json.get("max_cache_size").expect_integer();
-    if (json_low && json_max) {
-      p.eviction_config.lru.low_size = *json_low;
-      p.eviction_config.lru.max_size = *json_max;
-      p.eviction_config.type = job_cache::EvictionPolicyType::LRU;
-    }
-  }
-}
-
-void SharedCacheTimeoutConfig::set(SharedCacheTimeoutConfig& p, const JAST& json) {
-  auto json_read_retries = json.get("read_retries").expect_integer();
-  auto json_connect_retries = json.get("connect_retries").expect_integer();
-  auto json_max_misses = json.get("max_misses_from_failure").expect_integer();
-  auto json_message_timeout = json.get("message_timeout_seconds").expect_integer();
-  if (json_read_retries) {
-    p.timeout_config.read_retries = *json_read_retries;
-  }
-  if (json_connect_retries) {
-    p.timeout_config.connect_retries = *json_connect_retries;
-  }
-  if (json_max_misses) {
-    p.timeout_config.max_misses_from_failure = *json_max_misses;
-  }
-  if (json_message_timeout) {
-    p.timeout_config.message_timeout_seconds = *json_message_timeout;
   }
 }
 

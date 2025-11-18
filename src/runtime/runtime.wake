@@ -22,5 +22,5 @@ target runtime variant =
     @here
     variant
     (optimizer, dst, types, json, util, Nil)
-    (util, gmp, sqlite3, re2, ncurses, jobCacheLib, Nil)
+    (util, gmp, sqlite3, re2, ncurses, blake2, Nil)
     Nil

@@ -1,6 +1,0 @@
-export def test (_: List String): Result (List String) Error =
-    require Pass outputs =
-        makePlan "basic_test" Nil "echo foo > test.txt && mkdir -p bar && ln -s test.txt bar/baz.txt"
-        | runJobWith defaultRunner
-        | getJobOutputs
-    Pass (map (_.getPathName) outputs)

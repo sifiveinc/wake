@@ -4,14 +4,7 @@ Wake config:
   log_header = '' (WakeRoot)
   log_header_source_width = '0' (WakeRoot)
   label_filter = '.*' (Default)
-  eviction_config = '{type = ttl, seconds_to_live = 604800}' (Default)
   cache_miss_on_failure = 'false' (Default)
   log_header_align = 'false' (Default)
   bulk_logging_dir = '' (Default)
-  shared_cache_timeout_config = '{
-    read_retries = 3,
-    connect_retries = 14,
-    max_misses_from_failure = 20,
-    message_timeout_seconds = 10,
-  }' (Default)
   interpreter_runtime_warning_s = '0' (Default)
