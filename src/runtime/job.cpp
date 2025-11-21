@@ -39,6 +39,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <list>
@@ -85,6 +86,15 @@ void set_job_cache(job_cache::Cache *cache) {
 // #define DEBUG_PROGRESS
 
 #define ALMOST_ONE (1.0 - 2 * std::numeric_limits<double>::epsilon())
+
+// Helper function to format timestamp in ISO 8601 format
+static std::string format_timestamp(struct timespec ts) {
+  time_t t = ts.tv_sec;
+  struct tm tm = *localtime(&t);
+  char buf[32];
+  strftime(buf, sizeof(buf), "%FT%T", &tm);  // Format: 2024-01-15T16:23:45
+  return std::string(buf);
+}
 
 #define STATE_FORKED 1       // in database and running
 #define STATE_STDOUT 2       // stdout fully in database
@@ -233,6 +243,7 @@ double Job::threads() const {
 
   // To combat this effect, we conservatively double the CPU utilization of jobs.
   // However, it's probably still single-threaded, so cap this pessimism there.
+
   estimate *= 2.0;
   if (estimate > 1.0) estimate = 1.0;
 
@@ -831,10 +842,19 @@ static void launch(JobTable *jobtable) {
   //   - RAM is never "wasted" (disk cache / etc), so just wait for the next critical job
   //   - even if a job uses more memory than the system has, eventually attempt it anyway (progress)
   auto &heap = jobtable->imp->pending;
+
+  // Track how many jobs we launch in this batch
+  int launched_this_batch = 0;
+  struct timespec batch_start;
+  clock_gettime(CLOCK_REALTIME, &batch_start);
+
   while (!heap.empty() && jobtable->imp->num_running < jobtable->imp->max_children &&
          jobtable->imp->active < jobtable->imp->limit &&
          (jobtable->imp->phys_active == 0 ||
           jobtable->imp->phys_active + heap.front()->job->memory() < jobtable->imp->phys_limit)) {
+
+    launched_this_batch++;
+
     Task &task = *heap.front();
     jobtable->imp->active += task.job->threads();
     jobtable->imp->phys_active += task.job->memory();
@@ -939,6 +959,39 @@ static void launch(JobTable *jobtable) {
     std::pop_heap(heap.begin(), heap.end());
     heap.resize(heap.size() - 1);
   }
+
+  // Log batch launches
+  if (launched_this_batch > 0) {
+    struct timespec batch_end;
+    clock_gettime(CLOCK_REALTIME, &batch_end);
+    double batch_time = (batch_end.tv_sec - batch_start.tv_sec) +
+                        (batch_end.tv_nsec - batch_start.tv_nsec) / 1e9;
+
+    std::cerr << "[" << format_timestamp(batch_end) << "] "
+              << "[LAUNCH BATCH] Launched " << launched_this_batch << " jobs in "
+              << batch_time << "s. "
+              << heap.size() << " still pending. "
+              << "Resources: " << jobtable->imp->num_running << "/"
+              << jobtable->imp->max_children << " jobs, "
+              << jobtable->imp->active << "/" << jobtable->imp->limit << " CPU, "
+              << ResourceBudget::format(jobtable->imp->phys_active) << "/"
+              << ResourceBudget::format(jobtable->imp->phys_limit) << " mem"
+              << std::endl;
+  }
+
+  // Log when we CAN'T launch despite pending jobs
+  if (!heap.empty() && launched_this_batch == 0) {
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    Job *next_job = heap.front()->job.get();
+    std::cerr << "[" << format_timestamp(now) << "] "
+              << "[SCHEDULER BLOCKED] " << heap.size() << " jobs pending but can't launch. "
+              << "Next job needs " << next_job->threads() << " threads, "
+              << ResourceBudget::format(next_job->memory()) << " memory. "
+              << "Available: " << (jobtable->imp->limit - jobtable->imp->active) << " threads, "
+              << ResourceBudget::format(jobtable->imp->phys_limit - jobtable->imp->phys_active)
+              << " memory" << std::endl;
+  }
 }
 
 JobEntry::~JobEntry() {
@@ -998,6 +1051,43 @@ bool JobTable::wait(Runtime &runtime) {
   memset(&nowait, 0, sizeof(nowait));
 
   launch(this);
+
+  // Periodic queue analysis
+  static int wait_iterations = 0;
+  static struct timespec last_snapshot = {0, 0};
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+
+  double time_since_snapshot = (now.tv_sec - last_snapshot.tv_sec) +
+                                (now.tv_nsec - last_snapshot.tv_nsec) / 1e9;
+
+  // Track previous state
+  static size_t last_pending_size = 0;
+  static int stuck_iterations = 0;
+
+  if (!imp->pending.empty()) {
+    // Only print if queue grew by 20+ jobs OR has been stuck for 60 seconds
+    if (imp->pending.size() > last_pending_size + 20 ||
+        (time_since_snapshot > 60.0 && imp->pending.size() == last_pending_size)) {
+
+      last_snapshot = now;
+      std::cerr << "\n[QUEUE SNAPSHOT] " << imp->pending.size() << " jobs pending..." << std::endl;
+      // Show top 5 pending jobs
+      int count = 0;
+      for (auto &task : imp->pending) {
+        if (count++ >= 5) break;
+        std::cerr << "  - " << task->job->label->c_str()
+                  << " (pathtime: " << task->job->pathtime
+                  << ", needs " << task->job->threads() << " threads, "
+                  << ResourceBudget::format(task->job->memory()) << " memory)"
+                  << std::endl;
+      }
+      std::cerr << std::endl;
+    }
+    last_pending_size = imp->pending.size();
+  } else {
+    last_pending_size = 0;
+  }
 
   bool compute = false;
   while (!exit_now() && imp->num_running) {
@@ -1111,6 +1201,17 @@ bool JobTable::wait(Runtime &runtime) {
       entry->job->reality.obytes = childUsage.obytes;
       runtime.heap.guarantee(WJob::reserve());
       runtime.schedule(WJob::claim(runtime.heap, entry->job.get()));
+
+      // LOG JOB COMPLETION
+      double job_runtime = entry->runtime(now);
+      std::cerr << "[" << format_timestamp(now) << "] "
+                << "[JOB COMPLETE] " << entry->job->label->c_str()
+                << " (runtime: " << job_runtime << "s, "
+                << "freed " << entry->job->threads() << " threads, "
+                << ResourceBudget::format(entry->job->memory()) << " memory). "
+                << imp->num_running << " jobs still running, "
+                << imp->pending.size() << " pending"
+                << std::endl;
 
       // Force close any remaining runner pipes when process exits.
       // There are situations where the polling mechanism doesn't detect the EOF condition
