@@ -166,81 +166,21 @@ def computeHashes (prefix: String) (files: List String): List String =
     require False = empty to_hash
     else not_to_hash
 
-    # if the number of files to hash is too long then execve will
-    # error out.
-    def to_hash_len = len to_hash
-    def to_hash_file_bytes = sum (map strlen to_hash)
-
-    # These numbers don't appear to be well documented in any easily computeable fashion for Linux.
-    # The problem is that the same error is returned for multiple cases, and many hard to compute
-    # things cause us to go over. These numbers appear to be safe in practice (found exact via binary search).
-    # To account for any other variance I backed off these numbers quite a bit.
-    def use_file = to_hash_file_bytes >= 1900000 || to_hash_len >= 12000
     def add f h = prim "add_hash"
 
-    def hashPlan cmd vis =
-        Plan
-        "hash: #{prefix}"
-        cmd
-        vis
-        Nil
-        "."
-        ""
-        logNever
-        logError
-        logDebug
-        ReRun
-        Nil
-        hashUsage
-        identity
-        identity
-        False
+    def statHash path =
+        require Pass stat = unsafe_stat path
+        else "BadHash"
 
-    def stdin_file_path = ".build/tmp/to_hash.{prefix}.stdin"
+        def hash = str stat.getStatSizeBytes
 
-    # We construct a different plan depending on if we could use command line arguments or not
-    require Pass plan = match use_file
-        True ->
-            require Pass stdin_file = write stdin_file_path (catWith "\n" to_hash)
-
-            hashPlan ("{wakePath}/../lib/wake/wake-hash", "@", Nil) (stdin_file,)
-            | setPlanStdin stdin_file.getPathName
-            | Pass
-        False ->
-            hashPlan ("{wakePath}/../lib/wake/wake-hash", to_hash) Nil
-            | Pass
-    else mergeSelect which_files_to_hash (map (add _ "BadHash") to_hash) not_to_hash
-
-    def job =
-        plan
-        | runJobWith localRunner
-        | setJobInspectVisibilityHidden
-
-    require Exited 0 = getJobStatus job
-    else mergeSelect which_files_to_hash (map (add _ "BadHash") to_hash) not_to_hash
-
-    require Pass stdout = getJobStdout job
-    else mergeSelect which_files_to_hash (map (add _ "BadHash") to_hash) not_to_hash
-
-    # We want a better error message if the number of lines do not match
-    # that are returned
-    def hash_lines =
-        stdout
-        | tokenize `\n`
-        | filter (_ !=* "")
-
-    require True = len hash_lines == to_hash_len
-    else panic "wake-hash returned {format hash_lines} lines but we expected {str to_hash_len} lines"
+        "{hash}{dirHash}"
+        | extract `(.{64}).*`
+        | head
+        | getOrElse "BadHash"
 
     # Finally actually add all the hashes
-    def hashed =
-        hash_lines
-        | zip to_hash
-        | map (\(Pair file hash) add file hash)
-
-    # Make sure to unlink the file if we created it
-    def unlink _ = prim "unlink"
-    def _ = if use_file then unlink stdin_file_path else Unit
+    def hashed = map (\path add path (statHash path)) to_hash
 
     # Finally we merge them back in the order we got them so that we don't
     # get non-determinism in the hash order.
