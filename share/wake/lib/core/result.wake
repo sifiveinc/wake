@@ -163,6 +163,9 @@ export def findFail: List (Result a b) => Result (List a) b =
 # Once a Fail is found, fn is not evaluated on further elements.
 # This means that fn is applied to the List mostly sequentially.
 # If more parallelism is desired, use 'map fn | findFail' instead.
+# In particular, this function is most appropriate for cases where the Result is simply a member
+# of a tuple (e.g. `findFailFn getPairSecond`) or for other *trivial* transformations rather than
+# anything that does meaningful work.
 #
 #   def toInt x = int x | getOrFail "not an Integer ({x})"
 #   findFailFn toInt ("456", "123", Nil) = Pass (456, 123, Nil)

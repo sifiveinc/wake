@@ -144,7 +144,8 @@ export def sources (dir: String) (filterRegexp: RegExp): Result (List Path) Erro
     match got_sources
         True ->
             scan dir filterRegexp
-            | findFailFn raw_source
+            | map raw_source
+            | findFail
         False -> unreachable "add_sources always returns True"
 
 # This API makes it possible to include a non-source file into a wake build.
