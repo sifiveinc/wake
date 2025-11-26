@@ -430,14 +430,31 @@ void Runtime::claim_apply(Closure *closure, HeapObject *value, Continuation *con
 
 void Runtime::run() {
   int count = 0;
+  int work_items = 0;
   bool lprofile = profile;
   trace_needed = false;  // don't count time spent waiting for Jobs
+
+  struct timespec run_start;
+  clock_gettime(CLOCK_REALTIME, &run_start);
+  char timestamp[32];
+  strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", localtime(&run_start.tv_sec));
+  std::cerr << "[" << timestamp << "] [INTERPRETER] Entering run loop" << std::endl;
+
   while (stack && !abort) {
     if (++count >= 10000) {
       if (JobTable::exit_now()) break;
       status_refresh(false);
       count = 0;
     }
+
+    // Print every 1000 work items
+    if (++work_items % 1000 == 0) {
+      struct timespec now;
+      clock_gettime(CLOCK_REALTIME, &now);
+      strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", localtime(&now.tv_sec));
+      std::cerr << "[" << timestamp << "] [INTERPRETER] Processed " << work_items << " work items" << std::endl;
+    }
+
     Work *w = stack.get();
     stack = w->next;
     try {
@@ -459,6 +476,14 @@ void Runtime::run() {
       trace_needed = false;  // don't count time spent running GC
     }
   }
+
+  struct timespec run_end;
+  clock_gettime(CLOCK_REALTIME, &run_end);
+  double run_duration = (run_end.tv_sec - run_start.tv_sec) +
+                        (run_end.tv_nsec - run_start.tv_nsec) / 1e9;
+  strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", localtime(&run_end.tv_sec));
+  std::cerr << "[" << timestamp << "] [INTERPRETER] Exiting run loop after "
+            << work_items << " work items (" << run_duration << "s)" << std::endl;
 }
 
 struct CInit final : public GCObject<CInit, Continuation> {

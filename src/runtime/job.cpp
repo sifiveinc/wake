@@ -848,6 +848,18 @@ static void launch(JobTable *jobtable) {
   struct timespec batch_start;
   clock_gettime(CLOCK_REALTIME, &batch_start);
 
+  // LOG LAUNCH ATTEMPT
+  if (!heap.empty()) {
+    std::cerr << "[" << format_timestamp(batch_start) << "] "
+              << "[LAUNCH ATTEMPT] Checking " << heap.size() << " pending jobs. "
+              << "Resources: " << jobtable->imp->num_running << "/"
+              << jobtable->imp->max_children << " jobs, "
+              << jobtable->imp->active << "/" << jobtable->imp->limit << " CPU, "
+              << ResourceBudget::format(jobtable->imp->phys_active) << "/"
+              << ResourceBudget::format(jobtable->imp->phys_limit) << " mem"
+              << std::endl;
+  }
+
   while (!heap.empty() && jobtable->imp->num_running < jobtable->imp->max_children &&
          jobtable->imp->active < jobtable->imp->limit &&
          (jobtable->imp->phys_active == 0 ||
@@ -995,6 +1007,17 @@ static void launch(JobTable *jobtable) {
 }
 
 JobEntry::~JobEntry() {
+  // LOG RESOURCE FREEING
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  std::cerr << "[" << format_timestamp(now) << "] "
+            << "[RESOURCES FREED] " << job->label->c_str()
+            << " (freed " << job->threads() << " threads, "
+            << ResourceBudget::format(job->memory()) << " memory). "
+            << "Available: " << (imp->limit - imp->active + job->threads()) << " threads, "
+            << ResourceBudget::format(imp->phys_limit - imp->phys_active + job->memory()) << " memory"
+            << std::endl;
+
   status_state.jobs.erase(status);
   --imp->num_running;
   imp->active -= job->threads();
@@ -1050,10 +1073,16 @@ bool JobTable::wait(Runtime &runtime) {
   struct timespec nowait;
   memset(&nowait, 0, sizeof(nowait));
 
+  struct timespec wait_start;
+  clock_gettime(CLOCK_REALTIME, &wait_start);
+  std::cerr << "[" << format_timestamp(wait_start) << "] "
+            << "[WAIT] Entering wait() - " << imp->num_running << " jobs running, "
+            << imp->pending.size() << " pending"
+            << std::endl;
+
   launch(this);
 
   // Periodic queue analysis
-  static int wait_iterations = 0;
   static struct timespec last_snapshot = {0, 0};
   struct timespec now;
   clock_gettime(CLOCK_REALTIME, &now);
@@ -1063,7 +1092,6 @@ bool JobTable::wait(Runtime &runtime) {
 
   // Track previous state
   static size_t last_pending_size = 0;
-  static int stuck_iterations = 0;
 
   if (!imp->pending.empty()) {
     // Only print if queue grew by 20+ jobs OR has been stuck for 60 seconds
@@ -1266,6 +1294,15 @@ bool JobTable::wait(Runtime &runtime) {
       break;
     }
   }
+
+  struct timespec wait_end;
+  clock_gettime(CLOCK_REALTIME, &wait_end);
+  double wait_duration = (wait_end.tv_sec - wait_start.tv_sec) +
+                         (wait_end.tv_nsec - wait_start.tv_nsec) / 1e9;
+  std::cerr << "[" << format_timestamp(wait_end) << "] "
+            << "[WAIT] Exiting wait() after " << wait_duration << "s - "
+            << "returning " << (compute ? "true" : "false")
+            << std::endl;
 
   return compute;
 }
