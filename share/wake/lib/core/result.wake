@@ -157,20 +157,20 @@ export def rfoldr (combiningFn: element => accumulator => Result accumulator err
 #   findFail (Pass 456, Pass 123, Nil) = Pass (456, 123, Nil)
 #   findFail (Pass 456, Fail "xyz", Fail "abc", Nil) = Fail "xyz"
 export def findFail: List (Result a b) => Result (List a) b =
-    findFailFn (_)
+    findFailSerial (_)
 
-# findFailFn: if fn returns Pass for all List elements, return the outputs else Fail
+# findFailSerial: if fn returns Pass for all List elements, return the outputs else Fail
 # Once a Fail is found, fn is not evaluated on further elements.
 # This means that fn is applied to the List mostly sequentially.
 # If more parallelism is desired, use 'map fn | findFail' instead.
 # In particular, this function is most appropriate for cases where the Result is simply a member
-# of a tuple (e.g. `findFailFn getPairSecond`) or for other *trivial* transformations rather than
-# anything that does meaningful work.
+# of a tuple (e.g. `findFailSerial getPairSecond`) or for other *trivial* transformations rather
+# than anything that does meaningful work.
 #
 #   def toInt x = int x | getOrFail "not an Integer ({x})"
-#   findFailFn toInt ("456", "123", Nil) = Pass (456, 123, Nil)
-#   findFailFn toInt ("_56", "123", Nil) = Fail "not an Integer (_56)"
-export def findFailFn (fn: a => Result b fail): List a => Result (List b) fail =
+#   findFailSerial toInt ("456", "123", Nil) = Pass (456, 123, Nil)
+#   findFailSerial toInt ("_56", "123", Nil) = Fail "not an Integer (_56)"
+export def findFailSerial (fn: a => Result b fail): List a => Result (List b) fail =
     def helper = match _
         Nil -> Pass Nil
         h, t ->

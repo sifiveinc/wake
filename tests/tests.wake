@@ -131,7 +131,7 @@ export def runTests (cmdline: List String): Result String Error =
 
     def _ = printlnLevel logWarning "{wakeDir}/wake unit testing results:\n{report}\n---"
 
-    require Pass _ = findFailFn getTripleThird results
+    require Pass _ = findFailSerial getTripleThird results
 
     Pass "All {len tests | str} tests completed successfully."
 
