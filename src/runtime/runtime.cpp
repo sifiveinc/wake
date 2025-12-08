@@ -19,13 +19,13 @@
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 
-#include "config.h"
 #include "runtime.h"
 
 #include <assert.h>
 #include <signal.h>
 #include <sys/time.h>
 
+#include "config.h"
 #include "job.h"
 #include "optimizer/ssa.h"
 #include "profile.h"
@@ -451,15 +451,16 @@ void Runtime::run() {
       // Check elapsed time for warning
       struct timespec now;
       clock_gettime(CLOCK_REALTIME, &now);
-      double elapsed = (now.tv_sec - run_start.tv_sec) +
-                       (now.tv_nsec - run_start.tv_nsec) / 1e9;
+      double elapsed = (now.tv_sec - run_start.tv_sec) + (now.tv_nsec - run_start.tv_nsec) / 1e9;
 
       if (next_warning_time > 0 && elapsed >= next_warning_time) {
-        std::cerr << "[INTERPRETER RUNTIME WARNING] " << work_items
-                  << " work items processed, " << elapsed << "s elapsed" << std::endl;
+        std::cerr << "[INTERPRETER RUNTIME WARNING] " << work_items << " work items processed, "
+                  << elapsed << "s elapsed" << std::endl;
 
-        std::cerr << " The Wake runtime has been running past the configured threshold." << std::endl;
-        std::cerr << " Possible inefficient Wake code. Consider reviewing your wake files and stack trace."
+        std::cerr << " The Wake runtime has been running past the configured threshold."
+                  << std::endl;
+        std::cerr << " Possible inefficient Wake code. Consider reviewing your wake files and "
+                     "stack trace."
                   << std::endl;
 
         // Stack trace if debug enabled

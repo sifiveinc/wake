@@ -305,9 +305,7 @@ struct InterpreterRuntimeWarningPolicy {
   InterpreterRuntimeWarningPolicy() = default;
   static void set(InterpreterRuntimeWarningPolicy& p, const JAST& json);
   static void set_input(InterpreterRuntimeWarningPolicy& p, const input_type& v) { p.*value = v; }
-  static void emit(const InterpreterRuntimeWarningPolicy& p, std::ostream& os) {
-    os << p.*value;
-  }
+  static void emit(const InterpreterRuntimeWarningPolicy& p, std::ostream& os) { os << p.*value; }
   static void set_env_var(InterpreterRuntimeWarningPolicy& p, const char* env_var) {
     p.*value = std::stod(env_var);
   }
