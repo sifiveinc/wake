@@ -432,12 +432,52 @@ void Runtime::run() {
   int count = 0;
   bool lprofile = profile;
   trace_needed = false;  // don't count time spent waiting for Jobs
+
+  // Track time spent for a run, and warn if it exceeds a threshold
+  uint64_t work_items = 0;
+  struct timespec run_start;
+  clock_gettime(CLOCK_REALTIME, &run_start);
+  double next_warning_time = 300.0;  // First warning at 5 minutes (300 seconds)
+
   while (stack && !abort) {
     if (++count >= 10000) {
       if (JobTable::exit_now()) break;
       status_refresh(false);
+
+      work_items += count;
       count = 0;
+
+      // Check elapsed time for warning
+      struct timespec now;
+      clock_gettime(CLOCK_REALTIME, &now);
+      double elapsed = (now.tv_sec - run_start.tv_sec) +
+                       (now.tv_nsec - run_start.tv_nsec) / 1e9;
+
+      if (elapsed >= next_warning_time) {
+        std::cerr << "[INTERPRETER WARNING] " << work_items
+                  << " work items processed, " << elapsed << "s elapsed"
+                  << std::endl;
+
+        // Stack trace if debug enabled
+        if (Scope::debug) {
+          Work *w = stack.get();
+          if (Interpret *i = dynamic_cast<Interpret *>(w)) {
+            auto trace = i->scope->stack_trace(false);
+            if (!trace.empty()) {
+              std::cerr << "  Current execution context:" << std::endl;
+              for (const auto &frame : trace) {
+                std::cerr << "    " << frame << std::endl;
+              }
+            }
+          }
+        } else {
+          std::cerr << "  (Run with --debug for stack trace)" << std::endl;
+        }
+
+        next_warning_time *= 2;  // Double for next warning
+      }
     }
+
     Work *w = stack.get();
     stack = w->next;
     try {
