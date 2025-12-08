@@ -19,6 +19,7 @@
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 
+#include "config.h"
 #include "runtime.h"
 
 #include <assert.h>
@@ -437,7 +438,7 @@ void Runtime::run() {
   uint64_t work_items = 0;
   struct timespec run_start;
   clock_gettime(CLOCK_REALTIME, &run_start);
-  double next_warning_time = 300.0;  // First warning at 5 minutes (300 seconds)
+  double next_warning_time = WakeConfig::get()->interpreter_runtime_warning;
 
   while (stack && !abort) {
     if (++count >= 10000) {
@@ -453,9 +454,12 @@ void Runtime::run() {
       double elapsed = (now.tv_sec - run_start.tv_sec) +
                        (now.tv_nsec - run_start.tv_nsec) / 1e9;
 
-      if (elapsed >= next_warning_time) {
-        std::cerr << "[INTERPRETER WARNING] " << work_items
-                  << " work items processed, " << elapsed << "s elapsed"
+      if (next_warning_time > 0 && elapsed >= next_warning_time) {
+        std::cerr << "[INTERPRETER RUNTIME WARNING] " << work_items
+                  << " work items processed, " << elapsed << "s elapsed" << std::endl;
+
+        std::cerr << " The Wake runtime has been running past the configured threshold." << std::endl;
+        std::cerr << " Possible inefficient Wake code. Consider reviewing your wake files and stack trace."
                   << std::endl;
 
         // Stack trace if debug enabled
