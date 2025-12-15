@@ -457,8 +457,9 @@ void Runtime::run() {
         std::cerr << "[INTERPRETER RUNTIME WARNING] " << work_items << " work items processed, "
                   << elapsed << "s elapsed" << std::endl;
 
-        std::cerr << " The Wake runtime has been running past the threshold configured in .wakeroot."
-                  << std::endl;
+        std::cerr
+            << " The Wake runtime has been running past the threshold configured in .wakeroot."
+            << std::endl;
         std::cerr << " Possible inefficient Wake code. Consider reviewing your wake files and "
                      "stack trace."
                   << std::endl;
