@@ -438,7 +438,7 @@ void Runtime::run() {
   uint64_t work_items = 0;
   struct timespec run_start;
   clock_gettime(CLOCK_REALTIME, &run_start);
-  double next_warning_time = WakeConfig::get()->interpreter_runtime_warning;
+  double next_warning_time = WakeConfig::get()->interpreter_runtime_warning_s;
 
   while (stack && !abort) {
     if (++count >= 10000) {
@@ -457,7 +457,7 @@ void Runtime::run() {
         std::cerr << "[INTERPRETER RUNTIME WARNING] " << work_items << " work items processed, "
                   << elapsed << "s elapsed" << std::endl;
 
-        std::cerr << " The Wake runtime has been running past the configured threshold."
+        std::cerr << " The Wake runtime has been running past the threshold configured in .wakeroot."
                   << std::endl;
         std::cerr << " Possible inefficient Wake code. Consider reviewing your wake files and "
                      "stack trace."

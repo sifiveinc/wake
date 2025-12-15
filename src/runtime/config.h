@@ -293,14 +293,14 @@ struct SharedCacheTimeoutConfig {
 struct InterpreterRuntimeWarningPolicy {
   using type = int64_t;
   using input_type = type;
-  static constexpr const char* key = "interpreter_runtime_warning";
+  static constexpr const char* key = "interpreter_runtime_warning_s";
   static constexpr bool allowed_in_wakeroot = true;
   static constexpr bool allowed_in_userconfig = true;
-  type interpreter_runtime_warning = 300;  // Default 5 minutes (300 seconds)
+  type interpreter_runtime_warning_s = 0;  // Default is off
   static constexpr type InterpreterRuntimeWarningPolicy::*value =
-      &InterpreterRuntimeWarningPolicy::interpreter_runtime_warning;
+      &InterpreterRuntimeWarningPolicy::interpreter_runtime_warning_s;
   static constexpr Override<input_type> override_value = nullptr;
-  static constexpr const char* env_var = "WAKE_INTERPRETER_RUNTIME_WARNING";
+  static constexpr const char* env_var = "WAKE_INTERPRETER_RUNTIME_WARNING_S";
 
   InterpreterRuntimeWarningPolicy() = default;
   static void set(InterpreterRuntimeWarningPolicy& p, const JAST& json);

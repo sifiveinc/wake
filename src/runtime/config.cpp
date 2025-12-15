@@ -328,7 +328,7 @@ void SharedCacheTimeoutConfig::set(SharedCacheTimeoutConfig& p, const JAST& json
 void InterpreterRuntimeWarningPolicy::set(InterpreterRuntimeWarningPolicy& p, const JAST& json) {
   auto json_value = json.expect_integer();
   if (json_value) {
-    p.interpreter_runtime_warning = static_cast<double>(*json_value);
+    p.interpreter_runtime_warning_s = *json_value;
   }
 }
 
