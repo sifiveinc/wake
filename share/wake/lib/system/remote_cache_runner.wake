@@ -102,6 +102,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
                 makeExecPlan cmd Nil
                 | setPlanLabel "rsc: mkdir output dir {path}"
                 | setPlanPersistence Once
+                | setPlanEcho logDebug
                 | runJobWith localRunner
                 | setJobInspectVisibilityHidden
                 | isJobOk
@@ -165,6 +166,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
                 Nil
                 | setPlanLabel "rsc: symlink {link} to {path}"
                 | setPlanPersistence Once
+                | setPlanEcho logDebug
                 | runJobWith localRunner
                 | setJobInspectVisibilityHidden
                 | isJobOk
@@ -409,6 +411,7 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
             Nil
             | setPlanLabel "rsc: readlink {link}"
             | setPlanPersistence Once
+            | setPlanEcho logDebug
             | runJobWith localRunner
             | setJobInspectVisibilityHidden
             | getJobStdout

@@ -297,6 +297,7 @@ export def makeRequest (request: HttpRequest): Result HttpResponse Error =
         | setPlanFnOutputs (\_ Nil)
         # Curl jobs don't use many resources, most time is spent waiting for a response
         | setPlanUsage (Usage 0 0.0 0.1 0 0 0)
+        | setPlanEcho logDebug
         | runJobWith localRunner
         | setJobTag "http.method" "{method | methodToString}"
         | setJobTag "http.url" url
@@ -375,6 +376,7 @@ export def makeBinaryRequest (request: HttpRequest): Result Path Error =
         | setPlanFnOutputs (\_ Nil)
         # Cleanup doesn't use many resources but isn't reused so wake never learns that
         | setPlanUsage (Usage 0 0.0 0.002 0 0 0)
+        | setPlanEcho logDebug
         | runJobWith localRunner
         | setJobTag "http.cleanup" destination
         | setJobInspectVisibilityHidden
@@ -395,6 +397,7 @@ export def makeBinaryRequest (request: HttpRequest): Result Path Error =
         | setPlanFnOutputs (\_ destination, Nil)
         # Curl jobs don't use many resources, most time is spent waiting for a response
         | setPlanUsage (Usage 0 0.0 0.1 0 0 0)
+        | setPlanEcho logDebug
         | runJobWith localRunner
         | setJobTag "http.method" methodStr
         | setJobTag "http.url" url

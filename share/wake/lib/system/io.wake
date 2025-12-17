@@ -213,6 +213,7 @@ target writeImp inputs mode path content =
     | setPlanLabel "write: {path} 0{strOctal mode}"
     | setPlanOnce False
     | setPlanEnvironment Nil
+    | setPlanEcho logDebug
     | runJobWith (writeRunner content)
     | setJobInspectVisibilityHidden
     | getJobOutput
@@ -336,6 +337,7 @@ def mkdirImp inputs mode path =
     | setPlanLabel "mkdir: {path} 0{strOctal mode}"
     | setPlanKeep False
     | setPlanEnvironment Nil
+    | setPlanEcho logDebug
     | runJobWith mkdirRunner
     | setJobInspectVisibilityHidden
     | getJobOutput
