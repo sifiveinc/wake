@@ -448,7 +448,7 @@ int FdBuf::overflow(int c) {
 
 int FdBuf::sync() {
   int ret = fsync(fd);
-  // fsync fails on pipes, sockets, and TTYs with EINVAL as they are not storage devices,
+  // fsync fails on pipes, sockets, and TTYs with EINVAL as they don't support synchronization,
   // proceed normally
   if (ret == -1 && errno == EINVAL) {
     return 0;
