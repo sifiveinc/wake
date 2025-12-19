@@ -198,13 +198,11 @@ void query_jobs(const CommandLineOptions &clo, Database &db) {
   // --last-exe
   if (clo.last_exe) {
     collect_ands.push_back({"run_id == (select max(run_id) from jobs)"});
-    hide_internal_jobs(collect_ands);
   }
 
   // --last-use
   if (clo.last_use) {
     collect_ands.push_back({"use_id == (select max(run_id) from jobs)"});
-    hide_internal_jobs(collect_ands);
   }
 
   // --failed
@@ -215,6 +213,11 @@ void query_jobs(const CommandLineOptions &clo, Database &db) {
   // --canceled
   if (clo.canceled) {
     collect_ands.push_back({"endtime = 0"});
+  }
+
+  // Hide introspection jobs by default unless --include-hidden is specified
+  if (!clo.include_hidden) {
+    hide_internal_jobs(collect_ands);
   }
 
   auto matching_jobs = db.matching(collect_ands, collect_input_ands, collect_output_ands);
@@ -292,6 +295,7 @@ void print_help(const char *argv0) {
     << "    --debug    -d      Report stack frame of captured jobs"                        << std::endl
     << "    --simple           Report only label, cmdline, and tags of captured jobs"      << std::endl
     << "    --script   -s      Format captured jobs as an executable shell script"         << std::endl
+    << "    --include-hidden   Include hidden introspection jobs in query results"         << std::endl
     << std::endl
     << "  Help functions:" << std::endl
     << "    --version          Print the version of wake on standard output"               << std::endl

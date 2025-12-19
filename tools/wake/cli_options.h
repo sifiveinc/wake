@@ -63,6 +63,7 @@ struct CommandLineOptions {
   bool canceled;
   bool clean;
   bool list_outputs;
+  bool include_hidden;
   wcl::optional<bool> log_header_align;
   wcl::optional<bool> cache_miss_on_failure;
 
@@ -176,6 +177,7 @@ struct CommandLineOptions {
       {0, "no-cache-miss-on-failure", GOPT_ARGUMENT_FORBIDDEN},
       {0, "user-config", GOPT_ARGUMENT_REQUIRED},
       {':', "shebang", GOPT_ARGUMENT_REQUIRED},
+      {0, "include-hidden", GOPT_ARGUMENT_FORBIDDEN},
       {0, 0, GOPT_LAST}
     };
     // clang-format on
@@ -218,6 +220,7 @@ struct CommandLineOptions {
     canceled = arg(options, "canceled")->count;
     clean = arg(options, "clean")->count;
     list_outputs = arg(options, "list-outputs")->count;
+    include_hidden = arg(options, "include-hidden")->count;
 
     percent_str = arg(options, "percent")->argument;
     jobs_str = arg(options, "jobs")->argument;

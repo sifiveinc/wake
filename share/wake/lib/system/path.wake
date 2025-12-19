@@ -213,6 +213,7 @@ def computeHashes (prefix: String) (files: List String): List String =
 
     def job =
         plan
+        | setPlanEcho logDebug
         | runJobWith localRunner
         | setJobInspectVisibilityHidden
 
@@ -263,6 +264,7 @@ target hashcode (f: String): String =
         def job =
             hashPlan ("<hash>", f, Nil)
             | setPlanLabel "hash: {f}"
+            | setPlanEcho logDebug
             | runJobWith localRunner
             | setJobInspectVisibilityHidden
 
@@ -284,6 +286,7 @@ export target markFileCleanable (filepath: String): Result Unit Error =
         hashPlan ("<hash>", filepath, Nil)
         | setPlanLabel "hash: {filepath}"
         | setPlanFnOutputs (\_ filepath, Nil)
+        | setPlanEcho logDebug
         | runJobWith localRunner
         | setJobInspectVisibilityHidden
 
