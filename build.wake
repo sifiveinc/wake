@@ -129,7 +129,7 @@ def doInstall dest kind =
 
     def install_datfiles =
         sources "{@here}/share" `.*`
-        | rmapPass (\files findFailFn (installIn dest ".") files)
+        | rmapPass (\files map (installIn dest ".") files | findFail)
 
     def install_readme =
         source "README.md"
@@ -141,7 +141,7 @@ def doInstall dest kind =
 
     def install_binfiles =
         all variant
-        | rmapPass (\files findFailFn releaseBin files)
+        | rmapPass (\files map releaseBin files | findFail)
 
     # Join on the installs now that everything has been kicked off
     require Pass readme = install_readme

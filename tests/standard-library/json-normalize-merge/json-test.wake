@@ -5,16 +5,17 @@ from wake import _
 export def jsonTest (normalization: JSONNormalize) (inputs: List String): Result Unit Error =
     def testFn =
         normalizeJSONWith normalization
-    findFailFn (test (_) testFn) inputs
+    findFailSerial (test (_) testFn) inputs
     | rmap (\_ Unit)
 
 export def jsonArrayTest (joinFn: List JValue => Result JValue Error) (inputs: List String): Result Unit Error =
     def preprocessFn json =
         getJArray json
         | getOrElse Nil
-    findFailFn (test preprocessFn joinFn) inputs
+    findFailSerial (test preprocessFn joinFn) inputs
     | rmap (\_ Unit)
 
+# Because this uses stdout/err for printing results, order of execution matters.
 def test (preprocessFn: JValue => a) (testFn: a => Result JValue Error) (input: String): Result Unit Error =
     require Pass inputPath =
         # There doesn't seem to be an easy way to get `source` to recognize the

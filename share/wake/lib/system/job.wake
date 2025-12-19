@@ -313,7 +313,7 @@ def treeOk file =
 
 def guardPath job = match _
     Fail e -> Fail e
-    Pass l if job.isJobOk -> findFailFn treeOk l
+    Pass l if job.isJobOk -> findFailSerial treeOk l
     _ ->
         # Check if it's a runner failure, if not then we know its a job failure
         def runnerFailure = match (unsafe_getJobRunnerStatusMessage job)
@@ -324,7 +324,7 @@ def guardPath job = match _
 
 def mapPath = match _
     Fail e -> Fail e
-    Pass l -> findFailFn treeOk l
+    Pass l -> findFailSerial treeOk l
 
 export def getJobStdoutRaw (job: Job): Result String Error =
     require Exited 0 = getJobStatus job
