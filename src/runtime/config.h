@@ -290,6 +290,27 @@ struct SharedCacheTimeoutConfig {
   static void set_env_var(SharedCacheTimeoutConfig& p, const char* env_var) {}
 };
 
+struct InterpreterRuntimeWarningPolicy {
+  using type = int64_t;
+  using input_type = type;
+  static constexpr const char* key = "interpreter_runtime_warning_s";
+  static constexpr bool allowed_in_wakeroot = true;
+  static constexpr bool allowed_in_userconfig = true;
+  type interpreter_runtime_warning_s = 0;  // Default is off
+  static constexpr type InterpreterRuntimeWarningPolicy::*value =
+      &InterpreterRuntimeWarningPolicy::interpreter_runtime_warning_s;
+  static constexpr Override<input_type> override_value = nullptr;
+  static constexpr const char* env_var = "WAKE_INTERPRETER_RUNTIME_WARNING_S";
+
+  InterpreterRuntimeWarningPolicy() = default;
+  static void set(InterpreterRuntimeWarningPolicy& p, const JAST& json);
+  static void set_input(InterpreterRuntimeWarningPolicy& p, const input_type& v) { p.*value = v; }
+  static void emit(const InterpreterRuntimeWarningPolicy& p, std::ostream& os) { os << p.*value; }
+  static void set_env_var(InterpreterRuntimeWarningPolicy& p, const char* env_var) {
+    p.*value = std::stod(env_var);
+  }
+};
+
 /********************************************************************
  * Generic WakeConfig implementation
  *********************************************************************/
@@ -435,7 +456,8 @@ struct WakeConfigImpl : public Policies... {
 using WakeConfigImplFull =
     WakeConfigImpl<UserConfigPolicy, VersionPolicy, LogHeaderPolicy, LogHeaderSourceWidthPolicy,
                    LabelFilterPolicy, EvictionConfigPolicy, SharedCacheMissOnFailure,
-                   LogHeaderAlignPolicy, BulkLoggingDirPolicy, SharedCacheTimeoutConfig>;
+                   LogHeaderAlignPolicy, BulkLoggingDirPolicy, SharedCacheTimeoutConfig,
+                   InterpreterRuntimeWarningPolicy>;
 
 struct WakeConfig final : public WakeConfigImplFull {
   static bool init(const std::string& wakeroot_path, const WakeConfigOverrides& overrides);

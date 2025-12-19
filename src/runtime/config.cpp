@@ -217,6 +217,7 @@ POLICY_STATIC_DEFINES(LogHeaderAlignPolicy)
 POLICY_STATIC_DEFINES(BulkLoggingDirPolicy)
 POLICY_STATIC_DEFINES(EvictionConfigPolicy)
 POLICY_STATIC_DEFINES(SharedCacheTimeoutConfig)
+POLICY_STATIC_DEFINES(InterpreterRuntimeWarningPolicy)
 
 /********************************************************************
  * Non-Trivial Defaults
@@ -321,6 +322,13 @@ void SharedCacheTimeoutConfig::set(SharedCacheTimeoutConfig& p, const JAST& json
   }
   if (json_message_timeout) {
     p.timeout_config.message_timeout_seconds = *json_message_timeout;
+  }
+}
+
+void InterpreterRuntimeWarningPolicy::set(InterpreterRuntimeWarningPolicy& p, const JAST& json) {
+  auto json_value = json.expect_integer();
+  if (json_value) {
+    p.interpreter_runtime_warning_s = *json_value;
   }
 }
 

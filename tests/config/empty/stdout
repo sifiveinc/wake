@@ -14,3 +14,4 @@ Wake config:
     max_misses_from_failure = 20,
     message_timeout_seconds = 10,
   }' (Default)
+  interpreter_runtime_warning_s = '0' (Default)
