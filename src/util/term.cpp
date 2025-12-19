@@ -446,7 +446,15 @@ int FdBuf::overflow(int c) {
   return c;
 }
 
-int FdBuf::sync() { return fsync(fd); }
+int FdBuf::sync() {
+  int ret = fsync(fd);
+  // fsync fails on pipes, sockets, and TTYs with EINVAL as they don't support synchronization,
+  // proceed normally
+  if (ret == -1 && errno == EINVAL) {
+    return 0;
+  }
+  return ret;
+}
 
 static bool tty = false;
 static const char *cuu1;
