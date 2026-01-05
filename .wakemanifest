@@ -58,7 +58,7 @@ tools/wake-hash/hash.wake
 tools/wake-migrate/wake-migrate.wake
 tools/wake-unit/wake-unit.wake
 tools/wake/wake.wake
-vendor/blake2/blake2.wake
+vendor/blake3/blake3.wake
 vendor/emscripten.wake
 vendor/fuse.wake
 vendor/git.wake

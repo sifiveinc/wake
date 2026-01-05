@@ -4,7 +4,7 @@ Each file includes a header which describes the relevant license.
 In broad strokes:
   wake          LICENSE.Apache2   everything not in vendor/
 
-  BLAKE2                    LICENSE.CC0       vendor/blake2/
+  BLAKE3                    LICENSE.CC0       vendor/blake3/
   gopt                      LICENSE.TFL       vendor/gopt/
   lemon                     public domain     vendor/lemon/
   SipHash                   LICENSE.CC0       vendor/siphash/

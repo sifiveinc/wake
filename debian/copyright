@@ -15,9 +15,9 @@ Copyright: 2012-2016 Jean-Philippe Aumasson <jeanphilippe.aumasson@gmail.com>
            2012-2014 Daniel J. Bernstein <djb@cr.yp.to>
 License: CC0
 
-Files: shim/blake2*
-Copyright: 2012 Samuel Neves <sneves@dei.uc.pt>
-License: CC0
+Files: vendor/blake3/*
+Copyright: 2019-2020 Samuel Neves and Jack O'Connor
+License: CC0 or Apache-2.0
 
 Files: utf8proc/*
 Copyright: 2018 Steven G. Johnson, Jiahao Chen, Peter Colberg, Tony Kelman, Scott P. Jones, and other contributors.

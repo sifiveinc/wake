@@ -19,4 +19,4 @@ from wake import _
 from gcc_wake import _
 
 target buildHash variant: Result (List Path) Error =
-    tool @here Nil variant "lib/wake/wake-hash" (blake2, compat, Nil) Nil Nil
+    tool @here Nil variant "lib/wake/wake-hash" (blake3, compat, Nil) Nil Nil
