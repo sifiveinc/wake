@@ -34,18 +34,27 @@ COMMON_CPP  := $(foreach dir,$(COMMON_DIRS),$(wildcard $(dir)/*.cpp))
 COMMON_OBJS := src/json/jlexer.o \
                $(patsubst %.cpp,%.o,$(COMMON_CPP)) $(patsubst %.c,%.o,$(COMMON_C))
 
+# BLAKE3 SIMD assembly files (x86_64 only)
+BLAKE3_ASM := vendor/blake3/blake3_sse2_x86-64_unix.S \
+              vendor/blake3/blake3_sse41_x86-64_unix.S \
+              vendor/blake3/blake3_avx2_x86-64_unix.S \
+              vendor/blake3/blake3_avx512_x86-64_unix.S
+BLAKE3_ASM_OBJS := $(patsubst %.S,%.o,$(BLAKE3_ASM))
+BLAKE3_C := vendor/blake3/blake3.c vendor/blake3/blake3_portable.c vendor/blake3/blake3_dispatch.c
+BLAKE3_OBJS := $(patsubst %.c,%.o,$(BLAKE3_C)) $(BLAKE3_ASM_OBJS)
+
 # CAS objects needed by fuse-waked for storing job outputs
 CAS_CPP     := $(wildcard src/cas/*.cpp)
-CAS_OBJS    := $(patsubst %.cpp,%.o,$(CAS_CPP)) vendor/blake2/blake2b-ref.o
+CAS_OBJS    := $(patsubst %.cpp,%.o,$(CAS_CPP)) $(BLAKE3_OBJS)
 
 WAKE_DIRS := $(COMMON_DIRS) src/cas src/dst src/optimizer src/parser src/runtime src/types src/wcl tools/wake
 WAKE_C    := $(foreach dir,$(WAKE_DIRS),$(wildcard $(dir)/*.c)) \
-             vendor/blake2/blake2b-ref.c vendor/utf8proc/utf8proc.c \
+             $(BLAKE3_C) vendor/utf8proc/utf8proc.c \
              vendor/siphash/siphash.c vendor/whereami/whereami.c \
              vendor/gopt/gopt.c vendor/gopt/gopt-errors.c vendor/gopt/gopt-arg.c
 WAKE_CPP  := $(foreach dir,$(WAKE_DIRS),$(wildcard $(dir)/*.cpp))
 WAKE_OBJS := src/parser/lexer.o src/parser/parser.o src/json/jlexer.o \
-             $(patsubst %.cpp,%.o,$(WAKE_CPP)) $(patsubst %.c,%.o,$(WAKE_C))
+             $(patsubst %.cpp,%.o,$(WAKE_CPP)) $(patsubst %.c,%.o,$(WAKE_C)) $(BLAKE3_ASM_OBJS)
 
 WAKE_ENV := WAKE_CAS=1 WAKE_PATH=$(shell dirname $(shell which $(firstword $(CC))))
 
@@ -128,6 +137,10 @@ bin/wake-migrate: tools/wake-migrate/main.o $(COMMON_OBJS)
 
 %.o:	%.c	$(filter-out src/version.h,$(wildcard */*.h))
 	$(CC) $(CFLAGS) $(LOCAL_CFLAGS) -o $@ -c $<
+
+# Assembly rule for BLAKE3 SIMD implementations
+vendor/blake3/%.o:	vendor/blake3/%.S
+	$(CC) $(CFLAGS) -o $@ -c $<
 
 # Rely on wake to recreate this file if re2c is available
 %.cpp:	%.cpp.gz

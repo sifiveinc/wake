@@ -1,0 +1,72 @@
+# Copyright 2019 SiFive, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You should have received a copy of LICENSE.Apache2 along with
+# this software. If not, you may obtain a copy at
+#
+#    https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+package build_wake
+
+from wake import _
+from gcc_wake import _
+
+# Compile an assembly file to an object file
+def compileAsm (variant: String) (asmFile: Path): Result (List Path) Error =
+    def obj = replace `\.S$` ".{variant}.o" asmFile.getPathName
+    def cmdline = "cc", "-c", asmFile.getPathName, "-o", obj, Nil
+
+    makeExecPlan cmdline (asmFile, Nil)
+    | setPlanLabel "asm {asmFile.getPathName}"
+    | runJobWith defaultRunner
+    | getJobOutputs
+
+# Get the list of SIMD assembly files based on architecture
+def blake3AsmFiles: List String =
+    if machine ==~ "x86_64" then
+        "blake3_sse2_x86-64_unix.S",
+        "blake3_sse41_x86-64_unix.S",
+        "blake3_avx2_x86-64_unix.S",
+        "blake3_avx512_x86-64_unix.S",
+        Nil
+    else
+        Nil
+
+# Get the regex for C files to compile based on architecture
+# On x86_64: compile all C files except blake3_neon.c (ARM-only)
+# On ARM: compile all C files (including blake3_neon.c)
+def blake3CFilesRegex: RegExp =
+    if machine ==~ "x86_64" then
+        `blake3(_dispatch|_portable)?\.c`
+    else if machine ==~ "aarch64" then
+        `blake3(_dispatch|_portable|_neon)?\.c`
+    else
+        # Fallback: just portable implementation
+        `blake3(_dispatch|_portable)?\.c`
+
+target blake3 variant =
+    def Pair _ cVariant = variant
+
+    # Compile C files (portable implementation + dispatch, excluding platform-specific files)
+    require Pass cLib = vendor @here variant "1.0" `.*\.h` blake3CFilesRegex
+
+    # Compile architecture-specific assembly files
+    require Pass asmPaths =
+        blake3AsmFiles
+        | map ("{@here}/{_}")
+        | findFailFn source
+
+    require Pass asmObjs =
+        map (compileAsm cVariant) asmPaths
+        | findFail
+
+    # Combine C objects with assembly objects
+    Pass (cLib | setSysLibObjects (asmObjs.flatten ++ cLib.getSysLibObjects))
+
