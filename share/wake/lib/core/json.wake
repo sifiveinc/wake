@@ -299,7 +299,8 @@ export def normalizeJSONWith (fmt: JSONNormalize) (json: JValue): Result JValue 
 
             require Pass normalized =
                 zip (seq a.len) a
-                | findFailFn recurseArray
+                | map recurseArray
+                | findFail
 
             normalized
             | getJSONNormalizeArray fmt
@@ -351,7 +352,8 @@ export def mergeJSON (jsons: List JValue): Result JValue Error =
 #
 # ```
 # ("\{\"key\":\{\"firstSubkey\":1\}\}", "\{\"key\":\{\"secondSubkey\":2\}\}", Nil)
-# | findFailFn parseJSONBody
+# | map parseJSONBody
+# | findFail
 # | rmapPass lastValueInList
 # | rmap formatJSON
 # Pass "\{\"key\":\{\"firstSubkey\":1,\"secondSubkey\":2\}\}"
@@ -359,7 +361,8 @@ export def mergeJSON (jsons: List JValue): Result JValue Error =
 #
 # ```
 # ("\{\"firstKey\":1\}", "2", "\{\"secondKey\":3\}", Nil)
-# | findFailFn parseJSONBody
+# | map parseJSONBody
+# | findFail
 # | rmapPass lastValueInList
 # | rmap formatJSON
 # Pass "\{\"secondKey\":3\}"
@@ -477,7 +480,7 @@ def deduplicateJObjectKeys (simplifyValueList: List JValue => Result JValue Erro
         _ -> simplifyValueList values
 
     groupBy cmpKeysOnly dict
-    | findFailFn simplifyKeyGroup
+    | findFailSerial simplifyKeyGroup
 
 # Attempt to determine equality across simple values, concatenate `JArray`s, and
 # recurse into `JObject`s.
