@@ -258,6 +258,7 @@ void print_help(const char *argv0) {
     << "    --debug    -d      Report stack frame information for exceptions and closures" << std::endl
     << "    --quiet    -q      Surpress report of launched jobs and final expressions"     << std::endl
     << "    --no-tty           Surpress interactive build progress interface"              << std::endl
+    << "    --stream           Stream job output (disable batch mode) when not a tty"     << std::endl
     << "    --no-wait          Do not wait to obtain database lock; fail immediately"      << std::endl
     << "    --no-workspace     Do not open a database or scan for sources files"           << std::endl
     << "    --fatal-warnings   Do not execute if there are any warnings"                   << std::endl
@@ -888,7 +889,7 @@ int main(int argc, char **argv) {
 
   /* Primitives */
   JobTable jobtable(&db, memory_budget, cpu_budget, clo.debug, clo.verbose, clo.quiet, clo.check,
-                    !clo.tty);
+                    !clo.tty && !clo.stream);
   StringInfo info(clo.verbose, clo.debug, clo.quiet, VERSION_STR, wcl::make_canonical(wake_cwd),
                   cmdline);
   PrimMap pmap = prim_register_all(&info, &jobtable);

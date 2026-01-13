@@ -35,6 +35,7 @@ struct CommandLineOptions {
   bool wait;
   bool workspace;
   bool tty;
+  bool stream;
   bool fwarning;
   int profileh;
   bool last_use;
@@ -120,6 +121,7 @@ struct CommandLineOptions {
       {0, "no-wait", GOPT_ARGUMENT_FORBIDDEN},
       {0, "no-workspace", GOPT_ARGUMENT_FORBIDDEN},
       {0, "no-tty", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "stream", GOPT_ARGUMENT_FORBIDDEN},
       {0, "fatal-warnings", GOPT_ARGUMENT_FORBIDDEN},
       {0, "heap-factor", GOPT_ARGUMENT_REQUIRED | GOPT_ARGUMENT_NO_HYPHEN},
       {0, "profile-heap", GOPT_ARGUMENT_FORBIDDEN | GOPT_REPEATABLE},
@@ -192,6 +194,7 @@ struct CommandLineOptions {
     wait = !arg(options, "no-wait")->count;
     workspace = !arg(options, "no-workspace")->count;
     tty = !arg(options, "no-tty")->count;
+    stream = arg(options, "stream")->count;
     fwarning = arg(options, "fatal-warnings")->count;
     profileh = arg(options, "profile-heap")->count;
     last_use = arg(options, "last")->count || arg(options, "last-used")->count;
