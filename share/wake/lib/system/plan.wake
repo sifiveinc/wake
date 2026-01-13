@@ -29,6 +29,15 @@ export data Persistence =
     # Job should output be shared between workspaces.
     Share
 
+# A resource requirement for a job.
+# Resources are consumable units that must be acquired before a job runs
+# and released after the job completes.
+export tuple ResourceRequirement =
+    # The name of the resource
+    export Name: String
+    # The number of resources required (must be >= 1)
+    export Count: Integer
+
 # A Plan describes a not-yet-executed Job
 export tuple Plan =
     # The label used when showing the command during execution. This is recommended for efficient
@@ -55,9 +64,12 @@ export tuple Plan =
     export Echo: LogLevel
     # See Persistence table above
     export Persistence: Persistence
-    # The resources a runner must provide to the job (licenses/etc).
+    # The resources a runner must provide to the job (module loads, etc).
     # These strings are uninterpreted and are only meaningful to the right runners.
     export Resources: List String
+    # Resource requirements that must be acquired before the job runs.
+    # These are consumable units managed by the Wake runtime (lisenses, etc).
+    export ResourceReqs: List ResourceRequirement
     # User-supplied usage prediction; overruled by database statistics (if any)
     export Usage: Usage
     # Modify the Runner's reported inputs (files read). For advanced use only.
@@ -164,7 +176,7 @@ export def editPlanShare (f: Boolean => Boolean): Plan => Plan =
 
 # Get a unique hash-code for the job
 export def getPlanHash (plan: Plan): Integer =
-    def Plan _ cmd _ env dir stdin _ _ _ _ _ _ _ _ isAtty = plan
+    def Plan _ cmd _ env dir stdin _ _ _ _ _ _ _ _ _ isAtty = plan
     def isAttyStr = if isAtty then "true" else "false"
 
     def sig =
@@ -217,6 +229,7 @@ export def makeExecPlan (cmd: List String) (visible: List Path): Plan =
     logEcho
     Share
     Nil
+    Nil
     defaultUsage
     identity
     identity
@@ -227,3 +240,20 @@ export def makeShellPlan (script: String) (visible: List Path): Plan =
 
 def defaultUsage =
     Usage 0 0.0 1.0 0 0 0
+
+# Resource helper functions
+
+# Require a single resource for a job.
+# Example: plan | requireResource "test_resource"
+export def requireResource (name: String) (plan: Plan): Plan =
+    editPlanResourceReqs (ResourceRequirement name 1, _) plan
+
+# Require multiple resources of the same type for a job.
+# Example: plan | requireResources "test_resource" 2
+export def requireResources (name: String) (count: Integer) (plan: Plan): Plan =
+    editPlanResourceReqs (ResourceRequirement name count, _) plan
+
+# Add a resource requirement to a plan.
+# Example: plan | addResourceRequirement (ResourceRequirement "test_resource" 1)
+export def addResourceRequirement (req: ResourceRequirement) (plan: Plan): Plan =
+    editPlanResourceReqs (req, _) plan

@@ -218,6 +218,7 @@ POLICY_STATIC_DEFINES(BulkLoggingDirPolicy)
 POLICY_STATIC_DEFINES(EvictionConfigPolicy)
 POLICY_STATIC_DEFINES(SharedCacheTimeoutConfig)
 POLICY_STATIC_DEFINES(InterpreterRuntimeWarningPolicy)
+POLICY_STATIC_DEFINES(ResourceLimitsPolicy)
 
 /********************************************************************
  * Non-Trivial Defaults
@@ -329,6 +330,22 @@ void InterpreterRuntimeWarningPolicy::set(InterpreterRuntimeWarningPolicy& p, co
   auto json_value = json.expect_integer();
   if (json_value) {
     p.interpreter_runtime_warning_s = *json_value;
+  }
+}
+
+void ResourceLimitsPolicy::set(ResourceLimitsPolicy& p, const JAST& json) {
+  // Expect a JSON object with resource name -> count mappings
+  if (json.kind != JSON_OBJECT) {
+    return;
+  }
+
+  for (const auto& child : json.children) {
+    if (child.second.kind == JSON_INTEGER) {
+      auto count = child.second.expect_integer();
+      if (count && *count > 0) {
+        p.resource_limits.limits[child.first] = *count;
+      }
+    }
   }
 }
 

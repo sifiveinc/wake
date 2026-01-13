@@ -44,6 +44,8 @@ export tuple RunnerInput =
     export Directory: String
     export Stdin: String
     export Resources: List String
+    # Resource requirements that must be acquired before the job runs
+    export ResourceReqs: List ResourceRequirement
     # A unique prefix for this job
     export Prefix: String
     # Previous resource usage
@@ -122,9 +124,9 @@ export def makeRunner (name: String) (run: Job => RunnerInput => RunnerOutput): 
 # You must use Fn{Inputs,Outputs} to fill in this information for wake to maintain safety and reusability
 # Advanced usage only, proceed with caution
 export def localRunner: Runner =
-    def run (job: Job) ((RunnerInput _ cmd vis env dir stdin _ _ predict isAtty fnInputs fnOutputs): RunnerInput): RunnerOutput =
+    def run (job: Job) ((RunnerInput _ cmd vis env dir stdin _ resourceReqs _ predict isAtty fnInputs fnOutputs): RunnerInput): RunnerOutput =
         def jobKey = JobKey dir stdin env.implode cmd.implode 0 "" isAtty.booleanToInteger
-        def _ = primJobLaunch job jobKey predict
+        def _ = primJobLaunch job jobKey predict resourceReqs
 
         def fileInputs =
             vis
@@ -152,7 +154,7 @@ export def localRunner: Runner =
 #
 # This runner is useful for tracking a unit of work that is job like but not launched as a process
 export def virtualRunner: Runner =
-    def run (job: Job) ((RunnerInput _ _ vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
+    def run (job: Job) ((RunnerInput _ _ vis _ _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
         def _ = primJobVirtual job "" "" predict
 
         def fileInputs =
@@ -230,7 +232,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
     def script = which (simplify rawScript)
     def executeOk = access script xOK
 
-    def run (job: Job) ((RunnerInput label command visible environment directory stdin res prefix record isatty fnInputs fnOutputs): RunnerInput): RunnerOutput =
+    def run (job: Job) ((RunnerInput label command visible environment directory stdin res resourceReqs prefix record isatty fnInputs fnOutputs): RunnerInput): RunnerOutput =
         require True = executeOk
         else
             def runnerError = "Runner {script} is not executable".makeError
@@ -239,6 +241,10 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             RunnerOutput Nil Nil Nil emptyUsage (Some runnerError)
 
         def Usage jobStatus runtime cputime membytes inbytes outbytes = record
+
+        # Serialize a ResourceRequirement to JSON
+        def resourceToJson (ResourceRequirement name count) =
+            JObject ("name" :-> JString name, "count" :-> JInteger count, Nil)
 
         def json =
             JObject (
@@ -249,6 +255,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                 "directory" :-> JString directory,
                 "stdin" :-> JString stdin,
                 "resources" :-> res | map JString | JArray,
+                "resource_reqs" :-> resourceReqs | map resourceToJson | JArray,
                 "version" :-> JString version,
                 "isolate-network" :-> JBoolean False,
                 "isolate-pids" :-> JBoolean False,
@@ -290,6 +297,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             "."
             ""
             Nil
+            resourceReqs
             prefix
             (estimate record)
             isatty

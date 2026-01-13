@@ -75,12 +75,28 @@ export def primJobVirtual (job: Job) (stdout: String) (stderr: String) (usage: U
     ibytes
     obytes
 
+# Serialize a list of resource requirements to JSON for the C++ primitive
+# Format: [{"name": "resource_1", "count": 1}, {"name": "resource_2", "count": 2}]
+def serializeResourcesToJson (resources: List ResourceRequirement): String =
+    def serializeOne (ResourceRequirement name count) =
+        "\{\"name\": \"{name}\", \"count\": {str count}\}"
+
+    match resources
+        Nil -> ""
+        _ ->
+            resources
+            | map serializeOne
+            | catWith ", "
+            | ("[{_}]")
+
 # Launch the job via a child process. Values such as command or environment can be freely changed from the initial reservation.
-export def primJobLaunch (job: Job) (jobKey: JobKey) (usage: Usage): Unit =
+export def primJobLaunch (job: Job) (jobKey: JobKey) (usage: Usage) (resources: List ResourceRequirement): Unit =
     def JobKey dir stdin env cmd _signature _visible isatty = jobKey
     def Usage jobStatus runtime cputime membytes ibytes obytes = usage
 
-    (\_ \_ \_ \_ \_ \_ \_ \_ \_ \_ \_ \_ prim "job_launch")
+    def resourcesJson = serializeResourcesToJson resources
+
+    (\_ \_ \_ \_ \_ \_ \_ \_ \_ \_ \_ \_ \_ prim "job_launch")
     job
     dir
     stdin
@@ -93,6 +109,7 @@ export def primJobLaunch (job: Job) (jobKey: JobKey) (usage: Usage): Unit =
     ibytes
     obytes
     isatty
+    resourcesJson
 
 # Complete a job before launch with userland defined failure
 export def primJobFailLaunch (job: Job) (error: Error): Unit =
@@ -143,7 +160,7 @@ def implode strings =
 def jobSignature cmd res fni fno keep =
     primHash5 cmd res fni fno keep
 
-def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo stdout stderr label isatty: Job =
+def runAlways cmd env dir stdin res resourceReqs uusage finputs foutputs vis keep run echo stdout stderr label isatty: Job =
     def hash = jobSignature cmd res finputs foutputs keep
 
     def visKey =
@@ -167,7 +184,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             | getOrElse uusage
 
         def RunnerOutput inputs outputs cleanable reality runnerError =
-            run job (RunnerInput label cmd vis env dir stdin res prefix usage isatty finputs foutputs)
+            run job (RunnerInput label cmd vis env dir stdin res resourceReqs prefix usage isatty finputs foutputs)
 
         def final _ =
             def hashedOutputs =
@@ -211,10 +228,10 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
         Pair Nil last -> confirm False last (build Unit)
 
 # Only run if the first four arguments differ
-target runOnce cmd env dir stdin vis isatty run \ res usage finputs foutputs keep echo stdout stderr label =
-    runAlways cmd env dir stdin res usage finputs foutputs vis keep run echo stdout stderr label isatty
+target runOnce cmd env dir stdin vis isatty run \ res resourceReqs usage finputs foutputs keep echo stdout stderr label =
+    runAlways cmd env dir stdin res resourceReqs usage finputs foutputs vis keep run echo stdout stderr label isatty
 
-export def runJobImp label cmd env dir stdin res usage finputs foutputs vis pers run (LogLevel echo) (LogLevel stdout) (LogLevel stderr) isatty =
+export def runJobImp label cmd env dir stdin res resourceReqs usage finputs foutputs vis pers run (LogLevel echo) (LogLevel stdout) (LogLevel stderr) isatty =
     if isOnce pers then
         runOnce
         cmd
@@ -225,6 +242,7 @@ export def runJobImp label cmd env dir stdin res usage finputs foutputs vis pers
         isatty
         run
         res
+        resourceReqs
         usage
         finputs
         foutputs
@@ -240,6 +258,7 @@ export def runJobImp label cmd env dir stdin res usage finputs foutputs vis pers
         dir
         stdin
         res
+        resourceReqs
         usage
         finputs
         foutputs
@@ -252,8 +271,8 @@ export def runJobImp label cmd env dir stdin res usage finputs foutputs vis pers
         label
         isatty
 
-export def runJobWith (Runner _ run) (Plan label cmd vis env dir stdin stdout stderr echo pers res usage finputs foutputs isatty) =
-    runJobImp label cmd env dir stdin res usage finputs foutputs vis pers run echo stdout stderr isatty
+export def runJobWith (Runner _ run) (Plan label cmd vis env dir stdin stdout stderr echo pers res resourceReqs usage finputs foutputs isatty) =
+    runJobImp label cmd env dir stdin res resourceReqs usage finputs foutputs vis pers run echo stdout stderr isatty
 
 # Set the value of a tag on a Job
 # This is useful for post-build reflection into the database

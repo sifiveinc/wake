@@ -191,6 +191,7 @@ def computeHashes (prefix: String) (files: List String): List String =
         logDebug
         ReRun
         Nil
+        Nil
         hashUsage
         identity
         identity
@@ -259,7 +260,7 @@ target hashcode (f: String): String =
         reuse
     else
         def hashPlan cmd =
-            Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+            Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil Nil hashUsage identity identity False
 
         def job =
             hashPlan ("<hash>", f, Nil)
@@ -280,7 +281,7 @@ target hashcode (f: String): String =
 # Allow an untracked file to be removed via `wake --clean`
 export target markFileCleanable (filepath: String): Result Unit Error =
     def hashPlan cmd =
-        Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+        Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil Nil hashUsage identity identity False
 
     def job =
         hashPlan ("<hash>", filepath, Nil)

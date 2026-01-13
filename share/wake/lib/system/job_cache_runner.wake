@@ -78,7 +78,7 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
         value ==~ "1"
 
     def setup (job: Job) (input: RunnerInput) =
-        def (RunnerInput _ cmd vis env dir stdin _ _ _ _ _ _) = input
+        def (RunnerInput _ cmd vis env dir stdin _ _ _ _ _ _ _) = input
         def jobCacheVisible = JArray (map mkVisJson vis)
 
         require Pass hashKey = hashFn input
@@ -114,7 +114,7 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
         Pass (cacheHit; hashKey; jobCacheJsonIn; jobCacheJsonOut)
 
     def run (job: Job) (input: RunnerInput): RunnerOutput =
-        def (RunnerInput label _ vis _ _ _ _ prefix _ _ _ _) = input
+        def (RunnerInput label _ vis _ _ _ _ _ prefix _ _ _ _) = input
 
         def setupResult =
             setup job input
@@ -155,7 +155,7 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
         | setRunnerOutputInputs (map getPathName vis)
 
     def returnCacheHit (job: Job) (input: RunnerInput) (jobCacheJsonIn: String) (jobCacheJsonOut: JValue): RunnerOutput =
-        def (RunnerInput label _ _ _ _ _ _ prefix _ _ _ _) = input
+        def (RunnerInput label _ _ _ _ _ _ _ prefix _ _ _ _) = input
 
         def _ =
             require True = isDebugOn
@@ -175,7 +175,7 @@ export def mkJobCacheRunner (hashFn: RunnerInput => Result String Error) (wakero
         waitJobMerged (\Unit RunnerOutput inputs outputs Nil predict None) job
 
     def addToCache (job: Job) (input: RunnerInput) (hashKey: String) (baseOutput: RunnerOutput): Result String Error =
-        def (RunnerInput label cmd vis env dir stdin _ prefix _ _ _ _) = input
+        def (RunnerInput label cmd vis env dir stdin _ _ prefix _ _ _ _) = input
         def RunnerOutput inputs outputs _ usage runnerError = baseOutput
         def Usage jobStatus runtime cputime mem ibytes obytes = usage
         def inputsTree = listToTree scmpCanonical inputs
