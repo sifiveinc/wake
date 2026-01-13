@@ -54,6 +54,7 @@
 #include "compat/spawn.h"
 #include "config.h"
 #include "database.h"
+#include "runtime/resource_manager.h"
 #include "prim.h"
 #include "status.h"
 #include "types/data.h"
@@ -252,14 +253,18 @@ struct Task {
   std::string environ;
   std::string cmdline;
   bool is_atty;
+  std::vector<ResourceRequirement> resources;  // Required resources for this task
+
   Task(RootPointer<Job> &&job_, const std::string &dir_, const std::string &stdin_file_,
-       const std::string &environ_, const std::string &cmdline_, bool is_atty_)
+       const std::string &environ_, const std::string &cmdline_, bool is_atty_,
+       std::vector<ResourceRequirement> resources_ = {})
       : job(std::move(job_)),
         dir(dir_),
         stdin_file(stdin_file_),
         environ(environ_),
         cmdline(cmdline_),
-        is_atty(is_atty_) {}
+        is_atty(is_atty_),
+        resources(std::move(resources_)) {}
 };
 
 static bool operator<(const std::unique_ptr<Task> &x, const std::unique_ptr<Task> &y) {
@@ -289,10 +294,12 @@ struct JobEntry {
   std::unique_ptr<std::streambuf> stderr_linebuf;
   std::unique_ptr<std::streambuf> runner_out_linebuf;
   std::unique_ptr<std::streambuf> runner_err_linebuf;
+  std::vector<ResourceRequirement> resources;  // Resources held by this job
 
   JobEntry(JobTable::detail *imp_, RootPointer<Job> &&job_, std::unique_ptr<std::streambuf> stdout,
            std::unique_ptr<std::streambuf> stderr, std::unique_ptr<std::streambuf> runner_out,
-           std::unique_ptr<std::streambuf> runner_err)
+           std::unique_ptr<std::streambuf> runner_err,
+           std::vector<ResourceRequirement> resources_ = {})
       : imp(imp_),
         job(std::move(job_)),
         pid(0),
@@ -303,7 +310,8 @@ struct JobEntry {
         stdout_linebuf(std::move(stdout)),
         stderr_linebuf(std::move(stderr)),
         runner_out_linebuf(std::move(runner_out)),
-        runner_err_linebuf(std::move(runner_err)) {}
+        runner_err_linebuf(std::move(runner_err)),
+        resources(std::move(resources_)) {}
   ~JobEntry();
 
   double runtime(struct timespec now);
@@ -337,6 +345,7 @@ struct JobTable::detail {
   bool batch;
   struct timespec wall;
   RUsage childrenUsage;
+  ResourceManager resource_manager;  // Manages resource allocation for jobs
 
   std::unordered_map<int, std::unique_ptr<std::streambuf>> fd_bufs;
   std::unordered_map<int, std::unique_ptr<TermInfoBuf>> term_bufs;
@@ -513,6 +522,15 @@ JobTable::JobTable(Database *db, ResourceBudget memory, ResourceBudget cpu, bool
   imp->phys_active = 0;
   imp->phys_limit = memory.get(get_physical_memory());
   memset(&imp->childrenUsage, 0, sizeof(struct RUsage));
+
+  // Initialize resource manager from config
+  const auto *config = WakeConfig::get();
+  if (!config->resource_limits.empty()) {
+    imp->resource_manager = ResourceManager(config->resource_limits);
+    status_get_generic_stream("echo") << "wake: resource limits configured for "
+                                      << config->resource_limits.limits.size() << " resource types."
+                                      << std::endl;
+  }
 
   // Double-check that ::parse() did not do something crazy.
   assert(imp->limit > 0);
@@ -830,12 +848,44 @@ static void launch(JobTable *jobtable) {
   //   - exceeding memory would slow down the build due to thrashing
   //   - RAM is never "wasted" (disk cache / etc), so just wait for the next critical job
   //   - even if a job uses more memory than the system has, eventually attempt it anyway (progress)
+  // For resources, we check availability before launching. If the job requires resources
+  // that aren't available, we skip it and wait. If a job requires resources that exceed
+  // the configured limit, we fail the build.
   auto &heap = jobtable->imp->pending;
   while (!heap.empty() && jobtable->imp->num_running < jobtable->imp->max_children &&
          jobtable->imp->active < jobtable->imp->limit &&
          (jobtable->imp->phys_active == 0 ||
           jobtable->imp->phys_active + heap.front()->job->memory() < jobtable->imp->phys_limit)) {
     Task &task = *heap.front();
+
+    // Check if required resources are available
+    if (jobtable->imp->resource_manager.has_limits() &&
+        !task.resources.empty() &&
+        !jobtable->imp->resource_manager.can_acquire(task.resources)) {
+
+      // TODO move this check potentially in prim_job_launch, have it fail the job
+      // instead of exiting the process.
+      if (jobtable->imp->num_running == 0) {
+        for (const auto& req : task.resources) {
+          int64_t limit = jobtable->imp->resource_manager.limit(req.name);
+          if (limit >= 0 && req.count > limit) {
+            std::cerr << "FATAL: Job '" << task.job->label->as_str()
+                      << "' requires " << req.count << " '" << req.name
+                      << "' resources, but limit is " << limit
+                      << " - cannot satisfy" << std::endl;
+            handle_exit(0);
+            break;
+          }
+        }
+      }
+      break;
+    }
+
+    // Acquire resources for this job
+    if (!task.resources.empty()) {
+      jobtable->imp->resource_manager.acquire(task.resources);
+    }
+
     jobtable->imp->active += task.job->threads();
     jobtable->imp->phys_active += task.job->memory();
 
@@ -869,10 +919,10 @@ static void launch(JobTable *jobtable) {
     std::unique_ptr<std::streambuf> runner_err = create_stream_buf(
         jobtable, fd_runner_err, task.job->runner_err.c_str(), job_label_str, color_runner_err);
 
-    // Create job entry
-    std::shared_ptr<JobEntry> entry =
-        std::make_shared<JobEntry>(jobtable->imp.get(), std::move(task.job), std::move(out),
-                                   std::move(err), std::move(runner_out), std::move(runner_err));
+    // Create job entry with resources
+    std::shared_ptr<JobEntry> entry = std::make_shared<JobEntry>(
+        jobtable->imp.get(), std::move(task.job), std::move(out), std::move(err),
+        std::move(runner_out), std::move(runner_err), std::move(task.resources));
 
     // Set up all streams
     int stdout_stream[2], stderr_stream[2], runner_out_stream[2], runner_err_stream[2];
@@ -946,6 +996,12 @@ JobEntry::~JobEntry() {
   --imp->num_running;
   imp->active -= job->threads();
   imp->phys_active -= job->memory();
+
+  // Release any resources held by this job
+  if (!resources.empty()) {
+    imp->resource_manager.release(resources);
+  }
+
   if (imp->batch) {
     if (!echo_line.empty())
       status_get_generic_stream(job->echo.c_str()) << echo_line.c_str() << std::endl;
@@ -1255,28 +1311,38 @@ static PRIMFN(prim_job_fail_launch) {
 }
 
 static PRIMTYPE(type_job_launch) {
-  return args.size() == 12 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeString) &&
+  // Args: job, dir, stdin, env, cmd, usage(5-10), is_atty, resources_json
+  return args.size() == 13 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeString) &&
          args[2]->unify(Data::typeString) && args[3]->unify(Data::typeString) &&
          args[4]->unify(Data::typeString) && args[5]->unify(Data::typeInteger) &&
          args[6]->unify(Data::typeDouble) && args[7]->unify(Data::typeDouble) &&
          args[8]->unify(Data::typeInteger) && args[9]->unify(Data::typeInteger) &&
          args[10]->unify(Data::typeInteger) && args[11]->unify(Data::typeInteger) &&
+         args[12]->unify(Data::typeString) &&  // resources JSON string
          out->unify(Data::typeUnit);
 }
 
 static PRIMFN(prim_job_launch) {
   JobTable *jobtable = static_cast<JobTable *>(data);
-  EXPECT(12);
+  EXPECT(13);
   JOB(job, 0);
   STRING(dir, 1);
   STRING(stdin_file, 2);
   STRING(env, 3);
   STRING(cmd, 4);
   INTEGER_MPZ(is_atty, 11)
+  STRING(resources_json, 12);
 
   runtime.heap.reserve(reserve_unit());
   parse_usage(&job->predict, args + 5, runtime, scope);
   job->predict.found = true;
+
+  // Parse resource requirements from JSON string
+  // Format: [{"name": "resource_1", "count": 1}, {"name": "resource_2", "count": 2}]
+  std::vector<ResourceRequirement> resources;
+  if (!resources_json->empty()) {
+    resources = ResourceManager::parse_resources_json(resources_json->as_str());
+  }
 
   // Test the job state is still its initial value (i.e. it hasn't already entered processing),
   // except that it may have previously reported runner messages (as those bits are masked out).
@@ -1284,7 +1350,8 @@ static PRIMFN(prim_job_launch) {
 
   auto &heap = jobtable->imp->pending;
   heap.emplace_back(new Task(runtime.heap.root(job), dir->as_str(), stdin_file->as_str(),
-                             env->as_str(), cmd->as_str(), mpz_cmp_si(is_atty, 0) != 0));
+                             env->as_str(), cmd->as_str(), mpz_cmp_si(is_atty, 0) != 0,
+                             std::move(resources)));
   std::push_heap(heap.begin(), heap.end());
 
   // If a scheduled job claims a longer critical path, we need to adjust the total path time
