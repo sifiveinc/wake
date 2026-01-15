@@ -1,4 +1,4 @@
-# Copyright 2019 SiFive, Inc.
+# Copyright 2024 SiFive, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,11 +16,9 @@
 package build_wake
 
 from wake import _
+from gcc_wake import _
 
-target runtime variant =
-    src
-    @here
-    variant
-    (optimizer, dst, types, json, util, casLib, Nil)
-    (util, gmp, sqlite3, re2, ncurses, blake2, Nil)
-    Nil
+# CAS (Content-Addressable Storage) library with Merkle tree support
+export target casLib variant =
+    src @here variant (blake2, wcl, Nil) Nil Nil
+

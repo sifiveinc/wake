@@ -330,14 +330,33 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             | field "inbytes" (jsonUsage // `inbytes` | getJInteger)
             | field "outbytes" (jsonUsage // `outbytes` | getJInteger)
 
+        # Extract string from either a plain string or an object with "path" field
+        # This handles both old format (strings) and new format (objects with path/hash)
+        def extractPath (jval: JValue): Option String =
+            match jval
+                JString s -> Some s
+                JObject fields ->
+                    # find returns Option (Pair (Pair String JValue) Integer)
+                    match (find (\(Pair k _) k ==* "path") fields)
+                        Some (Pair (Pair _ pathVal) _) -> getJString pathVal
+                        None -> None
+                _ -> None
+
         def getK exp =
             content // exp
             | getJArray
             | getOrElse Nil
             | mapPartial getJString
 
+        # Get outputs with support for both old (string) and new (object) formats
+        def getOutputPaths =
+            content // `outputs`
+            | getJArray
+            | getOrElse Nil
+            | mapPartial extractPath
+
         def jsonInputs = getK `inputs`
-        def jsonOutputs = getK `outputs`
+        def jsonOutputs = getOutputPaths
         def filteredInputs = fnInputs jsonInputs
         def filteredOutputs = fnOutputs jsonOutputs
         def cleanableOutputs = specFile, resultFile, jsonOutputs

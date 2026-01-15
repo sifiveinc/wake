@@ -47,6 +47,7 @@
 #include <thread>
 #include <vector>
 
+
 #include "compat/mtime.h"
 #include "compat/physmem.h"
 #include "compat/rusage.h"
@@ -491,8 +492,9 @@ static int get_concurrency() {
 #endif
 }
 
-JobTable::JobTable(Database *db, ResourceBudget memory, ResourceBudget cpu, bool debug,
-                   bool verbose, bool quiet, bool check, bool batch)
+JobTable::JobTable(Database *db, ResourceBudget memory,
+                   ResourceBudget cpu, bool debug, bool verbose, bool quiet, bool check,
+                   bool batch)
     : imp(new JobTable::detail) {
   imp->num_running = 0;
   imp->debug = debug;
@@ -1699,6 +1701,7 @@ static int64_t int64_ns(struct timespec tv) {
 }
 
 static PRIMFN(prim_job_finish) {
+  (void)data;  // unused
   EXPECT(10);
   JOB(job, 0);
   STRING(inputs, 1);
@@ -2046,7 +2049,8 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
 
   // This is where you "finish" a job by explaining what its inputs, outputs, usage etc...
   // are. This call unblocks things like `job_output` for instance.
-  prim_register(pmap, "job_finish", prim_job_finish, type_job_finish, PRIM_IMPURE);
+  // jobtable is passed to enable CAS storage of outputs for concurrent builds.
+  prim_register(pmap, "job_finish", prim_job_finish, type_job_finish, PRIM_IMPURE, jobtable);
 
   // Job's have a secret key-value store on them that maps strings to strings. This lets
   // you annotate jobs with some extra info which can be helpful for sort of structure

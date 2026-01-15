@@ -73,3 +73,4 @@ vendor/sqlite3.wake
 vendor/utf8proc/utf8proc.wake
 vendor/vendor.wake
 vendor/whereami/whereami.wake
+src/cas/cas.wake
