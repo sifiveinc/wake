@@ -103,6 +103,10 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
                 | setPlanLabel "rsc: mkdir output dir {path}"
                 | setPlanPersistence Once
                 | setPlanEcho logDebug
+                # As we are deliberately creating directories one step at at time to properly handle
+                # permissions on any ancestors, but can't have this job claiming ownership of the
+                # directory in case it's listed as one of the rehydrated job's outputs, the localRunner
+                # is required to be able to see those ancestor directories.
                 | runJobWith localRunner
                 | setJobInspectVisibilityHidden
                 | isJobOk
@@ -167,6 +171,8 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
                 | setPlanLabel "rsc: symlink {link} to {path}"
                 | setPlanPersistence Once
                 | setPlanEcho logDebug
+                # Since we don't have a Path to the directory containing the symlink, we need to
+                # use localRunner to have visibility into the full workspace.
                 | runJobWith localRunner
                 | setJobInspectVisibilityHidden
                 | isJobOk
@@ -412,6 +418,8 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
             | setPlanLabel "rsc: readlink {link}"
             | setPlanPersistence Once
             | setPlanEcho logDebug
+            # Since we're operating in a Runner environment before the files have been claimed as
+            # hashed Paths, we can't pass the `link` as a visible file.
             | runJobWith localRunner
             | setJobInspectVisibilityHidden
             | getJobStdout

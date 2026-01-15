@@ -298,7 +298,9 @@ export def makeRequest (request: HttpRequest): Result HttpResponse Error =
         # Curl jobs don't use many resources, most time is spent waiting for a response
         | setPlanUsage (Usage 0 0.0 0.1 0 0 0)
         | setPlanEcho logDebug
-        | runJobWith localRunner
+        # makeRequest is used for the RSC checks in defaultRunner, so use the fuseRunner at one
+        # layer closer to the system to avoid "illegal cyclic value" errors.
+        | runJobWith fuseRunner
         | setJobTag "http.method" "{method | methodToString}"
         | setJobTag "http.url" url
         | setJobInspectVisibilityHidden
@@ -398,7 +400,9 @@ export def makeBinaryRequest (request: HttpRequest): Result Path Error =
         # Curl jobs don't use many resources, most time is spent waiting for a response
         | setPlanUsage (Usage 0 0.0 0.1 0 0 0)
         | setPlanEcho logDebug
-        | runJobWith localRunner
+        # makeBinaryRequest is used for the RSC fetches in defaultRunner, so use the fuseRunner at
+        # one layer closer to the system to avoid "illegal cyclic value" errors.
+        | runJobWith fuseRunner
         | setJobTag "http.method" methodStr
         | setJobTag "http.url" url
         | setJobInspectVisibilityHidden
