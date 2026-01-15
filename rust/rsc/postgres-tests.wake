@@ -119,6 +119,7 @@ export def testPostgres _ =
     | editPlanEnvironment (addEnvironmentPath "/usr/sbin")
     | setPlanEcho logReport
     | setPlanFnOutputs (\_ Nil)
+    | setPlanPersistence Once
     | runJobWith localRunner
     | getJobStatus
     | inspectStatus
