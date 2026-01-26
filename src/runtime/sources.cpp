@@ -257,7 +257,7 @@ static std::string slurp(int dirfd, const char *const *argv, bool &fail) {
 static std::vector<std::string> scan_git(int dirfd) {
   std::vector<std::string> files;
 
-  bool failed;
+  bool failed = false;
   static const char *fileArgs[] = {"git", "ls-files", "-z", "--recurse-submodules", nullptr};
   std::string fileStr(slurp(dirfd, &fileArgs[0], failed));
 
