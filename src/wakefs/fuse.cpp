@@ -41,11 +41,16 @@
 #include <sys/prctl.h>
 #endif
 
+#include "cas/cas_store.h"
+#include "cas/file_ops.h"
 #include "compat/rusage.h"
 #include "json/json5.h"
 #include "namespace.h"
 #include "util/execpath.h"
 #include "util/shell.h"
+
+// Global CAS store initialized once per wakebox invocation
+static std::unique_ptr<cas::CASStore> g_cas_store;
 
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 255
@@ -113,6 +118,61 @@ int execve_wrapper(const std::vector<std::string> &command,
   return errno;
 }
 
+// Process staging files from FUSE daemon: hash, store in CAS, materialize to workspace
+static bool process_staging_files(const JAST &staging_files, JAST &output_hashes) {
+  if (!g_cas_store) return true;  // CAS not initialized, skip processing
+
+  for (const auto &entry : staging_files.children) {
+    const std::string &dest_path = entry.first;
+    const JAST &file_info = entry.second;
+
+    // Parse metadata from FUSE daemon output
+    std::string staging_path = file_info.get("staging_path").value;
+    mode_t mode = static_cast<mode_t>(std::stoul(file_info.get("mode").value));
+    time_t mtime_sec = static_cast<time_t>(std::stoll(file_info.get("mtime_sec").value));
+    long mtime_nsec = std::stol(file_info.get("mtime_nsec").value);
+
+    // Hash and store in CAS
+    auto hash_result = g_cas_store->store_blob_from_file(staging_path);
+    if (!hash_result) {
+      std::cerr << "Failed to store " << staging_path << " in CAS" << std::endl;
+      continue;
+    }
+
+    // Record the hash for output
+    output_hashes.add(dest_path, hash_result->to_hex());
+
+    // Create parent directories for destination if needed
+    size_t last_slash = dest_path.rfind('/');
+    if (last_slash != std::string::npos) {
+      std::string parent_dir = dest_path.substr(0, last_slash);
+      cas::mkdir_parents(parent_dir);
+    }
+
+    // Materialize from CAS to workspace
+    // Remove any existing file first
+    (void)unlink(dest_path.c_str());
+    auto materialize_result = g_cas_store->materialize_blob(*hash_result, dest_path, mode);
+    if (!materialize_result) {
+      std::cerr << "Failed to materialize " << dest_path << " from CAS" << std::endl;
+      continue;
+    }
+
+    // Apply timestamps
+    struct timespec times[2];
+    times[0].tv_sec = mtime_sec;   // atime (use mtime as atime for now)
+    times[0].tv_nsec = mtime_nsec;
+    times[1].tv_sec = mtime_sec;   // mtime
+    times[1].tv_nsec = mtime_nsec;
+    utimensat(AT_FDCWD, dest_path.c_str(), times, 0);
+
+    // Clean up staging file
+    unlink(staging_path.c_str());
+  }
+
+  return true;
+}
+
 static bool collect_result_metadata(const std::string daemon_output, const struct timeval &start,
                                     const struct timeval &stop, const pid_t pid, const int status,
                                     const RUsage &rusage, bool timed_out,
@@ -138,6 +198,11 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
   result_jast.add("outputs", JSON_ARRAY).children = std::move(from_daemon.get("outputs").children);
   result_jast.add_bool("timed-out", timed_out);
 
+  // Process staging_files from FUSE daemon: hash, store in CAS, materialize, cleanup
+  const JAST &staging_files = from_daemon.get("staging_files");
+  JAST &output_hashes = result_jast.add("output_hashes", JSON_OBJECT);
+  process_staging_files(staging_files, output_hashes);
+
   char hostname[HOST_NAME_MAX + 1];
   if (0 == gethostname(hostname, sizeof(hostname))) result_jast.add("run-host", hostname);
 
@@ -152,6 +217,16 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
   if (0 != chdir(args.working_dir.c_str())) {
     std::cerr << "chdir " << args.working_dir << ": " << strerror(errno) << std::endl;
     return false;
+  }
+
+  // Initialize CAS store if not already done
+  if (!g_cas_store) {
+    std::string cas_root = args.working_dir + "/.cas";
+    auto store_result = cas::CASStore::open(cas_root);
+    if (store_result) {
+      g_cas_store = std::make_unique<cas::CASStore>(std::move(*store_result));
+    }
+    // If CAS store fails to open, we continue without it (non-fatal)
   }
 
   if (!args.daemon.connect(args.visible, args.isolate_pids)) return false;

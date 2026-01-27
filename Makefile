@@ -102,7 +102,8 @@ static:	wake.db
 bin/wake:	$(WAKE_OBJS)
 	$(CXX) $(CFLAGS) $(CXX_VERSION) -o $@ $^ $(LDFLAGS) $(CORE_LDFLAGS)
 
-bin/wakebox:		tools/wakebox/main.cpp src/wakefs/*.cpp vendor/gopt/*.c $(COMMON_OBJS)
+# wakebox needs CAS objects for hashing and materializing job outputs
+bin/wakebox:		tools/wakebox/main.cpp src/wakefs/*.cpp vendor/gopt/*.c $(COMMON_OBJS) $(CAS_OBJS)
 	$(CXX) $(CFLAGS) $(LOCAL_CFLAGS) $(CXX_VERSION) $^ -o $@ $(LDFLAGS) $(CORE_LDFLAGS)
 
 lib/wake/fuse-waked:	tools/fuse-waked/main.cpp $(COMMON_OBJS) $(CAS_OBJS)
