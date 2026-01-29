@@ -1145,7 +1145,7 @@ def hashUsage =
 # RSC version of computing hashes for files, similar to Hashcode target in path.wake
 def rscHashFile (file: String): Result String Error =
     def hashPlan cmd =
-        Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+        Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil Nil hashUsage identity identity False
 
     def hashJob =
         hashPlan ("<hash>", file, Nil)

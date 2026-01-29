@@ -26,6 +26,7 @@
 
 #include "job_cache/job_cache.h"
 #include "json/json5.h"
+#include "runtime/resource_manager.h"
 
 struct WakeConfigOverrides {
   wcl::optional<std::string> log_header;
@@ -311,6 +312,40 @@ struct InterpreterRuntimeWarningPolicy {
   }
 };
 
+// Policy for resource limits configuration
+// Configured in .wakeroot as:
+//   "resource_limits": {
+//     "resource_1": 2,
+//     "resource_2": 10,
+//     "test_resource": 5
+//   }
+struct ResourceLimitsPolicy {
+  using type = ResourceLimits;
+  using input_type = type;
+  static constexpr const char* key = "resource_limits";
+  static constexpr bool allowed_in_wakeroot = true;
+  static constexpr bool allowed_in_userconfig = true;
+  type resource_limits;
+  static constexpr type ResourceLimitsPolicy::*value = &ResourceLimitsPolicy::resource_limits;
+  static constexpr Override<input_type> override_value = nullptr;
+  static constexpr const char* env_var = nullptr;
+
+  ResourceLimitsPolicy() = default;
+  static void set(ResourceLimitsPolicy& p, const JAST& json);
+  static void set_input(ResourceLimitsPolicy& p, const input_type& v) { p.*value = v; }
+  static void emit(const ResourceLimitsPolicy& p, std::ostream& os) {
+    os << "{";
+    bool first = true;
+    for (const auto& kv : p.resource_limits.limits) {
+      if (!first) os << ", ";
+      os << kv.first << " = " << kv.second;
+      first = false;
+    }
+    os << "}";
+  }
+  static void set_env_var(ResourceLimitsPolicy& p, const char* env_var) {}
+};
+
 /********************************************************************
  * Generic WakeConfig implementation
  *********************************************************************/
@@ -457,7 +492,7 @@ using WakeConfigImplFull =
     WakeConfigImpl<UserConfigPolicy, VersionPolicy, LogHeaderPolicy, LogHeaderSourceWidthPolicy,
                    LabelFilterPolicy, EvictionConfigPolicy, SharedCacheMissOnFailure,
                    LogHeaderAlignPolicy, BulkLoggingDirPolicy, SharedCacheTimeoutConfig,
-                   InterpreterRuntimeWarningPolicy>;
+                   InterpreterRuntimeWarningPolicy, ResourceLimitsPolicy>;
 
 struct WakeConfig final : public WakeConfigImplFull {
   static bool init(const std::string& wakeroot_path, const WakeConfigOverrides& overrides);
