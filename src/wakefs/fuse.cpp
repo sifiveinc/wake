@@ -41,11 +41,19 @@
 #include <sys/prctl.h>
 #endif
 
+#ifdef __linux__
+#include <linux/fs.h>
+#include <sys/ioctl.h>
+#include <sys/sendfile.h>
+#endif
+
 #include "compat/rusage.h"
 #include "json/json5.h"
 #include "namespace.h"
 #include "util/execpath.h"
+#include "util/mkdir_parents.h"
 #include "util/shell.h"
+#include "wcl/unique_fd.h"
 
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 255
@@ -113,6 +121,97 @@ int execve_wrapper(const std::vector<std::string> &command,
   return errno;
 }
 
+// Copy file contents using sendfile (fallback when reflink is not supported)
+static void copy_file_contents(int src_fd, int dst_fd) {
+  struct stat buf;
+  if (fstat(src_fd, &buf) < 0) {
+    std::cerr << "fstat failed: " << strerror(errno) << std::endl;
+    return;
+  }
+  off_t offset = 0;
+  size_t remaining = buf.st_size;
+  while (remaining > 0) {
+    ssize_t written = sendfile(dst_fd, src_fd, &offset, remaining);
+    if (written < 0) {
+      std::cerr << "sendfile failed: " << strerror(errno) << std::endl;
+      return;
+    }
+    remaining -= written;
+  }
+}
+
+// Try to reflink src to dst, falling back to copy if reflink is not supported
+static void copy_or_reflink(const char *src, const char *dst, mode_t mode) {
+  auto src_fd = wcl::unique_fd::open(src, O_RDONLY);
+  if (!src_fd) {
+    // Note: stderr may be redirected to /dev/null, so this error may be lost
+    return;
+  }
+
+  auto dst_fd = wcl::unique_fd::open(dst, O_WRONLY | O_CREAT | O_TRUNC, mode);
+  if (!dst_fd) {
+    return;
+  }
+
+#ifdef FICLONE
+  if (ioctl(dst_fd->get(), FICLONE, src_fd->get()) == 0) {
+    return;  // Reflink succeeded
+  }
+  // Reflink failed, fall back to copy (only for expected errors)
+  if (errno != EINVAL && errno != EOPNOTSUPP && errno != EXDEV) {
+    return;
+  }
+#endif
+  copy_file_contents(src_fd->get(), dst_fd->get());
+}
+
+// Process staging files from FUSE daemon: reflink from staging to workspace
+static bool process_staging_files(const JAST &staging_files) {
+  // Skip if no staging files
+  if (staging_files.kind != JSON_OBJECT || staging_files.children.empty()) {
+    return true;
+  }
+
+  for (const auto &entry : staging_files.children) {
+    const std::string &dest_path = entry.first;
+    const JAST &file_info = entry.second;
+
+    // Parse metadata from FUSE daemon output
+    std::string staging_path = file_info.get("staging_path").value;
+    if (staging_path.empty()) {
+      continue;
+    }
+
+    mode_t mode = static_cast<mode_t>(std::stoul(file_info.get("mode").value));
+    time_t mtime_sec = static_cast<time_t>(std::stoll(file_info.get("mtime_sec").value));
+    long mtime_nsec = std::stol(file_info.get("mtime_nsec").value);
+
+    // Create parent directories for destination if needed
+    size_t last_slash = dest_path.rfind('/');
+    if (last_slash != std::string::npos) {
+      std::string parent_dir = dest_path.substr(0, last_slash);
+      mkdir_with_parents(parent_dir, 0755);
+    }
+
+    // Remove any existing file first
+    (void)unlink(dest_path.c_str());
+
+    // Reflink (or copy) from staging to workspace
+    copy_or_reflink(staging_path.c_str(), dest_path.c_str(), mode);
+
+    // Apply timestamps
+    struct timespec times[2];
+    times[0].tv_sec = mtime_sec;   // atime (use mtime as atime for now)
+    times[0].tv_nsec = mtime_nsec;
+    times[1].tv_sec = mtime_sec;   // mtime
+    times[1].tv_nsec = mtime_nsec;
+    utimensat(AT_FDCWD, dest_path.c_str(), times, 0);
+
+  }
+
+  return true;
+}
+
 static bool collect_result_metadata(const std::string daemon_output, const struct timeval &start,
                                     const struct timeval &stop, const pid_t pid, const int status,
                                     const RUsage &rusage, bool timed_out,
@@ -120,7 +219,7 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
   JAST from_daemon;
   std::stringstream ss;
   if (!JAST::parse(daemon_output, ss, from_daemon)) {
-    // stderr is closed, so report the error on the only output we have
+    // stderr is redirected to /dev/null, so report the error on the only output we have
     result_json = ss.str();
     return false;
   }
@@ -129,14 +228,21 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
   auto &usage = result_jast.add("usage", JSON_OBJECT);
   usage.add("status", status);
   usage.add("membytes", static_cast<long long>(rusage.membytes));
-  usage.add("inbytes", std::stoll(from_daemon.get("ibytes").value));
-  usage.add("outbytes", std::stoll(from_daemon.get("obytes").value));
+  // Parse ibytes/obytes with fallback to 0 if not present
+  std::string ibytes_str = from_daemon.get("ibytes").value;
+  std::string obytes_str = from_daemon.get("obytes").value;
+  usage.add("inbytes", ibytes_str.empty() ? 0LL : std::stoll(ibytes_str));
+  usage.add("outbytes", obytes_str.empty() ? 0LL : std::stoll(obytes_str));
   usage.add("runtime", stop.tv_sec - start.tv_sec + (stop.tv_usec - start.tv_usec) / 1000000.0);
   usage.add("cputime", rusage.utime + rusage.stime);
 
   result_jast.add("inputs", JSON_ARRAY).children = std::move(from_daemon.get("inputs").children);
   result_jast.add("outputs", JSON_ARRAY).children = std::move(from_daemon.get("outputs").children);
   result_jast.add_bool("timed-out", timed_out);
+
+  // Process staging_files from FUSE daemon: reflink to workspace, cleanup staging
+  const JAST &staging_files = from_daemon.get("staging_files");
+  process_staging_files(staging_files);
 
   char hostname[HOST_NAME_MAX + 1];
   if (0 == gethostname(hostname, sizeof(hostname))) result_jast.add("run-host", hostname);
@@ -228,10 +334,16 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     exit(1);
   }
 
-  // Don't hold IO open while waiting
-  (void)close(STDIN_FILENO);
-  (void)close(STDOUT_FILENO);
-  (void)close(STDERR_FILENO);
+  // Redirect IO to /dev/null while waiting (don't just close, as that would
+  // cause subsequent open() calls to reuse fd 0/1/2, and unique_fd::valid()
+  // returns false for fd=0)
+  int devnull = open("/dev/null", O_RDWR);
+  if (devnull >= 0) {
+    dup2(devnull, STDIN_FILENO);
+    dup2(devnull, STDOUT_FILENO);
+    dup2(devnull, STDERR_FILENO);
+    if (devnull > STDERR_FILENO) close(devnull);
+  }
 
   pid_t timeout_pid = -1;
 
