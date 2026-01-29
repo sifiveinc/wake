@@ -188,9 +188,6 @@ export def fuseRunner: Runner =
 export def defaultRunner: Runner =
     require Some config = getenv "WAKE_REMOTE_CACHE"
     else
-        require Some _ = getenv "WAKE_LOCAL_JOB_CACHE"
-        else fuseRunner
-
         # The fuseRunner does not actully mount over / and instead uses the
         # the host root as the sandbox root. This means that wakeroot will
         # change from depending on where wake is being run from. As a hack
@@ -198,7 +195,7 @@ export def defaultRunner: Runner =
         # works in relative paths to make different runs consistent. Ideally
         # you'd have a more complex sandbox that kept the wakeroot at a
         # consistent place across runs.
-        mkJobCacheRunner (\_ Pass "") "/workspace" fuseRunner
+        fuseRunner
 
     match (makeRemoteCacheApi config)
         Pass api -> rscRunner api

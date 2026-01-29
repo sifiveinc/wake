@@ -28,7 +28,6 @@ share/wake/lib/rust_wake/cargo.wake
 share/wake/lib/system/environment.wake
 share/wake/lib/system/http.wake
 share/wake/lib/system/io.wake
-share/wake/lib/system/job_cache_runner.wake
 share/wake/lib/system/job.wake
 share/wake/lib/system/path.wake
 share/wake/lib/system/plan.wake
@@ -38,7 +37,6 @@ share/wake/lib/system/remote_cache_runner.wake
 share/wake/lib/system/sources.wake
 src/compat/compat.wake
 src/dst/dst.wake
-src/job_cache/job-cache.wake
 src/json/json.wake
 src/optimizer/optimizer.wake
 src/parser/parser.wake
@@ -51,7 +49,6 @@ src/wcl/wcl.wake
 tests/tests.wake
 tools/bsp-wake/bsp.wake
 tools/fuse-waked/fuse-waked.wake
-tools/job-cache/job-cache.wake
 tools/lsp-wake/lsp.wake
 tools/shim-wake/shim.wake
 tools/tools.wake

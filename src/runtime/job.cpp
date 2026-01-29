@@ -66,13 +66,6 @@
 #include "value.h"
 #include "wcl/defer.h"
 
-static job_cache::Cache *internal_job_cache = nullptr;
-
-void set_job_cache(job_cache::Cache *cache) {
-  if (internal_job_cache) return;
-  internal_job_cache = cache;
-}
-
 // How many times to SIGTERM a process before SIGKILL
 #define TERM_ATTEMPTS 6
 // How long between first and second SIGTERM attempt (exponentially increasing)
@@ -1979,110 +1972,6 @@ static PRIMFN(prim_access) {
   RETURN(claim_bool(runtime.heap, access(file->c_str(), mode) == 0));
 }
 
-static PRIMTYPE(type_job_cache_read) {
-  TypeVar result;
-  Data::typeResult.clone(result);
-  result[0].unify(Data::typeString);
-  result[1].unify(Data::typeString);
-  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(result);
-}
-
-static PRIMFN(prim_job_cache_read) {
-  wcl::log::info("prim_job_cache_read enter")();
-  auto defer = wcl::make_defer([]() { wcl::log::info("prim_job_cache_read exit")(); });
-  EXPECT(1);
-  STRING(request_str, 0);
-
-  // First, the user may have not turned on the job cache
-  if (!internal_job_cache) {
-    std::string s =
-        "A job cache has not been specified. Please use WAKE_LOCAL_JOB_CACHE=<path> to turn on job "
-        "caching";
-    size_t need = String::reserve(s.size()) + reserve_result();
-    runtime.heap.reserve(need);
-    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, s)));
-  }
-
-  // Now since we receive the request in the form of a json (because we need
-  // rather complex information) we need to parse the json (because currently
-  // we have pre-made macro to take a JValue directly)
-  std::stringstream errs;
-  JAST jast;
-  if (!JAST::parse(request_str->c_str(), request_str->size(), errs, jast)) {
-    std::string s = errs.str();
-    size_t need = String::reserve(s.size()) + reserve_result();
-    runtime.heap.reserve(need);
-    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, s)));
-  }
-
-  // Now we actully perform the request
-  // TODO: It's probably not great that wake hard-fails if this json isn't
-  // valid. I should fix that.
-  job_cache::FindJobRequest request(jast);
-  job_cache::FindJobResponse response = internal_job_cache->read(request);
-
-  // Because I'm very lazy however we also return a string and not a JValue.
-  // This is because the `measure_jast` function is defined in json.cpp and I
-  // don't want to lift it or duplicate it right now.
-  // TODO: lift the measure_jast function
-  std::stringstream result_json_stream;
-  result_json_stream << response.to_json();
-  std::string result_json_str = result_json_stream.str();
-  size_t need = String::reserve(result_json_str.size()) + reserve_result();
-  runtime.heap.reserve(need);
-
-  RETURN(claim_result(runtime.heap, true, String::claim(runtime.heap, result_json_str)));
-}
-
-static PRIMTYPE(type_job_cache_add) {
-  TypeVar result;
-  Data::typeResult.clone(result);
-  result[0].unify(Data::typeString);
-  result[1].unify(Data::typeString);
-  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(result);
-}
-
-static PRIMFN(prim_job_cache_add) {
-  wcl::log::info("prim_job_cache_add enter")();
-  auto defer = wcl::make_defer([]() { wcl::log::info("prim_job_cache_add exit")(); });
-  EXPECT(1);
-  STRING(request_str, 0);
-
-  // First, the user may have not turned on the job cache
-  if (!internal_job_cache) {
-    std::string s =
-        "A job cache has not been specified. Please use WAKE_LOCAL_JOB_CACHE=<path> to turn on job "
-        "caching";
-    size_t need = String::reserve(s.size()) + reserve_result();
-    runtime.heap.reserve(need);
-    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, s)));
-  }
-
-  // Now since we receive the request in the form of a json (because we need
-  // rather complex information) we need to parse the json (because currently
-  // we have pre-made macro to take a JValue directly)
-  std::stringstream errs;
-  JAST jast;
-  if (!JAST::parse(request_str->c_str(), request_str->size(), errs, jast)) {
-    std::string s = errs.str();
-    size_t need = String::reserve(s.size()) + reserve_result();
-    runtime.heap.reserve(need);
-    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, s)));
-  }
-
-  // TODO: This just fails if an issue occurs. Would be nice to fail
-  //       with a bit more information. Right now we just use a simple
-  //       string.
-  job_cache::AddJobRequest request = job_cache::AddJobRequest::from_implicit(jast);
-  internal_job_cache->add(request);
-  std::string result_json_str = "successfully added job";
-  size_t need = String::reserve(result_json_str.size()) + reserve_result();
-  runtime.heap.reserve(need);
-
-  wcl::log::info("Cache::add successfully called")();
-  RETURN(claim_result(runtime.heap, true, String::claim(runtime.heap, result_json_str)));
-}
-
 void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   /*****************************************************************************************
    * These require a Job argument so won't get const-prop evaluated (they don't return)    *
@@ -2171,12 +2060,6 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   // Specifies the hash of a given file. In practice wake kicks off a job against `shim-wake`
   // to do the hashing.
   prim_register(pmap, "add_hash", prim_add_hash, type_add_hash, PRIM_IMPURE, jobtable);
-
-  // Adds a job to the job cache
-  prim_register(pmap, "job_cache_add", prim_job_cache_add, type_job_cache_add, PRIM_IMPURE);
-
-  // Adds a job to the job cache
-  prim_register(pmap, "job_cache_read", prim_job_cache_read, type_job_cache_read, PRIM_IMPURE);
 
   /*****************************************************************************************
    * Dead-code elimination ok, but not CSE/const-prop ok (must be ordered wrt. filesystem) *

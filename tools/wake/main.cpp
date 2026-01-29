@@ -42,7 +42,6 @@
 #include "dst/bind.h"
 #include "dst/expr.h"
 #include "dst/todst.h"
-#include "job_cache/job_cache.h"
 #include "json/json5.h"
 #include "markup.h"
 #include "optimizer/ssa.h"
@@ -562,17 +561,6 @@ int main(int argc, char **argv) {
   if (!fail.empty()) {
     std::cerr << "Failed to open wake.db: " << fail << std::endl;
     return 1;
-  }
-
-  // Open the job-cache if it exists
-  std::unique_ptr<job_cache::Cache> cache;
-  const char *job_cache_dir = getenv("WAKE_LOCAL_JOB_CACHE");
-  // TODO: construct an eviction config from the config
-  if (job_cache_dir != nullptr) {
-    cache = std::make_unique<job_cache::Cache>(
-        job_cache_dir, WakeConfig::get()->bulk_logging_dir, WakeConfig::get()->eviction_config,
-        WakeConfig::get()->timeout_config, WakeConfig::get()->cache_miss_on_failure);
-    set_job_cache(cache.get());
   }
 
   // If the user asked to list all files we *would* clean.
