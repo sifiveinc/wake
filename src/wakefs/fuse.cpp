@@ -41,16 +41,12 @@
 #include <sys/prctl.h>
 #endif
 
-#include "cas/cas_store.h"
-#include "cas/file_ops.h"
+#include "cas/cas.h"
 #include "compat/rusage.h"
 #include "json/json5.h"
 #include "namespace.h"
 #include "util/execpath.h"
 #include "util/shell.h"
-
-// Global CAS store initialized once per wakebox invocation
-static std::unique_ptr<cas::CASStore> g_cas_store;
 
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 255
@@ -64,7 +60,26 @@ bool json_as_struct(const std::string &json, json_args &result) {
 
   for (auto &x : jast.get("environment").children) result.environment.push_back(x.second.value);
 
-  for (auto &x : jast.get("visible").children) result.visible.push_back(x.second.value);
+  // Parse visible files - supports both new format (objects with path/hash) and legacy (strings)
+  for (auto &x : jast.get("visible").children) {
+    visible_file vf;
+    if (x.second.kind == JSON_OBJECT) {
+      // New format: {"path": "...", "hash": "..."}
+      vf.path = x.second.get("path").value;
+      vf.hash = x.second.get("hash").value;
+    } else {
+      // Legacy format: just a string path (no CAS lookup possible)
+      vf.path = x.second.value;
+      vf.hash = "";  // Empty hash means read from workspace
+    }
+    result.visible.push_back(vf);
+  }
+
+  // Parse CAS blobs directory with default
+  result.cas_blobs_dir = jast.get("cas-blobs-dir").value;
+  if (result.cas_blobs_dir.empty()) {
+    result.cas_blobs_dir = ".cas/blobs";
+  }
 
   JAST timeout_entry = jast.get("command-timeout");
   if (timeout_entry.kind == JSON_INTEGER) {
@@ -118,56 +133,71 @@ int execve_wrapper(const std::vector<std::string> &command,
   return errno;
 }
 
-// Process staging files from FUSE daemon: hash, store in CAS, materialize to workspace
-static bool process_staging_files(const JAST &staging_files, JAST &output_hashes) {
-  if (!g_cas_store) return true;  // CAS not initialized, skip processing
-
+// Process staging items from FUSE daemon: hash files, pass through symlinks/directories
+// Wake will handle CAS storage and materialization for all types
+static bool process_staging_files(const JAST &staging_files, JAST &staging_files_with_hash) {
   for (const auto &entry : staging_files.children) {
     const std::string &dest_path = entry.first;
-    const JAST &file_info = entry.second;
+    const JAST &item_info = entry.second;
 
-    // Parse metadata from FUSE daemon output
-    std::string staging_path = file_info.get("staging_path").value;
-    mode_t mode = static_cast<mode_t>(std::stoul(file_info.get("mode").value));
-    time_t mtime_sec = static_cast<time_t>(std::stoll(file_info.get("mtime_sec").value));
-    long mtime_nsec = std::stol(file_info.get("mtime_nsec").value);
-
-    // Hash and store in CAS
-    auto hash_result = g_cas_store->store_blob_from_file(staging_path);
-    if (!hash_result) {
-      std::cerr << "Failed to store " << staging_path << " in CAS" << std::endl;
-      continue;
+    // Get the type field (file, symlink, or directory)
+    std::string type = item_info.get("type").value;
+    if (type.empty()) {
+      // Default to "file" for backward compatibility
+      type = "file";
     }
 
-    // Record the hash for output
-    output_hashes.add(dest_path, hash_result->to_hex());
+    JAST &out_entry = staging_files_with_hash.add(dest_path, JSON_OBJECT);
+    out_entry.add("type", type);
 
-    // Create parent directories for destination if needed
-    size_t last_slash = dest_path.rfind('/');
-    if (last_slash != std::string::npos) {
-      std::string parent_dir = dest_path.substr(0, last_slash);
-      cas::mkdir_parents(parent_dir);
+    if (type == "file") {
+      // For files: hash the staging file and pass through metadata
+      std::string staging_path = item_info.get("staging_path").value;
+      if (staging_path.empty()) {
+        std::cerr << "Missing staging_path for file " << dest_path << std::endl;
+        continue;
+      }
+
+      // Parse integer fields
+      long long mode = 0;
+      long long mtime_sec = 0;
+      long long mtime_nsec = 0;
+      try {
+        mode = std::stoll(item_info.get("mode").value);
+        mtime_sec = std::stoll(item_info.get("mtime_sec").value);
+        mtime_nsec = std::stoll(item_info.get("mtime_nsec").value);
+      } catch (const std::exception &e) {
+        std::cerr << "Failed to parse metadata for " << dest_path << ": " << e.what() << std::endl;
+        continue;
+      }
+
+      // Compute content hash
+      auto hash_result = cas::ContentHash::from_file(staging_path);
+      if (!hash_result) {
+        std::cerr << "Failed to hash " << staging_path << std::endl;
+        continue;
+      }
+
+      out_entry.add("staging_path", staging_path);
+      out_entry.add("mode", mode);
+      out_entry.add("mtime_sec", mtime_sec);
+      out_entry.add("mtime_nsec", mtime_nsec);
+      out_entry.add("hash", hash_result->to_hex());
+
+    } else if (type == "symlink") {
+      // For symlinks: just pass through the target
+      std::string target = item_info.get("target").value;
+      out_entry.add("target", target);
+
+    } else if (type == "directory") {
+      // For directories: pass through the mode
+      try {
+        long long mode = std::stoll(item_info.get("mode").value);
+        out_entry.add("mode", mode);
+      } catch (const std::exception &e) {
+        out_entry.add("mode", 0755LL);  // Default mode
+      }
     }
-
-    // Materialize from CAS to workspace
-    // Remove any existing file first
-    (void)unlink(dest_path.c_str());
-    auto materialize_result = g_cas_store->materialize_blob(*hash_result, dest_path, mode);
-    if (!materialize_result) {
-      std::cerr << "Failed to materialize " << dest_path << " from CAS" << std::endl;
-      continue;
-    }
-
-    // Apply timestamps
-    struct timespec times[2];
-    times[0].tv_sec = mtime_sec;   // atime (use mtime as atime for now)
-    times[0].tv_nsec = mtime_nsec;
-    times[1].tv_sec = mtime_sec;   // mtime
-    times[1].tv_nsec = mtime_nsec;
-    utimensat(AT_FDCWD, dest_path.c_str(), times, 0);
-
-    // Clean up staging file
-    unlink(staging_path.c_str());
   }
 
   return true;
@@ -198,10 +228,11 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
   result_jast.add("outputs", JSON_ARRAY).children = std::move(from_daemon.get("outputs").children);
   result_jast.add_bool("timed-out", timed_out);
 
-  // Process staging_files from FUSE daemon: hash, store in CAS, materialize, cleanup
+  // Process staging_files from FUSE daemon: hash files, pass through symlinks/directories
+  // Wake will handle CAS storage and materialization for all types
   const JAST &staging_files = from_daemon.get("staging_files");
-  JAST &output_hashes = result_jast.add("output_hashes", JSON_OBJECT);
-  process_staging_files(staging_files, output_hashes);
+  JAST &staging_files_out = result_jast.add("staging_files", JSON_OBJECT);
+  process_staging_files(staging_files, staging_files_out);
 
   char hostname[HOST_NAME_MAX + 1];
   if (0 == gethostname(hostname, sizeof(hostname))) result_jast.add("run-host", hostname);
@@ -219,17 +250,7 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     return false;
   }
 
-  // Initialize CAS store if not already done
-  if (!g_cas_store) {
-    std::string cas_root = args.working_dir + "/.cas";
-    auto store_result = cas::CASStore::open(cas_root);
-    if (store_result) {
-      g_cas_store = std::make_unique<cas::CASStore>(std::move(*store_result));
-    }
-    // If CAS store fails to open, we continue without it (non-fatal)
-  }
-
-  if (!args.daemon.connect(args.visible, args.isolate_pids)) return false;
+  if (!args.daemon.connect(args.visible, args.cas_blobs_dir, args.isolate_pids)) return false;
 
   struct timeval start;
   gettimeofday(&start, 0);
@@ -303,10 +324,16 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     exit(1);
   }
 
-  // Don't hold IO open while waiting
-  (void)close(STDIN_FILENO);
-  (void)close(STDOUT_FILENO);
-  (void)close(STDERR_FILENO);
+  // Redirect IO to /dev/null while waiting (don't just close, as that would
+  // cause subsequent open() calls to reuse fd 0/1/2, and unique_fd::valid()
+  // returns false for fd=0)
+  int devnull = open("/dev/null", O_RDWR);
+  if (devnull >= 0) {
+    dup2(devnull, STDIN_FILENO);
+    dup2(devnull, STDOUT_FILENO);
+    dup2(devnull, STDERR_FILENO);
+    if (devnull > STDERR_FILENO) close(devnull);
+  }
 
   pid_t timeout_pid = -1;
 

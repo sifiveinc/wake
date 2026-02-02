@@ -52,6 +52,7 @@
 #include "runtime/config.h"
 #include "runtime/database.h"
 #include "runtime/job.h"
+#include "runtime/cas_prim.h"
 #include "runtime/prim.h"
 #include "runtime/profile.h"
 #include "runtime/runtime.h"
@@ -879,7 +880,12 @@ int main(int argc, char **argv) {
                     !clo.tty);
   StringInfo info(clo.verbose, clo.debug, clo.quiet, VERSION_STR, wcl::make_canonical(wake_cwd),
                   cmdline);
-  PrimMap pmap = prim_register_all(&info, &jobtable);
+
+  // Initialize CAS context for workspace (current directory after chdir_workspace)
+  CASContext cas_ctx;
+  cas_ctx.get_store(".");
+
+  PrimMap pmap = prim_register_all(&info, &jobtable, &cas_ctx);
 
   bool isTreeBuilt = true;
   std::unique_ptr<Expr> root = bind_refs(std::move(top), pmap, isTreeBuilt);

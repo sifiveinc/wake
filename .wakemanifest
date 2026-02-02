@@ -25,6 +25,7 @@ share/wake/lib/gcc_wake/gcc.wake
 share/wake/lib/gcc_wake/pkgconfig.wake
 share/wake/lib/nothing/nothing.wake
 share/wake/lib/rust_wake/cargo.wake
+share/wake/lib/system/cas.wake
 share/wake/lib/system/environment.wake
 share/wake/lib/system/http.wake
 share/wake/lib/system/io.wake

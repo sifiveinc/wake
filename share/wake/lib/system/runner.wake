@@ -237,12 +237,20 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
 
         def Usage jobStatus runtime cputime membytes inbytes outbytes = record
 
+        # Helper to serialize a Path as {path, hash} for CAS-based reads
+        def mkVisibleJson (p: Path): JValue =
+            JObject (
+                "path" :-> JString p.getPathName,
+                "hash" :-> JString p.getPathHash,
+                Nil
+            )
+
         def json =
             JObject (
                 "label" :-> JString label,
                 "command" :-> command | map JString | JArray,
                 "environment" :-> environment | map JString | JArray,
-                "visible" :-> visible | map (_.getPathName.JString) | JArray,
+                "visible" :-> visible | map mkVisibleJson | JArray,
                 "directory" :-> JString directory,
                 "stdin" :-> JString stdin,
                 "resources" :-> res | map JString | JArray,
@@ -250,6 +258,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                 "isolate-network" :-> JBoolean False,
                 "isolate-pids" :-> JBoolean False,
                 "mount-ops" :-> JArray (JObject ("type" :-> JString "workspace", "destination" :-> JString ".", Nil), Nil),
+                "cas-blobs-dir" :-> JString ".cas/blobs",
                 "usage" :-> JObject (
                     "status" :-> JInteger jobStatus,
                     "runtime" :-> JDouble runtime,
@@ -329,6 +338,67 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             | field "membytes" (jsonUsage // `membytes` | getJInteger)
             | field "inbytes" (jsonUsage // `inbytes` | getJInteger)
             | field "outbytes" (jsonUsage // `outbytes` | getJInteger)
+
+        # Process staging items: ingest each item into workspace (files go to CAS, symlinks/directories are created)
+        # This handles the CAS-first staging architecture where wakebox outputs items to staging area
+
+        # Helper for processing file type staging items
+        def processStagingFile destPath itemInfo =
+            require Some stagingPath = itemInfo // `staging_path` | getJString
+            else failWithError "Missing staging_path for file {destPath}"
+
+            require Some hash = itemInfo // `hash` | getJString
+            else failWithError "Missing hash for file {destPath}"
+
+            require Some mode = itemInfo // `mode` | getJInteger
+            else failWithError "Missing mode for file {destPath}"
+
+            require Some mtimeSec = itemInfo // `mtime_sec` | getJInteger
+            else failWithError "Missing mtime_sec for file {destPath}"
+
+            require Some mtimeNsec = itemInfo // `mtime_nsec` | getJInteger
+            else failWithError "Missing mtime_nsec for file {destPath}"
+
+            casIngestStagingFile destPath "file" stagingPath hash mode mtimeSec mtimeNsec
+            | addErrorContext "Ingesting staging file {stagingPath} -> {destPath}"
+
+        # Helper for processing symlink type staging items
+        def processStagingSymlink destPath itemInfo =
+            require Some linkTarget = itemInfo // `target` | getJString
+            else failWithError "Missing target for symlink {destPath}"
+
+            casIngestStagingFile destPath "symlink" linkTarget "" 0 0 0
+            | addErrorContext "Creating symlink {destPath} -> {linkTarget}"
+
+        # Helper for processing directory type staging items
+        def processStagingDirectory destPath itemInfo =
+            def mode = itemInfo // `mode` | getJInteger | getOrElse 493  # 0755 octal
+            casIngestStagingFile destPath "directory" "" "" mode 0 0
+            | addErrorContext "Creating directory {destPath}"
+
+        def processStagingItem (destPath: String) (itemInfo: JValue): Result Unit Error =
+            require Some itemType = itemInfo // `type` | getJString
+            else failWithError "Missing type for {destPath}"
+
+            if itemType ==* "file" then processStagingFile destPath itemInfo
+            else if itemType ==* "symlink" then processStagingSymlink destPath itemInfo
+            else if itemType ==* "directory" then processStagingDirectory destPath itemInfo
+            else failWithError "Unknown staging item type '{itemType}' for {destPath}"
+
+        def stagingFilesResult =
+            match (content // `staging_files` | getJObject)
+                None -> Pass Unit
+                Some entries ->
+                    def ingestEntry (Pair destPath itemInfo) = processStagingItem destPath itemInfo
+                    entries
+                    | map ingestEntry
+                    | findFail
+                    | rmap (\_ Unit)
+
+        require Pass _ = stagingFilesResult
+        else
+            stagingFilesResult.getFail
+            | RunnerOutput Nil Nil (specFile, Nil) runnerUsage
 
         # Extract string from either a plain string or an object with "path" field
         # This handles both old format (strings) and new format (objects with path/hash)

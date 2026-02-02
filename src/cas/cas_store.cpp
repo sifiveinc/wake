@@ -201,6 +201,9 @@ wcl::result<bool, CASError> CASStore::materialize_blob(const ContentHash& hash,
     }
   }
 
+  // Remove existing file if present (copy_file uses O_EXCL)
+  (void)unlink(dest_path.c_str());
+
   // Use reflink/copy to materialize (copy_file takes mode as 3rd arg)
   auto copy_result = copy_file(src_path, dest_path, mode, true);
   if (!copy_result) {

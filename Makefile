@@ -102,7 +102,7 @@ static:	wake.db
 bin/wake:	$(WAKE_OBJS)
 	$(CXX) $(CFLAGS) $(CXX_VERSION) -o $@ $^ $(LDFLAGS) $(CORE_LDFLAGS)
 
-# wakebox needs CAS objects for hashing and materializing job outputs
+# wakebox needs CAS objects for hashing job outputs (Wake handles CAS storage and materialization)
 bin/wakebox:		tools/wakebox/main.cpp src/wakefs/*.cpp vendor/gopt/*.c $(COMMON_OBJS) $(CAS_OBJS)
 	$(CXX) $(CFLAGS) $(LOCAL_CFLAGS) $(CXX_VERSION) $^ -o $@ $(LDFLAGS) $(CORE_LDFLAGS)
 

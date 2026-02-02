@@ -4,9 +4,9 @@
 
 This document describes the Content-Addressable Storage (CAS) system integrated into Wake. The CAS provides content-addressable storage for build outputs with a **CAS-first staging** architecture.
 
-### Architecture: Separation of Concerns
+### Architecture: Three-Component Split
 
-The CAS system uses a **split architecture** for performance and scalability:
+The CAS system uses a **split architecture** for performance, scalability, and remote execution compatibility:
 
 1. **FUSE Daemon** (`fuse-waked`): Lightweight, single-threaded
    - Intercepts filesystem operations
@@ -15,21 +15,34 @@ The CAS system uses a **split architecture** for performance and scalability:
    - Outputs staging paths + metadata in JSON
    - Does **NOT** hash files or store in CAS
 
-2. **Wakebox Client** (`wakebox`): Per-job, parallel
+2. **Wakebox Client** (`wakebox`): Per-job, parallel, runs locally OR remotely
    - Receives staging paths and metadata from FUSE daemon
    - Hashes staged files (can run in parallel across jobs)
-   - Stores content in CAS (`.cas/blobs/`)
+   - Outputs hash in JSON alongside metadata
+   - Does **NOT** store in CAS (Wake does this)
+   - Does **NOT** materialize to workspace (Wake does this)
+
+3. **Wake** (main process): Centralized, consistent
+   - Receives JSON from wakebox (with hash included)
+   - For remote execution: receives staging files via rsync
+   - Stores content in CAS using provided hash (no re-hashing)
    - Materializes outputs to workspace
    - Applies metadata (permissions, timestamps)
+   - Cleans up staging files
 
-This separation keeps the FUSE daemon fast and responsive while allowing expensive operations (hashing, I/O) to run in parallel across jobs.
+This separation ensures:
+- FUSE daemon stays fast and responsive
+- Hashing runs in parallel per-job (in wakebox)
+- CAS storage and materialization run locally (in Wake)
+- **Same data flow for local and remote execution**
 
 ## Goals
 
 1. **Content Deduplication**: Store build outputs by their content hash, eliminating duplicate storage
 2. **Efficient Caching**: Enable cache hit recovery even when output files are deleted
 3. **Concurrent Build Isolation**: Enable multiple concurrent Wake invocations with isolated views of the workspace
-4. **Simple Design**: No Merkle trees - keep the implementation straightforward
+4. **CAS-Based Reads**: Jobs read input files directly from CAS (by hash), not workspace, ensuring content correctness
+5. **Simple Design**: No Merkle trees - keep the implementation straightforward
 
 ## Why CAS-First Staging for Concurrent Builds
 
@@ -78,73 +91,190 @@ CAS-first staging solves these problems by **isolating job outputs until complet
 
 **Key Benefits**:
 
-1. **No Read-Write Conflicts**: Jobs read from stable workspace; writes go to isolated staging
+1. **No Read-Write Conflicts**: Jobs read from CAS by hash; writes go to isolated staging
 2. **No Partial Writes Visible**: Other jobs never see incomplete files
 3. **Atomic Completion**: Outputs appear in workspace only when job succeeds
 4. **Content Deduplication**: If two jobs produce identical files, CAS stores only one copy
 5. **Cache Sharing**: Multiple Wake invocations can share cached outputs via CAS
+6. **Content Correctness**: Jobs always read the exact content they were promised (by hash)
 
 ### How It Works
 
 1. **Job writes file** → FUSE daemon writes to `.cas/staging/{unique_id}` (not workspace)
 2. **Job closes file** → Staging file remains; FUSE tracks path and metadata
 3. **Job reads its own output** → FUSE serves content from staging file
-4. **Job completes** → FUSE outputs staging paths + metadata in JSON
-5. **Wakebox processes outputs**:
+4. **Job reads input file** → FUSE looks up hash in `visible_hashes`, reads from CAS blob
+5. **Job completes** → FUSE outputs staging paths + metadata in JSON
+6. **Wakebox processes outputs**:
    - Hashes each staging file
-   - Stores in CAS (`.cas/blobs/`)
+   - Adds hash to JSON output
+   - Does NOT store in CAS or materialize
+7. **For remote execution**: rsync transfers staging files + JSON to local
+8. **Wake processes outputs** (in runner post-processing):
+   - Stores in CAS using provided hash (no re-hashing)
    - Materializes to workspace with correct permissions/timestamps
    - Cleans up staging files
-6. **Other jobs** → See stable workspace, not in-progress writes
+9. **Other jobs** → Read from CAS by hash, not in-progress workspace writes
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Data Flow (Split Architecture)                       │
+│                  Data Flow (Three-Component Split Architecture)              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  Job Process                FUSE Daemon                 Wakebox              │
-│  ───────────                ───────────                 ───────              │
+│  Job Process       FUSE Daemon          Wakebox               Wake          │
+│  ───────────       ───────────          ───────               ────          │
 │                                                                              │
-│  open("out.txt")  ────────► create staging file                             │
-│                             .cas/staging/1                                   │
-│                             track metadata                                   │
+│  open("out.txt") ──► create staging                                         │
+│                      .cas/staging/1                                          │
+│                      track metadata                                          │
 │                                                                              │
-│  write(data)      ────────► write to staging                                │
+│  write(data)     ──► write to staging                                       │
 │                                                                              │
-│  chmod(0755)      ────────► track mode: 0755                                │
+│  chmod(0755)     ──► track mode: 0755                                       │
 │                                                                              │
-│  utimens(ts)      ────────► track timestamp: ts                             │
+│  utimens(ts)     ──► track timestamp                                        │
 │                                                                              │
-│  close()          ────────► keep staging file                               │
-│                             (NO hashing here!)                              │
+│  close()         ──► keep staging file                                      │
+│                      (NO hashing!)                                          │
 │                                                                              │
-│  [job exits]                                                                 │
-│                                                                              │
-│                   ────────► output JSON:           ────────►                │
-│                             {                                                │
-│                               "staging_files": {                            │
-│                                 "out.txt": {                                │
-│                                   "staging_path": ".cas/staging/1",         │
-│                                   "mode": 493,                              │
-│                                   "mtime_sec": 1234567890,                  │
-│                                   "mtime_nsec": 123456789                   │
-│                                 }                                           │
-│                               }                                             │
-│                             }                                               │
-│                                                          │                  │
-│                                                          ▼                  │
-│                                                   hash staging file         │
-│                                                   store in CAS              │
-│                                                   materialize to workspace  │
-│                                                   apply mode & timestamps   │
-│                                                   delete staging file       │
+│  [job exits]     ──► output JSON:    ──► receive JSON                       │
+│                      {                   hash files                          │
+│                        "staging_files":  add hash to JSON ──► receive JSON  │
+│                        {...}                                  store in CAS  │
+│                      }                                        materialize   │
+│                                                               apply meta    │
+│                                          [REMOTE: rsync     ──► cleanup     │
+│                                           staging + JSON]                   │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Remote Execution Data Flow
+
+For remote execution (e.g., Slurm runner), the data flow adds an rsync step:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         REMOTE EXECUTION FLOW                                 │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  REMOTE MACHINE                                      LOCAL MACHINE            │
+│  ──────────────                                      ─────────────            │
+│                                                                               │
+│  ┌─────────────────────────────────────┐                                      │
+│  │ Job → FUSE → staging/               │                                      │
+│  │                                     │                                      │
+│  │ Wakebox: hash files                 │                                      │
+│  │          output JSON with hash      │                                      │
+│  └─────────────────────────────────────┘                                      │
+│                    │                                                          │
+│                    │ rsync .cas/staging/ + result.json                        │
+│                    ▼                                                          │
+│                                              ┌────────────────────────────────┐│
+│                                              │ Wake: parse JSON               ││
+│                                              │       store in CAS (with hash) ││
+│                                              │       materialize to workspace ││
+│                                              │       apply mode + timestamps  ││
+│                                              │       cleanup staging files    ││
+│                                              └────────────────────────────────┘│
+│                                                                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+## CAS-Based Reads
+
+To solve the race condition where concurrent Wake invocations may materialize different content to the same workspace path, jobs read input files directly from CAS by content hash instead of from the workspace.
+
+### The Problem
+
+```
+Process A: Job A1 produces build/foo.o (hash H1)
+           → stages → CAS stores → materializes to workspace
+
+Process B: Job B1 produces build/foo.o (hash H2)
+           → stages → CAS stores → materializes to workspace (OVERWRITES!)
+
+Process A: Job A2 reads build/foo.o
+           → Gets H2 content instead of expected H1 ❌
+```
+
+### The Solution
+
+Jobs receive both the **path** and **content hash** for each visible input file. When reading, the FUSE daemon looks up the file by hash in CAS instead of reading from the workspace.
+
+```
+Wake (Path with Name + Hash)
+    │
+    ▼
+JSON spec: {"visible": [{"path": "build/foo.o", "hash": "abc123..."}], "cas-blobs-dir": ".cas/blobs"}
+    │
+    ▼
+Wakebox parses → visible_file{path, hash}
+    │
+    ▼
+daemon_client.connect() writes to visibles_path
+    │
+    ▼
+FUSE daemon Job::parse() → visible_hashes["build/foo.o"] = "abc123..."
+    │
+    ▼
+wakefuse_open("build/foo.o")
+    │
+    ├─► Has hash? → open(".cas/blobs/ab/c123...") [CAS-based read]
+    │
+    └─► No hash? → openat(rootfd, "build/foo.o") [workspace fallback]
+```
+
+### Visible Files Serialization
+
+The `Path` tuple in Wake contains both `Name` and `Hash`. When serializing visible files for jobs:
+
+```wake
+# Helper to serialize a Path as {path, hash} for CAS-based reads
+def mkVisibleJson (p: Path): JValue =
+    JObject (
+        "path" :-> JString p.getPathName,
+        "hash" :-> JString p.getPathHash,
+        Nil
+    )
+
+# In runner JSON spec:
+"visible" :-> visible | map mkVisibleJson | JArray,
+"cas-blobs-dir" :-> JString ".cas/blobs",
+```
+
+### FUSE Daemon Hash Lookup
+
+```cpp
+struct Job {
+  std::set<std::string> files_visible;
+  std::map<std::string, std::string> visible_hashes;  // path -> hash for CAS-based reads
+  // ...
+};
+
+// In wakefuse_open():
+auto hash_it = it->second.visible_hashes.find(key.second);
+if (hash_it != it->second.visible_hashes.end() && !hash_it->second.empty()) {
+  std::string blob_path = cas_blob_path(hash_it->second);
+  int fd = open(blob_path.c_str(), O_RDONLY);
+  if (fd != -1) {
+    fi->fh = fd;
+    return 0;
+  }
+  // Fall through to workspace if CAS blob not found
+}
+```
+
+### Backward Compatibility
+
+The implementation supports both formats:
+- **New format**: `{"path": "file.o", "hash": "abc123..."}` - reads from CAS
+- **Legacy format**: `"file.o"` (just a string) - reads from workspace
+
 ## Design Principles
 
 - **CAS-First Staging**: Outputs are written to staging, NOT directly to workspace
+- **CAS-Based Reads**: Inputs are read from CAS by hash, NOT from workspace
 - **Deferred Processing**: Hashing and CAS storage happen in wakebox (parallel)
 - **Deferred Materialization**: Workspace files created only at job completion
 - **Metadata Preservation**: Permissions and timestamps tracked and applied
@@ -220,30 +350,40 @@ The FUSE daemon handles staging and metadata tracking (lightweight operations on
 #### Key Data Structures
 
 ```cpp
-// Track files being written to staging
+// Unified structure to track all staged items (files, symlinks, directories)
+// Uses a type discriminator field instead of separate structures
 struct StagedFile {
-  std::string staging_path;  // Path in .cas/staging/{id}
+  std::string type;          // "file", "symlink", or "directory"
+  std::string staging_path;  // Path in .cas/staging/{id} (files only)
   std::string dest_path;     // Final destination (relative to workspace)
-  std::string job_id;        // Job that owns this file
-  mode_t mode;               // File mode (permissions)
+  std::string target;        // Symlink target (symlinks only)
+  std::string job_id;        // Job that owns this item
+  mode_t mode;               // File/directory mode (permissions)
   struct timespec mtime;     // Modification timestamp
   struct timespec atime;     // Access timestamp
-  int open_count;            // Reference count for open FDs
+  int open_count;            // Reference count for open FDs (files only)
 };
 
-// Per-job tracking (for staged files, not CAS hashes)
+// Global CAS blobs directory for hash-based reads
+static std::string g_cas_blobs_dir;
+
+// Per-job tracking
 struct Job {
   std::set<std::string> files_visible;   // Files job can see
+  std::map<std::string, std::string> visible_hashes;  // path -> hash for CAS-based reads
   std::set<std::string> files_read;      // Files job has read
   std::set<std::string> files_wrote;     // Files job has written
-  std::map<std::string, StagedFile*> staged_files;  // path -> staged file info
+  std::set<std::string> staged_paths;    // Paths staged (for is_readable)
   // NOTE: No file_hashes - hashing moved to wakebox
 };
 ```
 
-#### Write Path (Staging Only)
+#### Write Path (Unified Staging)
 
-1. **`create()` / `open(O_CREAT)`**: File is created in `.cas/staging/{counter}`
+All output types (files, symlinks, directories) use the same `StagedFile` structure with a type discriminator:
+
+**Files:**
+1. **`create()` / `open(O_CREAT)`**: File is created in `.cas/staging/{counter}`, type="file"
 2. **`write()`**: Data is written to the staging file
 3. **`chmod()`**: Mode is tracked in `StagedFile.mode`
 4. **`utimens()`**: Timestamps are tracked in `StagedFile.mtime/atime`
@@ -252,28 +392,67 @@ struct Job {
    - Metadata continues to be tracked
    - **No hashing or CAS storage** (deferred to wakebox)
 
-#### Read Path (From Staging)
+**Symlinks:**
+1. **`symlink(target, path)`**: Creates `StagedFile` with type="symlink"
+   - No actual symlink created in staging (deferred to post-processing)
+   - `target` stored in `StagedFile.target`
+   - Path added to `staged_paths` for visibility
 
-When a job reads a file it previously wrote:
-1. **`getattr()`**: If file is staged, stat info comes from staging file
-2. **`open()`**: Staging file is opened
-3. **`read()`**: Content is read from staging file
+**Directories:**
+1. **`mkdir(path, mode)`**: Creates `StagedFile` with type="directory"
+   - No actual directory created in workspace (deferred to post-processing)
+   - Mode stored in `StagedFile.mode`
+   - Path added to `staged_paths` for visibility
 
-This allows jobs to read their own outputs before wakebox processes them.
+#### Read Path (CAS-Based and Staging)
+
+When a job reads a file:
+
+**1. Check if file is staged (job's own output):**
+- If staged with type="file", read from staging file
+- If staged with type="symlink", return symlink target via `readlink()`
+- If staged with type="directory", return directory stat info
+
+**2. Check if file has a known hash (CAS-based read):**
+```cpp
+auto hash_it = it->second.visible_hashes.find(key.second);
+if (hash_it != it->second.visible_hashes.end() && !hash_it->second.empty()) {
+  std::string blob_path = cas_blob_path(hash_it->second);
+  int fd = open(blob_path.c_str(), O_RDONLY);
+  if (fd != -1) {
+    fi->fh = fd;  // Read from CAS blob
+    return 0;
+  }
+}
+```
+
+**3. Fallback to workspace (legacy compatibility):**
+```cpp
+int fd = openat(context.rootfd, key.second.c_str(), fi->flags, 0);
+```
 
 #### Job Completion (Output JSON)
 
-When a job completes, FUSE daemon outputs staging file metadata:
+When a job completes, FUSE daemon outputs unified staging metadata with type field:
 ```json
 {
   "inputs": ["src/foo.cpp", "include/bar.h"],
-  "outputs": ["build/foo.o"],
+  "outputs": ["build/foo.o", "build/link.txt", "build/subdir"],
   "staging_files": {
     "build/foo.o": {
+      "type": "file",
       "staging_path": ".cas/staging/1",
       "mode": 493,
       "mtime_sec": 1234567890,
       "mtime_nsec": 123456789
+    },
+    "build/link.txt": {
+      "type": "symlink",
+      "target": "../src/original.txt"
+    },
+    "build/subdir": {
+      "type": "directory",
+      "mode": 493
     }
   }
 }
@@ -281,35 +460,127 @@ When a job completes, FUSE daemon outputs staging file metadata:
 
 ### Wakebox Client (`src/wakefs/fuse.cpp`)
 
-Wakebox receives the JSON from FUSE and performs expensive operations:
+Wakebox receives the JSON from FUSE and **only hashes files** (no CAS storage or materialization):
 
 #### Processing Staged Files
 
 ```cpp
-void process_staging_files(const JAST& staging_files) {
-  for (const auto& entry : staging_files.children) {
-    const std::string& dest_path = entry.first;
-    const std::string& staging_path = entry.second.get("staging_path").value;
-    mode_t mode = std::stoul(entry.second.get("mode").value);
-    time_t mtime_sec = std::stol(entry.second.get("mtime_sec").value);
-    long mtime_nsec = std::stol(entry.second.get("mtime_nsec").value);
+// Process staging files: hash each file and add hash to output JSON
+// Wake will handle CAS storage and materialization
+static bool process_staging_files(const JAST &staging_files, JAST &staging_files_with_hash) {
+  for (const auto &entry : staging_files.children) {
+    const std::string &dest_path = entry.first;
+    const JAST &file_info = entry.second;
 
-    // 1. Hash the staging file
-    auto hash = cas::ContentHash::from_file(staging_path);
+    std::string staging_path = file_info.get("staging_path").value;
+    std::string mode_str = file_info.get("mode").value;
+    std::string mtime_sec_str = file_info.get("mtime_sec").value;
+    std::string mtime_nsec_str = file_info.get("mtime_nsec").value;
 
-    // 2. Store in CAS (idempotent - deduplicates automatically)
-    g_cas_store->store_blob_from_file(staging_path);
+    // Only hash - no CAS storage or materialization
+    auto hash_result = cas::ContentHash::from_file(staging_path);
+    if (!hash_result) {
+      std::cerr << "Failed to hash " << staging_path << std::endl;
+      continue;
+    }
 
-    // 3. Materialize to workspace
-    g_cas_store->materialize_blob(hash, dest_path, mode);
-
-    // 4. Apply timestamp
-    struct timespec times[2] = {{0, UTIME_OMIT}, {mtime_sec, mtime_nsec}};
-    utimensat(AT_FDCWD, dest_path.c_str(), times, 0);
-
-    // 5. Clean up staging file
-    unlink(staging_path.c_str());
+    // Add file info with hash to output JSON
+    JAST &file_entry = staging_files_with_hash.add(dest_path, JSON_OBJECT);
+    file_entry.add("staging_path", staging_path);
+    file_entry.add("mode", mode_str);
+    file_entry.add("mtime_sec", mtime_sec_str);
+    file_entry.add("mtime_nsec", mtime_nsec_str);
+    file_entry.add("hash", hash_result->to_hex());  // Hash included!
   }
+  return true;
+}
+```
+
+#### Wakebox Output JSON (with hash and type)
+
+```json
+{
+  "inputs": ["src/foo.cpp", "include/bar.h"],
+  "outputs": ["build/foo.o", "build/link.txt", "build/subdir"],
+  "staging_files": {
+    "build/foo.o": {
+      "type": "file",
+      "staging_path": ".cas/staging/1",
+      "mode": 493,
+      "mtime_sec": 1234567890,
+      "mtime_nsec": 123456789,
+      "hash": "abc123def456..."
+    },
+    "build/link.txt": {
+      "type": "symlink",
+      "target": "../src/original.txt"
+    },
+    "build/subdir": {
+      "type": "directory",
+      "mode": 493
+    }
+  }
+}
+```
+
+### Wake CAS Ingestion (`wake/wakebox/runners/rhel8-common.wake`)
+
+Wake's runner post-processing receives the wakebox output JSON and performs CAS storage and materialization using a unified API that handles files, symlinks, and directories:
+
+```wake
+# Unified processing - dispatch based on type field
+def processStagingItem (destPath: String) (itemInfo: JValue): Result Unit Error =
+    require Some itemType = itemInfo // `type` | getJString
+    else failWithError "Missing type for {destPath}"
+
+    if itemType ==* "file" then processStagingFile destPath itemInfo
+    else if itemType ==* "symlink" then processStagingSymlink destPath itemInfo
+    else if itemType ==* "directory" then processStagingDirectory destPath itemInfo
+    else failWithError "Unknown staging item type '{itemType}' for {destPath}"
+
+# File: store in CAS, materialize, apply metadata, cleanup staging
+def processStagingFile destPath itemInfo =
+    require Some stagingPath = itemInfo // `staging_path` | getJString
+    require Some hash = itemInfo // `hash` | getJString
+    require Some mode = itemInfo // `mode` | getJInteger
+    require Some mtimeSec = itemInfo // `mtime_sec` | getJInteger
+    require Some mtimeNsec = itemInfo // `mtime_nsec` | getJInteger
+    casIngestStagingFile destPath "file" stagingPath hash mode mtimeSec mtimeNsec
+
+# Symlink: create symlink at destPath pointing to target
+def processStagingSymlink destPath itemInfo =
+    require Some linkTarget = itemInfo // `target` | getJString
+    casIngestStagingFile destPath "symlink" linkTarget "" 0 0 0
+
+# Directory: create directory at destPath with mode
+def processStagingDirectory destPath itemInfo =
+    def mode = itemInfo // `mode` | getJInteger | getOrElse 493  # 0755 octal
+    casIngestStagingFile destPath "directory" "" "" mode 0 0
+```
+
+### CAS Primitives (`src/runtime/cas_prim.cpp`)
+
+Wake exposes CAS operations as primitives callable from the Wake language:
+
+```cpp
+// Unified ingestion primitive - handles files, symlinks, and directories
+// prim "cas_ingest_staging_file" destPath itemType stagingPathOrTarget hash mode mtimeSec mtimeNsec
+static PRIMFN(prim_cas_ingest_staging_file) {
+  // Dispatch based on itemType:
+  //
+  // type="file":
+  //   1. Store file in CAS using provided hash
+  //   2. Materialize to workspace with mode (reflink from CAS)
+  //   3. Apply timestamps
+  //   4. Delete staging file
+  //
+  // type="symlink":
+  //   1. Create parent directories if needed
+  //   2. Create symlink at destPath pointing to stagingPathOrTarget
+  //
+  // type="directory":
+  //   1. Create parent directories if needed
+  //   2. Create directory at destPath with mode
 }
 ```
 
@@ -392,10 +663,11 @@ This enables:
 
 ### Wake Primitives (`src/runtime/cas_prim.cpp`)
 
-Runtime primitives exposed to the Wake language (simplified, no tree operations):
+Runtime primitives exposed to the Wake language:
 
 | Primitive | Description |
 |-----------|-------------|
+| `cas_ingest_staging_file` | Unified: ingest file/symlink/directory from staging |
 | `cas_store_file` | Store a file, return content hash |
 | `cas_has_blob` | Check if blob exists |
 | `cas_materialize_file` | Materialize file from CAS to path |
@@ -404,17 +676,14 @@ Runtime primitives exposed to the Wake language (simplified, no tree operations)
 ### Wake Language API (`share/wake/lib/system/cas.wake`)
 
 ```wake
-# Store a file, get its hash
-export def casStoreFile (path: String): Result String Error
-
-# Check if blob exists
-export def casHasBlob (hash: String): Boolean
-
-# Materialize file from CAS to a path
-export def casMaterializeFile (hash: String) (destPath: String) (mode: Integer): Result Unit Error
-
-# Get the CAS store path
-export def casStorePath: String
+# Ingest a staging item into the workspace (atomic operation).
+# Handles files, symlinks, and directories based on the type parameter.
+# - type="file": stagingPathOrTarget = staging path, uses hash/mode/mtime
+# - type="symlink": stagingPathOrTarget = symlink target
+# - type="directory": stagingPathOrTarget = "" (unused), uses mode
+export def casIngestStagingFile (destPath: String) (itemType: String)
+    (stagingPathOrTarget: String) (hash: String) (mode: Integer)
+    (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error
 ```
 
 ## Initialization Flow
@@ -442,14 +711,21 @@ main.cpp
 
 | File | Change |
 |------|--------|
-| `Makefile` | Added `src/cas` to `WAKE_DIRS`, CAS_OBJS for wakebox |
-| `src/runtime/job.h` | Added `cas::CASStore*` to JobTable constructor |
-| `src/runtime/job.cpp` | Materialize from CAS on cache hit |
-| `src/runtime/prim.h` | Added CASContext, prim_register_cas |
+| `Makefile` | Added `src/cas` to `WAKE_DIRS`, CAS_OBJS for wakebox and wake |
+| `src/runtime/cas_prim.h` | CASContext class, CAS primitive declarations |
+| `src/runtime/cas_prim.cpp` | CAS primitive implementations (unified ingestion) |
+| `src/runtime/prim.h` | Added CASContext forward declaration |
 | `src/runtime/prim.cpp` | Added CAS primitive registration |
-| `tools/wake/main.cpp` | Initialize CASContext, pass to JobTable |
-| `tools/fuse-waked/main.cpp` | Staging directory, metadata tracking, output JSON (no CAS) |
-| `src/wakefs/fuse.cpp` | CAS initialization, hashing, storage, materialization |
+| `tools/wake/main.cpp` | Initialize CASContext, pass to prim_register_all |
+| `tools/fuse-waked/main.cpp` | Staging, metadata tracking, visible_hashes, CAS-based reads |
+| `src/wakefs/fuse.cpp` | Hashing only (no CAS storage or materialization) |
+| `src/wakefs/fuse.h` | visible_file struct, cas_blobs_dir field |
+| `src/wakefs/daemon_client.cpp` | Pass visible files with hashes to FUSE daemon |
+| `share/wake/lib/system/cas.wake` | Unified casIngestStagingFile API |
+| `wake/wakebox/runners/rhel8-common.wake` | Type-based staging dispatch |
+| `wake/wakebox/runners/rhel8-bindmount-runner.wake` | Visible files serialized with hashes |
+| `wake/wakebox/runners/squashfs-runner.wake` | Visible files serialized with hashes |
+| `share/wake/lib/system/runner.wake` | Visible files serialized with hashes |
 
 ### CAS Core Files
 
@@ -462,22 +738,40 @@ main.cpp
 | `src/cas/file_ops.h` | File operation utilities interface |
 | `src/cas/file_ops.cpp` | Reflink/hardlink/copy implementation |
 
-## Current Behavior (Split Architecture)
+## Current Behavior (Three-Component Split Architecture)
 
-1. **On file create/open**: FUSE creates file in `.cas/staging/` (not workspace)
+### Write Path (Outputs)
+1. **On file create/open**: FUSE creates file in `.cas/staging/` with type="file"
 2. **On file write**: Data written directly to staging file
-3. **On chmod/utimens**: Metadata tracked in `StagedFile` struct
-4. **On file close**: Staging file remains; metadata preserved
-5. **During job execution**: Job sees its outputs via FUSE (reads from staging)
-6. **On job exit**: FUSE outputs JSON with staging paths + metadata
-7. **Wakebox processes**:
-   - Hashes each staging file
-   - Stores in CAS (`.cas/blobs/`)
-   - Materializes to workspace with permissions/timestamps
-   - Cleans up staging files
-8. **Deduplication**: Identical files share storage in CAS
-9. **Cache recovery**: On cache hit with missing files, materialize from CAS
-10. **Concurrent builds**: No file conflicts - each job writes to isolated staging
+3. **On symlink**: FUSE tracks symlink with type="symlink" (deferred creation)
+4. **On mkdir**: FUSE tracks directory with type="directory" (deferred creation)
+5. **On chmod/utimens**: Metadata tracked in `StagedFile` struct
+6. **On file close**: Staging file remains; metadata preserved
+7. **During job execution**: Job sees its outputs via FUSE (reads from staging)
+8. **On job exit**: FUSE outputs unified JSON with staging paths, types, and metadata
+
+### Read Path (Inputs)
+1. **Job reads staged file**: FUSE serves from staging (job's own output)
+2. **Job reads visible file with hash**: FUSE reads from CAS blob by hash
+3. **Job reads visible file without hash**: FUSE reads from workspace (legacy)
+
+### Post-Processing
+1. **Wakebox processes** (runs locally or remotely):
+   - Hashes each staging file (type="file" only)
+   - Adds hash to JSON output
+   - Does NOT store in CAS or materialize
+2. **For remote execution**: rsync transfers staging files + JSON to local
+3. **Wake processes** (in runner post-processing):
+   - Dispatches based on type field
+   - Files: stores in CAS, materializes with reflink, applies metadata, cleans up
+   - Symlinks: creates symlink at destPath
+   - Directories: creates directory with mode
+
+### Benefits
+1. **Deduplication**: Identical files share storage in CAS
+2. **Cache recovery**: On cache hit with missing files, materialize from CAS
+3. **Concurrent builds**: No file conflicts - each job writes to isolated staging
+4. **Content correctness**: Jobs read exact content by hash, not stale workspace
 
 ## FUSE Daemon Details
 
@@ -570,42 +864,64 @@ The fuse-waked daemon outputs staging file metadata (no hashes):
 }
 ```
 
-## Wakebox Integration
+## Wakebox Integration (Hashing Only)
 
-Wakebox receives FUSE output and performs CAS operations:
+Wakebox receives FUSE output and **only hashes files** (CAS storage and materialization happen in Wake):
 
 ### Wakebox Processing (`src/wakefs/fuse.cpp`)
 
 ```cpp
-// After FUSE daemon exits, process staged files
-void process_fuse_output(const JAST& fuse_json) {
-  // Initialize CAS store (if not already)
-  auto cas_store = cas::CASStore::open(".cas");
+// After FUSE daemon exits, hash staged files and add hash to output JSON
+// Wake will handle CAS storage and materialization
+static bool process_staging_files(const JAST &staging_files, JAST &staging_files_with_hash) {
+  for (const auto &entry : staging_files.children) {
+    const std::string &dest_path = entry.first;
+    const JAST &file_info = entry.second;
 
-  // Process each staged file
-  for (const auto& entry : fuse_json.get("staging_files").children) {
-    const std::string& dest_path = entry.first;
-    const auto& info = entry.second;
+    std::string staging_path = file_info.get("staging_path").value;
+    // ... other metadata parsing ...
 
-    std::string staging_path = info.get("staging_path").value;
-    mode_t mode = std::stoul(info.get("mode").value);
-    time_t mtime_sec = std::stol(info.get("mtime_sec").value);
-    long mtime_nsec = std::stol(info.get("mtime_nsec").value);
+    // Only hash - Wake will handle CAS storage and materialization
+    auto hash_result = cas::ContentHash::from_file(staging_path);
 
-    // Hash and store in CAS
-    auto hash = cas_store->store_blob_from_file(staging_path);
-
-    // Materialize to workspace
-    cas_store->materialize_blob(*hash, dest_path, mode);
-
-    // Apply timestamp
-    struct timespec times[2] = {{0, UTIME_OMIT}, {mtime_sec, mtime_nsec}};
-    utimensat(AT_FDCWD, dest_path.c_str(), times, 0);
-
-    // Clean up staging file
-    unlink(staging_path.c_str());
+    // Add file info WITH HASH to output JSON
+    JAST &file_entry = staging_files_with_hash.add(dest_path, JSON_OBJECT);
+    file_entry.add("staging_path", staging_path);
+    // ... other metadata ...
+    file_entry.add("hash", hash_result->to_hex());  // Hash included!
   }
+  return true;
 }
+```
+
+### Wake CAS Ingestion (`share/wake/lib/system/cas.wake`)
+
+```wake
+# Ingest a staging item into the workspace (atomic operation).
+# Handles files, symlinks, and directories based on the type parameter.
+# - type="file": stagingPathOrTarget = staging path, uses hash/mode/mtime
+# - type="symlink": stagingPathOrTarget = symlink target
+# - type="directory": stagingPathOrTarget = "" (unused), uses mode
+export def casIngestStagingFile (destPath: String) (itemType: String)
+    (stagingPathOrTarget: String) (hash: String) (mode: Integer)
+    (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
+  prim "cas_ingest_staging_file"
+```
+
+### Runner Post-Processing (`wake/wakebox/runners/rhel8-common.wake`)
+
+```wake
+# In commonWakeboxPost, process staging files from wakebox output:
+# Dispatch based on type field for files, symlinks, and directories
+def processStagingItem destPath itemInfo =
+    require Some itemType = itemInfo // `type` | getJString
+
+    if itemType ==* "file" then
+        casIngestStagingFile destPath "file" stagingPath hash mode mtimeSec mtimeNsec
+    else if itemType ==* "symlink" then
+        casIngestStagingFile destPath "symlink" linkTarget "" 0 0 0
+    else if itemType ==* "directory" then
+        casIngestStagingFile destPath "directory" "" "" mode 0 0
 ```
 
 ## Concurrent Build Scenarios
@@ -653,19 +969,106 @@ Wake 2: Job B (linking foo.o → foo.exe, depends on Job A)
 Timeline:
   t1: FUSE: A writes to staging (foo.o not in workspace)
   t2: A exits → wakebox A: hash, store, materialize foo.o
-  t3: B starts, reads foo.o from workspace (stable, complete)
-  t4: FUSE: B writes foo.exe to staging
-  t5: B exits → wakebox B: hash, store, materialize foo.exe
+  t3: B starts, visible_hashes["foo.o"] = H1
+  t4: B reads foo.o → FUSE opens .cas/blobs/{H1} (CAS-based read)
+  t5: FUSE: B writes foo.exe to staging
+  t6: B exits → wakebox B: hash, store, materialize foo.exe
 
-Result: B sees complete foo.o, not partial/in-progress
-        Metadata (mode, timestamps) preserved through the flow
+Result: B reads from CAS by hash, not workspace
+        Even if workspace is overwritten, B reads correct content
+```
+
+### Scenario 4: Concurrent Builds with Same Input (CAS-Based Reads)
+
+```
+Wake 1: Job A1 produces build/foo.o (hash H1)
+        → stages → CAS stores → materializes to workspace
+
+Wake 2: Job B1 produces build/foo.o (hash H2)
+        → stages → CAS stores → materializes to workspace (OVERWRITES!)
+
+Wake 1: Job A2 reads build/foo.o (visible_hashes["build/foo.o"] = H1)
+
+Timeline:
+  t1: A1 materializes foo.o with hash H1
+  t2: B1 materializes foo.o with hash H2 (overwrites workspace!)
+  t3: A2 starts, visible_hashes["foo.o"] = H1
+  t4: A2 reads foo.o → FUSE opens .cas/blobs/{H1} ← Correct hash!
+
+Result: A2 reads H1 content (from CAS), not H2 (from workspace)
+        CAS-based reads solve the race condition
 ```
 
 ## Future Work
 
-1. **Remote CAS**: Support remote content-addressable storage backends
+1. **Remote CAS**: Support remote content-addressable storage backends (S3, NFS)
 2. **Garbage Collection**: Clean up unreferenced CAS blobs
 3. **Hash-based Job Caching**: Use content hashes for finer-grained cache invalidation
-4. **Parallel Wakebox Processing**: Multiple wakebox instances process outputs concurrently
-5. **Shared CAS Across Workspaces**: Enable cross-workspace content sharing
-6. **Timestamp Preservation**: Apply timestamps during materialization for incremental compilation tools
+4. **Shared CAS Across Workspaces**: Enable cross-workspace content sharing
+5. **CAS Verification**: Verify file integrity using stored hashes
+
+## Design Decisions
+
+### Why Three-Component Split?
+
+**Problem**: Remote execution (Slurm runner) doesn't have access to local CAS store.
+
+**Solution**: Split responsibilities so that:
+1. FUSE daemon: lightweight, runs on any machine
+2. Wakebox: hashes files, runs on any machine (local or remote)
+3. Wake: CAS storage/materialization, runs only on local machine
+
+This ensures the same data flow for both local and remote execution.
+
+### Why Hash in Wakebox?
+
+1. **Parallelism**: Each wakebox hashes its own job's outputs concurrently
+2. **Efficiency**: Hash is computed once, not re-computed by Wake
+3. **Remote-friendly**: Hashing works on remote machines without CAS access
+
+### Why CAS Storage in Wake?
+
+1. **Local Access**: Wake runs on the machine with the CAS store
+2. **Consistency**: Single point of CAS management
+3. **Cache Integration**: Wake manages job cache which references CAS blobs
+
+### Why Not Store in CAS on Remote Machine?
+
+1. Remote machine's CAS would be discarded after job completes
+2. Rsync would need to transfer entire CAS (wasteful)
+3. CAS blobs need to be on the machine running Wake for cache hits
+
+### Why Unified Type-Based Staging?
+
+Previously, files and symlinks used separate tracking structures (`g_staged_files` for files, `g_staged_symlinks` for symlinks) and separate JSON fields. This caused:
+
+1. **Code duplication**: Similar logic for handling different output types
+2. **Inconsistent JSON format**: Different structures for different types
+3. **Complex post-processing**: Multiple code paths in runners
+
+The unified approach uses a single `StagedFile` struct with a `type` discriminator ("file", "symlink", "directory"):
+
+1. **Simpler code**: One structure, one JSON format, one code path
+2. **Extensible**: Easy to add new types in the future
+3. **Consistent API**: `casIngestStagingFile` handles all types with dispatch on `itemType`
+
+### Why CAS-Based Reads?
+
+When multiple Wake invocations run concurrently, they may materialize different content to the same workspace path. Without CAS-based reads:
+
+1. **Race condition**: Job A2 reads workspace after Job B1 overwrites → wrong content
+2. **Non-determinism**: Same job can read different content depending on timing
+3. **Silent failures**: No error, but build produces incorrect results
+
+With CAS-based reads:
+
+1. **Content correctness**: Job reads by hash, always gets expected content
+2. **Determinism**: Same inputs → same outputs regardless of concurrent builds
+3. **Workspace as cache**: Workspace is just a convenience; CAS is source of truth
+
+The implementation passes both path and hash for visible files:
+```json
+{"visible": [{"path": "build/foo.o", "hash": "abc123..."}]}
+```
+
+FUSE daemon stores hashes in `visible_hashes` map and reads from CAS when available.

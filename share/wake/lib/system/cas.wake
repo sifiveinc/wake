@@ -1,0 +1,27 @@
+# Copyright 2024 SiFive, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You should have received a copy of LICENSE.Apache2 along with
+# this software. If not, you may obtain a copy at
+#
+#    https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+package wake
+
+# Ingest a staging item into the workspace (atomic operation).
+# Handles files, symlinks, and directories based on the type parameter.
+# - type="file": stagingPathOrTarget = staging path, uses hash/mode/mtime
+# - type="symlink": stagingPathOrTarget = symlink target
+# - type="directory": stagingPathOrTarget = "" (unused), uses mode
+export def casIngestStagingFile (destPath: String) (itemType: String) (stagingPathOrTarget: String) (hash: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
+    def raw destPath itemType stagingPathOrTarget hash mode mtimeSec mtimeNsec = prim "cas_ingest_staging_file"
+
+    raw destPath itemType stagingPathOrTarget hash mode mtimeSec mtimeNsec
+    | rmapError makeError
