@@ -613,7 +613,7 @@ static int wakefuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     }
   }
 
-  // === Part 2: Handle virtual directories (created by mkdir but not on disk) ===
+  // Handle virtual directories (created by mkdir but not on disk)
   // If the real directory doesn't exist but the job marked it as writeable, add . and ..
   if (dfd == -1 && it->second.is_writeable(key.second)) {
     filler(buf, ".", 0, 0);
@@ -622,8 +622,7 @@ static int wakefuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     already_listed.insert("..");
   }
 
-  // === Part 3: Add staged files from CAS staging directory ===
-  // Files written by the job are stored in .cas/staging/ but should appear at their virtual paths
+  // Add staged files from CAS staging directory
   for (auto &entry : g_staged_files) {
     // Skip entries that don't belong to this job
     if (entry.first.first != key.first) continue;
@@ -650,7 +649,7 @@ static int wakefuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     }
   }
 
-  // === Part 4: Add virtual subdirectories implied by files_wrote ===
+  // Add virtual subdirectories implied by files_wrote
   // If a job writes to "foo/bar/output.o", directories "foo" and "foo/bar" must appear in listings
   for (auto &path : it->second.files_wrote) {
     if (dir_prefix.empty()) {
