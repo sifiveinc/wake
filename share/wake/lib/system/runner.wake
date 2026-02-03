@@ -240,12 +240,20 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
 
         def Usage jobStatus runtime cputime membytes inbytes outbytes = record
 
+        # Helper to serialize a Path as {path, hash} for CAS-based reads
+        def mkVisibleJson (p: Path): JValue =
+            JObject (
+                "path" :-> JString p.getPathName,
+                "hash" :-> JString p.getPathHash,
+                Nil
+            )
+
         def json =
             JObject (
                 "label" :-> JString label,
                 "command" :-> command | map JString | JArray,
                 "environment" :-> environment | map JString | JArray,
-                "visible" :-> visible | map (_.getPathName.JString) | JArray,
+                "visible" :-> visible | map mkVisibleJson | JArray,
                 "directory" :-> JString directory,
                 "stdin" :-> JString stdin,
                 "resources" :-> res | map JString | JArray,
@@ -253,6 +261,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                 "isolate-network" :-> JBoolean False,
                 "isolate-pids" :-> JBoolean False,
                 "mount-ops" :-> JArray (JObject ("type" :-> JString "workspace", "destination" :-> JString ".", Nil), Nil),
+                "cas-blobs-dir" :-> JString ".cas/blobs",
                 "usage" :-> JObject (
                     "status" :-> JInteger jobStatus,
                     "runtime" :-> JDouble runtime,
