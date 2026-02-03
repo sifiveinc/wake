@@ -33,6 +33,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -148,6 +149,49 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
   return !result_ss.fail();
 }
 
+// Pre-resolve autofs paths through stating the paths on host machine
+static bool resolve_autofs_mounts(const std::vector<mount_op> &mount_ops) {
+  std::vector<std::string> autofs_paths;
+  for (const auto &op : mount_ops) {
+    if (op.type == "autofs-resolve") {
+      autofs_paths.push_back(op.source);
+    }
+  }
+
+  // Sort by path depth as we want parent paths resolved first for nested autofs situations
+  std::sort(autofs_paths.begin(), autofs_paths.end(),
+            [](const std::string &a, const std::string &b) {
+              auto count_directories = [](const std::string &path) {
+                if (path.empty() || path == "/") return 0;
+
+                std::vector<std::string> directories;
+                std::stringstream ss(path);
+                std::string directory;
+
+                while (std::getline(ss, directory, '/')) {
+                  if (!directory.empty()) {  // Skip slashes
+                    directories.push_back(directory);
+                  }
+                }
+
+                return static_cast<int>(directories.size());
+              };
+
+              return count_directories(a) < count_directories(b);
+            });
+
+  for (const auto &path : autofs_paths) {
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0) {
+      std::cerr << "Pre-resolved autofs path: " << path << std::endl;
+    } else {
+      std::cerr << "Failed to resolve autofs path: " << path << " - " << strerror(errno)
+                << std::endl;
+    }
+  }
+  return true;
+}
+
 bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
   if (0 != chdir(args.working_dir.c_str())) {
     std::cerr << "chdir " << args.working_dir << ": " << strerror(errno) << std::endl;
@@ -169,6 +213,9 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
       std::cerr << "run_in_fuse prctl: " << strerror(errno) << std::endl;
       exit(1);
     }
+
+    // trigger autofs paths on host before entering namespace
+    resolve_autofs_mounts(args.mount_ops);
 
     if (!setup_user_namespaces(args.userid, args.groupid, args.isolate_network, args.hostname,
                                args.domainname))
