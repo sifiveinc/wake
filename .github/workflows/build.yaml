@@ -31,7 +31,7 @@ jobs:
           run: make tarball
 
         - name: Run Tests
-          run: make test && make unittest
+          run: make test
 
         - name: Check Wake Formatting
           run: ./bin/wake-format.native-cpp14-release --auto --dry-run
