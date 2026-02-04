@@ -1,8 +1,0 @@
-from wake import _
-
-export def test (_: List String): Result (List String) Error =
-    require Pass outputs =
-        makePlan "basic_test" Nil "echo foobar > test1.txt && echo foobar > test2.txt"
-        | runJobWith defaultRunner
-        | getJobOutputs
-    Pass (map (_.getPathName) outputs)
