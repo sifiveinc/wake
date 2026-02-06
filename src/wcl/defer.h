@@ -37,7 +37,7 @@ class defer {
  public:
   defer() = delete;
   defer(const defer&) = delete;
-  defer(defer&&) = default;
+  defer(defer&& other) noexcept : f(std::move(other.f)) { other.f.reset(); }
   defer(F&& f) : f(std::in_place, std::move(f)) {}
   defer(const F& f) : f(std::in_place, f) {}
 
@@ -64,8 +64,14 @@ class opt_defer {
  public:
   opt_defer() = default;
   opt_defer(const opt_defer&) = delete;
-  opt_defer(opt_defer&& d) = default;
-  opt_defer& operator=(opt_defer&&) = default;
+  opt_defer(opt_defer&& other) noexcept : f(std::move(other.f)) { other.f.reset(); }
+  opt_defer& operator=(opt_defer&& other) noexcept {
+    if (this != &other) {
+      f = std::move(other.f);
+      other.f.reset();
+    }
+    return *this;
+  }
   template <class F>
   opt_defer(F&& f) : f(std::in_place, std::forward<F>(f)) {}
   ~opt_defer() {
