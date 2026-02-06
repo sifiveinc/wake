@@ -160,7 +160,8 @@ static wcl::optional<Hash256> hash_file(const char* file, int fd) {
   ssize_t got;
 
   blake3_hasher_init(&hasher);
-  while ((got = read(fd, &buffer[0], sizeof(buffer))) > 0) blake3_hasher_update(&hasher, &buffer[0], got);
+  while ((got = read(fd, &buffer[0], sizeof(buffer))) > 0)
+    blake3_hasher_update(&hasher, &buffer[0], got);
   blake3_hasher_finalize(&hasher, &hash[0], sizeof(hash));
 
   if (got < 0) {
