@@ -18,4 +18,4 @@ package build_wake
 from wake import _
 
 target siphash variant =
-    vendor @here variant "1.0" `.*\.h` `.*\.c`
+    vendor @here variant "1.0" `.*\.h` `.*\.c` Nil
