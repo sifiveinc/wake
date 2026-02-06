@@ -509,9 +509,21 @@ static std::vector<Migration> get_migrations() {
        },
         "Add run_files table for guarding files during active runs"},
 
-      // Version 14 -> 15: Hash algorithm changed from BLAKE2b to BLAKE3
-      // All file hashes are now invalid and need to be recomputed
+      // Version 10 -> 11: Add 'deleted' column to the files table.
+      // All existing files are assumed to be present (deleted = 0).
       {14, 15,
+       [](sqlite3* db) -> bool {
+         if (!has_column(db, "files", "deleted")) {
+           const char* sql = "ALTER TABLE files ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;";
+           return exec_sql(db, sql);
+         }
+         return true;
+       },
+       "Add files.deleted column to retain metadata while allowing CAS space recovery"},
+
+       // Version 15 -> 16: Hash algorithm changed from BLAKE2b to BLAKE3
+      // All file hashes are now invalid and need to be recomputed
+      {15, 16,
        [](sqlite3* db) -> bool {
          // Clear all file hashes by deleting files table entries
          // This forces wake to rehash all files on next run
@@ -526,25 +538,9 @@ static std::vector<Migration> get_migrations() {
          return true;
        },
        "Clear all cached data due to hash algorithm change from BLAKE2b to BLAKE3"},
-
   };
 }
-=======
 
-      // Version 10 -> 11: Add 'deleted' column to the files table.
-      // All existing files are assumed to be present (deleted = 0).
-      {14, 15,
-       [](sqlite3* db) -> bool {
-         if (!has_column(db, "files", "deleted")) {
-           const char* sql = "ALTER TABLE files ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;";
-           return exec_sql(db, sql);
-         }
-         return true;
-       },
-       "Add files.deleted column to retain metadata while allowing CAS space recovery"},
-
-  };
-}
 
 // Apply a single migration step from from_version to to_version
 static bool apply_migrations(sqlite3* db, int from_version, int to_version) {
