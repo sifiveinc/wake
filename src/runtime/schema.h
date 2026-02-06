@@ -15,7 +15,6 @@ inline const char* getWakeSchemaSQL() {
          "create table if not exists entropy("
          "  row_id integer primary key autoincrement,"
          "  seed   integer not null);"
-         "update entropy set seed=0 where 0;"  // "write" to acquire exclusive lock
          "create table if not exists schema("
          "  version integer primary key);"
          "create table if not exists runs("
