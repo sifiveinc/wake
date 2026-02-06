@@ -25,10 +25,10 @@ export def c11Flags =
     ("-std=c11", Nil)
 
 export def debugCFlags =
-    ("-Wall", "-Wextra", "-Wno-format-security", "-Og", "-g", Nil)
+    ("-Wall", "-Wextra", "-Wno-format-security", "-O0", "-g", "-pg", Nil)
 
 export def debugLFlags =
-    ("-lpthread", "-g", "-Wl,--build-id", Nil)
+    ("-lpthread", "-g", "-pg", "-Wl,--build-id", Nil)
 
 export def releaseCFlags =
     ("-Wall", "-Wno-format-security", "-g", "-O2", Nil)
