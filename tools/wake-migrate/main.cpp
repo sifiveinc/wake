@@ -191,22 +191,20 @@ static std::vector<Migration> get_migrations() {
        "Convert runner_status from INTEGER to TEXT"},
 
       // Version 9 -> 10: Hash algorithm changed from BLAKE2b to BLAKE3
-      // All file hashes are now invalid and need to be recomputed
+      // Migration is not supported - user must delete wake.db and reinitialize
       {9, 10,
        [](sqlite3* db) -> bool {
-         // Clear all file hashes by deleting files table entries
-         // This forces wake to rehash all files on next run
-         if (!exec_sql(db, "DELETE FROM filetree;")) return false;
-         if (!exec_sql(db, "DELETE FROM files;")) return false;
-         // Also clear jobs since their input/output file references are now invalid
-         if (!exec_sql(db, "DELETE FROM log;")) return false;
-         if (!exec_sql(db, "DELETE FROM tags;")) return false;
-         if (!exec_sql(db, "DELETE FROM unhashed_files;")) return false;
-         if (!exec_sql(db, "DELETE FROM jobs;")) return false;
-         if (!exec_sql(db, "DELETE FROM stats;")) return false;
-         return true;
+         (void)db;  // unused
+         std::cerr << std::endl;
+         std::cerr << "Wake has been upgraded from BLAKE2b to BLAKE3 hashing." << std::endl;
+         std::cerr << "Your existing wake.db is incompatible and must be deleted." << std::endl;
+         std::cerr << std::endl;
+         std::cerr << "Please run:" << std::endl;
+         std::cerr << "  rm wake.db && wake --init ." << std::endl;
+         std::cerr << std::endl;
+         return false;
        },
-       "Clear all cached data due to hash algorithm change from BLAKE2b to BLAKE3"},
+       "Hash algorithm changed from BLAKE2b to BLAKE3 - manual deletion required"},
 
   };
 }

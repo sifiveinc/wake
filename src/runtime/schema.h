@@ -5,7 +5,6 @@
 
 // Increment the SCHEMA_VERSION every time the below string changes.
 // Also add migrations to the wake-migration tool if needed.
-// Version 10: Changed hash algorithm from BLAKE2b to BLAKE3.
 inline const char* getWakeSchemaSQL() {
   return "pragma auto_vacuum=incremental;"
          "pragma journal_mode=wal;"
