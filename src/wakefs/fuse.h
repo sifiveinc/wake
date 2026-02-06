@@ -19,10 +19,11 @@
 #ifndef FUSE_H
 #define FUSE_H
 
-#include <wcl/optional.h>
-
+#include <optional>
 #include <string>
 #include <vector>
+
+#include "wcl/optional.h"
 
 #include "namespace.h"
 
@@ -55,7 +56,7 @@ struct daemon_client {
 
 struct json_args {
   std::vector<std::string> command;
-  wcl::optional<int> command_timeout;  // timeout in seconds.
+  std::optional<int> command_timeout;  // timeout in seconds.
   std::vector<std::string> environment;
   std::vector<std::string> visible;
   std::string directory;

@@ -22,6 +22,7 @@
 #include "json5.h"
 
 #include <memory>
+#include <optional>
 #include <sstream>
 
 #include "wcl/optional.h"
@@ -51,7 +52,7 @@ JAST &JAST::get(const std::string &key) {
   return null;
 }
 
-wcl::optional<const JAST *> JAST::get_opt(const std::string &key) const {
+std::optional<const JAST *> JAST::get_opt(const std::string &key) const {
   const JAST &item = get(key);
   if (&item == &null) {
     return {};

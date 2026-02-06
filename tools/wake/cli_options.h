@@ -19,6 +19,7 @@
 
 #include <sys/stat.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -64,8 +65,8 @@ struct CommandLineOptions {
   bool clean;
   bool list_outputs;
   bool include_hidden;
-  wcl::optional<bool> log_header_align;
-  wcl::optional<bool> cache_miss_on_failure;
+  std::optional<bool> log_header_align;
+  std::optional<bool> cache_miss_on_failure;
 
   const char *percent_str;
   const char *jobs_str;
@@ -89,7 +90,7 @@ struct CommandLineOptions {
   const char *log_header;
   const char *user_config;
 
-  wcl::optional<int64_t> log_header_source_width;
+  std::optional<int64_t> log_header_source_width;
 
   std::vector<std::vector<std::string>> job_ids = {};
   std::vector<std::vector<std::string>> input_files = {};
@@ -311,7 +312,7 @@ struct CommandLineOptions {
     }
   }
 
-  wcl::optional<std::string> validate() {
+  std::optional<std::string> validate() {
     if (quiet && verbose) {
       return wcl::some<std::string>("Cannot specify both -v and -q!");
     }

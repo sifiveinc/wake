@@ -785,7 +785,7 @@ static void setup_fd_buf(JobTable *jobtable, int fd) {
 // Helper function to create a stream buffer
 static std::unique_ptr<std::streambuf> create_stream_buf(
     JobTable *jobtable, int fd, const char *stream_name,
-    const wcl::optional<std::string> &job_label_str, int color) {
+    const std::optional<std::string> &job_label_str, int color) {
   if (fd != -1 && RE2::FullMatch(*job_label_str, *WakeConfig::get()->label_filter)) {
     return std::make_unique<StatusBuf>(stream_name, job_label_str, color,
                                        *jobtable->imp->term_bufs[fd].get());

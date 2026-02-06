@@ -377,7 +377,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  wcl::optional<std::string> validate_msg = clo.validate();
+  std::optional<std::string> validate_msg = clo.validate();
   if (validate_msg) {
     std::cerr << *validate_msg << std::endl;
     return 1;

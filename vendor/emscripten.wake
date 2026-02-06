@@ -53,6 +53,9 @@ publish compileC =
 publish compileC =
     emppFn (makeCompileC "wasm-cpp14-release" _ ("-std=c++14", emscriptenCFlags))
 
+publish compileC =
+    emppFn (makeCompileC "wasm-cpp17-release" _ ("-std=c++17", emscriptenCFlags))
+
 publish linkO =
     emccFn (makeLinkO "wasm-c11-release" _ emscriptenLFlags)
 
@@ -61,3 +64,6 @@ publish linkO =
 
 publish linkO =
     emppFn (makeLinkO "wasm-cpp14-release" _ emscriptenLFlags)
+
+publish linkO =
+    emppFn (makeLinkO "wasm-cpp17-release" _ emscriptenLFlags)

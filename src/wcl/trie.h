@@ -19,9 +19,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
-
-#include "optional.h"
 
 namespace wcl {
 
@@ -40,7 +39,7 @@ class trie {
     //       this trie entirely in place for the vast vast majority of nodes.
     std::vector<std::size_t> child_indexes;
     Key key;
-    optional<Value> value;
+    std::optional<Value> value;
 
     trie_node(trie_node&&) = default;
     trie_node(const trie_node&) = delete;
@@ -52,19 +51,19 @@ class trie {
   // sequence. The benifit is that with a small_vector our trie will be very compact
   // and memory efficent.
   std::vector<size_t> starts;
-  optional<Value> empty_seq;
+  std::optional<Value> empty_seq;
 
-  optional<size_t> matching_start(const Key& key) const {
+  std::optional<size_t> matching_start(const Key& key) const {
     for (size_t index : starts) {
-      if (key == nodes[index].key) return optional<size_t>(in_place_t{}, index);
+      if (key == nodes[index].key) return std::optional<size_t>(std::in_place, index);
     }
     return {};
   }
 
-  optional<size_t> matching_child(size_t pindex, const Key& key) const {
+  std::optional<size_t> matching_child(size_t pindex, const Key& key) const {
     const trie_node* node = &nodes[pindex];
     for (size_t child_index : node->child_indexes) {
-      if (key == nodes[child_index].key) return optional<size_t>(in_place_t{}, child_index);
+      if (key == nodes[child_index].key) return std::optional<size_t>(std::in_place, child_index);
     }
     return {};
   }
@@ -102,13 +101,13 @@ class trie {
   void move_emplace(KeyIter begin, KeyIter end, Args&&... args) {
     // First handle the empty sequence
     if (begin == end) {
-      empty_seq = optional<Value>(in_place_t{}, std::forward<Args>(args)...);
+      empty_seq = std::optional<Value>(std::in_place, std::forward<Args>(args)...);
       return;
     }
 
     // Next we have to handle the first key specially because we chose to put keys
     // on trie nodes instead of on edges pointing to try nodes.
-    optional<size_t> mroot = matching_start(*begin);
+    std::optional<size_t> mroot = matching_start(*begin);
     size_t root;
     if (!mroot) {
       root = nodes.size();
@@ -122,7 +121,7 @@ class trie {
     // Now handle the common sub cases
     while (begin != end) {
       // Check if there's a matching child already
-      optional<size_t> child = matching_child(root, *begin);
+      std::optional<size_t> child = matching_child(root, *begin);
       if (child) {
         root = *child;
         ++begin;
@@ -136,11 +135,9 @@ class trie {
       root = new_node;
     }
 
-    // TODO: We're actully adding a move here and really there's no requierment that
-    //       Value be movable. If wcl::optional had an "emplace" method
-    //       this would be more efficent and cleaner. That requires more unit tests though
-    //       and I'm lazy.
-    nodes[root].value = optional<Value>(in_place_t{}, std::forward<Args>(args)...);
+    // TODO: We're actually adding a move here and really there's no requirement that
+    //       Value be movable. std::optional has an "emplace" method that could be used.
+    nodes[root].value = std::optional<Value>(std::in_place, std::forward<Args>(args)...);
   }
 
   // Find the maximum prefix of a given sequence in the trie.
@@ -154,7 +151,7 @@ class trie {
 
     // Now handle the first node differently.
     KeyIter out_iter = begin;
-    optional<size_t> mroot = matching_start(*begin++);
+    std::optional<size_t> mroot = matching_start(*begin++);
     size_t root;
     const Value* out = nullptr;
 
@@ -170,7 +167,7 @@ class trie {
 
     while (begin != end) {
       // Check if there's a matching child already
-      optional<size_t> child = matching_child(root, *begin);
+      std::optional<size_t> child = matching_child(root, *begin);
       if (child) {
         root = *child;
         ++begin;
@@ -198,7 +195,7 @@ class trie {
 
     // Now handle the first node differently.
     KeyIter out_iter = begin;
-    optional<size_t> mroot = matching_start(*begin++);
+    std::optional<size_t> mroot = matching_start(*begin++);
     size_t root;
     Value* out = nullptr;
 
@@ -214,7 +211,7 @@ class trie {
 
     while (begin != end) {
       // Check if there's a matching child already
-      optional<size_t> child = matching_child(root, *begin);
+      std::optional<size_t> child = matching_child(root, *begin);
       if (child) {
         root = *child;
         ++begin;

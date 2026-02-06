@@ -21,6 +21,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include "optional.h"
+
 namespace wcl {
 
 // assumes that type != DT_UNKNOWN

@@ -78,7 +78,7 @@ TEST(result_move) {
 
   // We want to make sure we can make result move only things.
   {
-    wcl::result<std::unique_ptr<int>, int> move_only1(wcl::in_place_t{}, std::make_unique<int>(10));
+    wcl::result<std::unique_ptr<int>, int> move_only1(std::in_place, std::make_unique<int>(10));
     wcl::result<std::unique_ptr<int>, int> move_only2(std::move(move_only1));
     EXPECT_TRUE((bool)move_only1);
     ASSERT_TRUE((bool)move_only2);
@@ -112,7 +112,7 @@ TEST(result_move) {
 }
 
 TEST(result_forward_value) {
-  wcl::result<std::pair<int, int>, int> opair(wcl::in_place_t{}, 10, 10);
+  wcl::result<std::pair<int, int>, int> opair(std::in_place, 10, 10);
   EXPECT_TRUE((bool)opair);
   EXPECT_EQUAL(std::make_pair(10, 10), *opair);
 }
@@ -188,8 +188,8 @@ TEST(result_destructs) {
 
   // First some really basic tests
   {
-    wcl::result<SetOnDestruct, int> msg_setter(wcl::in_place_t{}, msg, expected);
-    wcl::result<ConstructDestructCount, int> ocounter(wcl::in_place_t{}, counter);
+    wcl::result<SetOnDestruct, int> msg_setter(std::in_place, msg, expected);
+    wcl::result<ConstructDestructCount, int> ocounter(std::in_place, counter);
   }
   EXPECT_EQUAL(msg, expected);
   ASSERT_EQUAL(0, counter);
@@ -203,7 +203,7 @@ TEST(result_destructs) {
 
   // Now some basic assignment tests.
   {
-    wcl::result<ConstructDestructCount, int> counter1(wcl::in_place_t{}, counter);
+    wcl::result<ConstructDestructCount, int> counter1(std::in_place, counter);
     EXPECT_EQUAL(1, counter);
     wcl::result<ConstructDestructCount, int> counter2(wcl::in_place_error_t{}, 10);
     EXPECT_EQUAL(1, counter);
@@ -214,7 +214,7 @@ TEST(result_destructs) {
   }
   ASSERT_EQUAL(0, counter);
   {
-    wcl::result<ConstructDestructCount, int> counter1(wcl::in_place_t{}, counter);
+    wcl::result<ConstructDestructCount, int> counter1(std::in_place, counter);
     EXPECT_EQUAL(1, counter);
     wcl::result<ConstructDestructCount, int> counter2(wcl::in_place_error_t{}, 10);
     EXPECT_EQUAL(1, counter);
@@ -229,7 +229,7 @@ TEST(result_destructs) {
   {
     std::vector<wcl::result<ConstructDestructCount, int>> counters;
     for (int i = 0; i < 1000; ++i) {
-      counters.emplace_back(wcl::in_place_t{}, counter);
+      counters.emplace_back(std::in_place, counter);
     }
     EXPECT_EQUAL(1000, counter);
     std::mt19937 gen;
@@ -241,7 +241,7 @@ TEST(result_destructs) {
 
 TEST(result_assign1) {
   // Basic copy
-  wcl::result<int, int> some1(wcl::in_place_t{}, 10);
+  wcl::result<int, int> some1(std::in_place, 10);
   wcl::result<int, int> some2(wcl::in_place_error_t{}, 10);
   EXPECT_FALSE((bool)some2);
   some2 = some1;
@@ -254,7 +254,7 @@ TEST(result_assign2) {
   // Basic copy
   int counter = 0;
   {
-    wcl::result<ConstructDestructCount, int> some1(wcl::in_place_t{}, counter);
+    wcl::result<ConstructDestructCount, int> some1(std::in_place, counter);
     wcl::result<ConstructDestructCount, int> some2(wcl::in_place_error_t{}, 10);
 
     EXPECT_TRUE((bool)some1);

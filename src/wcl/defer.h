@@ -18,8 +18,7 @@
 #pragma once
 
 #include <functional>
-
-#include "optional.h"
+#include <optional>
 
 namespace wcl {
 
@@ -33,14 +32,14 @@ namespace wcl {
 template <class F>
 class defer {
  private:
-  wcl::optional<F> f;
+  std::optional<F> f;
 
  public:
   defer() = delete;
   defer(const defer&) = delete;
   defer(defer&&) = default;
-  defer(F&& f) : f(wcl::in_place_t{}, std::move(f)) {}
-  defer(const F& f) : f(wcl::in_place_t{}, f) {}
+  defer(F&& f) : f(std::in_place, std::move(f)) {}
+  defer(const F& f) : f(std::in_place, f) {}
 
   void nullify() { f = {}; }
 
@@ -60,7 +59,7 @@ defer<F> make_defer(F&& f) {
 //       expensive resources like file IO.
 class opt_defer {
  private:
-  wcl::optional<std::function<void()>> f;
+  std::optional<std::function<void()>> f;
 
  public:
   opt_defer() = default;
@@ -68,7 +67,7 @@ class opt_defer {
   opt_defer(opt_defer&& d) = default;
   opt_defer& operator=(opt_defer&&) = default;
   template <class F>
-  opt_defer(F&& f) : f(wcl::in_place_t{}, std::forward<F>(f)) {}
+  opt_defer(F&& f) : f(std::in_place, std::forward<F>(f)) {}
   ~opt_defer() {
     if (f) (*f)();
   }
