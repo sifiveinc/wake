@@ -28,13 +28,34 @@ COMMON_CPP  := $(foreach dir,$(COMMON_DIRS),$(wildcard $(dir)/*.cpp))
 COMMON_OBJS := src/json/jlexer.o \
                $(patsubst %.cpp,%.o,$(COMMON_CPP)) $(patsubst %.c,%.o,$(COMMON_C))
 
-# BLAKE3 SIMD assembly files (x86_64 only)
-BLAKE3_ASM := vendor/blake3/blake3_sse2_x86-64_unix.S \
-              vendor/blake3/blake3_sse41_x86-64_unix.S \
-              vendor/blake3/blake3_avx2_x86-64_unix.S \
-              vendor/blake3/blake3_avx512_x86-64_unix.S
+# BLAKE3 platform detection
+UNAME_M := $(shell uname -m)
+
+# BLAKE3 C files (always compiled)
+BLAKE3_C_COMMON := vendor/blake3/blake3.c vendor/blake3/blake3_portable.c vendor/blake3/blake3_dispatch.c
+
+# BLAKE3 platform-specific files and flags
+ifeq ($(UNAME_M),x86_64)
+    # x86_64: Use SSE2/SSE4.1/AVX2/AVX-512 assembly implementations
+    BLAKE3_ASM := vendor/blake3/blake3_sse2_x86-64_unix.S \
+                  vendor/blake3/blake3_sse41_x86-64_unix.S \
+                  vendor/blake3/blake3_avx2_x86-64_unix.S \
+                  vendor/blake3/blake3_avx512_x86-64_unix.S
+    BLAKE3_C := $(BLAKE3_C_COMMON)
+    BLAKE3_CFLAGS :=
+else ifeq ($(UNAME_M),aarch64)
+    # ARM64: Use NEON implementation (requires BLAKE3_USE_NEON=1 for dispatch)
+    BLAKE3_ASM :=
+    BLAKE3_C := $(BLAKE3_C_COMMON) vendor/blake3/blake3_neon.c
+    BLAKE3_CFLAGS := -DBLAKE3_USE_NEON=1
+else
+    # Other platforms: Use portable implementation only
+    BLAKE3_ASM :=
+    BLAKE3_C := $(BLAKE3_C_COMMON)
+    BLAKE3_CFLAGS :=
+endif
+
 BLAKE3_ASM_OBJS := $(patsubst %.S,%.o,$(BLAKE3_ASM))
-BLAKE3_C := vendor/blake3/blake3.c vendor/blake3/blake3_portable.c vendor/blake3/blake3_dispatch.c
 BLAKE3_OBJS := $(patsubst %.c,%.o,$(BLAKE3_C)) $(BLAKE3_ASM_OBJS)
 
 WAKE_DIRS := $(COMMON_DIRS) src/dst src/optimizer src/parser src/runtime src/types src/wcl tools/wake
@@ -128,6 +149,10 @@ bin/wake-migrate: tools/wake-migrate/main.o $(COMMON_OBJS)
 
 %.o:	%.c	$(filter-out src/version.h,$(wildcard */*.h))
 	$(CC) $(CFLAGS) $(LOCAL_CFLAGS) -o $@ -c $<
+
+# C rule for BLAKE3 files (needs BLAKE3_CFLAGS for NEON on aarch64)
+vendor/blake3/%.o:	vendor/blake3/%.c
+	$(CC) $(CFLAGS) $(LOCAL_CFLAGS) $(BLAKE3_CFLAGS) -o $@ -c $<
 
 # Assembly rule for BLAKE3 SIMD implementations
 vendor/blake3/%.o:	vendor/blake3/%.S
