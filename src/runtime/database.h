@@ -133,9 +133,6 @@ struct Database {
   // blocking=false: PASSIVE mode, non-blocking sync attempt
   void checkpoint(bool blocking = false);
 
-  void begin_txn() const;
-  void end_txn() const;
-
   Usage reuse_job(const std::string &directory, const std::string &environment,
                   const std::string &commandline,
                   const std::string &stdin_file,  // "" -> /dev/null
@@ -206,6 +203,10 @@ struct Database {
   void release_build_lock();
 
  private:
+  void begin_ro_txn() const;
+  void begin_rw_txn() const;
+  void end_txn() const;
+
   bool is_lock_valid(const char *lock_file);
   bool build_lock_acquired = false;
   int checkpoint_interval;
