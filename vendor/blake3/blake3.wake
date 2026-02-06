@@ -51,17 +51,26 @@ def blake3CFilesRegex: RegExp =
         # Fallback: just portable implementation
         `blake3(_dispatch|_portable)?\.c`
 
+# Get extra C flags based on architecture
+# On aarch64: need -DBLAKE3_USE_NEON=1 for the dispatch to use NEON
+def blake3ExtraCFlags: List String =
+    if machine ==~ "aarch64" then
+        "-DBLAKE3_USE_NEON=1", Nil
+    else
+        Nil
+
 target blake3 variant =
     def Pair _ cVariant = variant
 
-    # Compile C files (portable implementation + dispatch, excluding platform-specific files)
-    require Pass cLib = vendor @here variant "1.0" `.*\.h` blake3CFilesRegex
+    # Compile C files with architecture-specific flags (e.g., -DBLAKE3_USE_NEON=1 on aarch64)
+    require Pass cLib = vendor @here variant "1.0" `.*\.h` blake3CFilesRegex blake3ExtraCFlags
 
     # Compile architecture-specific assembly files
     require Pass asmPaths =
         blake3AsmFiles
         | map ("{@here}/{_}")
-        | findFailFn source
+        | map source
+        | findFail
 
     require Pass asmObjs =
         map (compileAsm cVariant) asmPaths
