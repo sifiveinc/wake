@@ -36,6 +36,7 @@
 #include <cstring>
 #include <future>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -44,8 +45,6 @@
 #include "compat/nofollow.h"
 #include "wcl/optional.h"
 #include "wcl/unique_fd.h"
-
-#include <optional>
 #include "wcl/xoshiro_256.h"
 
 // Can increase to 64 if needed

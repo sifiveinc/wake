@@ -22,8 +22,8 @@
 #include <util/term.h>
 
 #include <iostream>
-#include <optional>
 #include <list>
+#include <optional>
 #include <string>
 
 struct Status {

@@ -132,7 +132,8 @@ class alignas(max(alignof(T), alignof(E))) result_base<T, E, true> {
   }
 
   template <class... Args>
-  result_base(std::in_place_t, Args&&... args) : value(std::forward<Args>(args)...), is_error(false) {}
+  result_base(std::in_place_t, Args&&... args)
+      : value(std::forward<Args>(args)...), is_error(false) {}
 
   template <class... Args>
   result_base(in_place_error_t, Args&&... args)
@@ -192,7 +193,8 @@ class alignas(max(alignof(T), alignof(E))) result_base<T, E, false> {
   }
 
   template <class... Args>
-  result_base(std::in_place_t, Args&&... args) : value(std::forward<Args>(args)...), is_error(false) {}
+  result_base(std::in_place_t, Args&&... args)
+      : value(std::forward<Args>(args)...), is_error(false) {}
 
   template <class... Args>
   result_base(in_place_error_t, Args&&... args)
