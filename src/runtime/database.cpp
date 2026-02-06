@@ -337,7 +337,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_get_entropy = "select seed from entropy order by row_id";
   const char *sql_set_entropy = "insert into entropy(seed) values(?)";
   const char *sql_add_run = "insert into runs(time, cmdline) values(?, ?)";
-  const char *sql_begin_txn = "begin transaction";
+  const char *sql_begin_txn = "begin immediate transaction";
   const char *sql_commit_txn = "commit transaction";
   const char *sql_predict_job =
       "select status, runtime, cputime, membytes, ibytes, obytes, pathtime"
