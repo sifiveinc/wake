@@ -21,4 +21,4 @@ from gcc_wake import _
 # Prefer to use system utf8proc if available
 def utf8proc variant = match (pkgConfig "utf8proc")
     Some x -> Pass x
-    None -> vendor @here variant "2.2.0" `.*\.h|utf8proc_data\.c` `utf8proc\.c`
+    None -> vendor @here variant "2.2.0" `.*\.h|utf8proc_data\.c` `utf8proc\.c` Nil

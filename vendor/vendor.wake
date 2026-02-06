@@ -24,13 +24,13 @@ target vendorBuildDir Unit =
 def vendorDir =
     @here
 
-def vendor (dir: String) (variant: Pair String String) (version: String) (headers: RegExp) (files: RegExp): Result SysLib Error =
+def vendor (dir: String) (variant: Pair String String) (version: String) (headers: RegExp) (files: RegExp) (extraFlags: List String): Result SysLib Error =
     def Pair _ cVariant = variant
 
     require Pass headerPaths = sources dir headers
     require Pass sourcePaths = sources dir files
 
-    def compile = compileC cVariant Nil headerPaths
+    def compile = compileC cVariant extraFlags headerPaths
 
     require Pass objects =
         map compile sourcePaths
