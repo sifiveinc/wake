@@ -1,7 +1,7 @@
 #ifndef WAKE_SCHEMA_H
 #define WAKE_SCHEMA_H
 
-#define SCHEMA_VERSION "9"
+#define SCHEMA_VERSION "10"
 
 // Increment the SCHEMA_VERSION every time the below string changes.
 // Also add migrations to the wake-migration tool if needed.

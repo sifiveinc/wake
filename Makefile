@@ -28,14 +28,45 @@ COMMON_CPP  := $(foreach dir,$(COMMON_DIRS),$(wildcard $(dir)/*.cpp))
 COMMON_OBJS := src/json/jlexer.o \
                $(patsubst %.cpp,%.o,$(COMMON_CPP)) $(patsubst %.c,%.o,$(COMMON_C))
 
+# BLAKE3 platform detection
+UNAME_M := $(shell uname -m)
+
+# BLAKE3 C files (always compiled)
+BLAKE3_C_COMMON := vendor/blake3/blake3.c vendor/blake3/blake3_portable.c vendor/blake3/blake3_dispatch.c
+
+# BLAKE3 platform-specific files and flags
+ifeq ($(UNAME_M),x86_64)
+    # x86_64: Use SSE2/SSE4.1/AVX2/AVX-512 assembly implementations
+    BLAKE3_ASM := vendor/blake3/blake3_sse2_x86-64_unix.S \
+                  vendor/blake3/blake3_sse41_x86-64_unix.S \
+                  vendor/blake3/blake3_avx2_x86-64_unix.S \
+                  vendor/blake3/blake3_avx512_x86-64_unix.S
+    BLAKE3_C := $(BLAKE3_C_COMMON)
+    BLAKE3_CFLAGS :=
+else ifeq ($(UNAME_M),aarch64)
+    # ARM64: Use NEON implementation (requires BLAKE3_USE_NEON=1 for dispatch)
+    BLAKE3_ASM :=
+    BLAKE3_C := $(BLAKE3_C_COMMON) vendor/blake3/blake3_neon.c
+    BLAKE3_CFLAGS := -DBLAKE3_USE_NEON=1
+else
+    # Other platforms: Use portable implementation only
+    BLAKE3_ASM :=
+    BLAKE3_C := $(BLAKE3_C_COMMON)
+    BLAKE3_CFLAGS :=
+endif
+
+BLAKE3_ASM_OBJS := $(patsubst %.S,%.o,$(BLAKE3_ASM))
+BLAKE3_OBJS := $(patsubst %.c,%.o,$(BLAKE3_C)) $(BLAKE3_ASM_OBJS)
+
 WAKE_DIRS := $(COMMON_DIRS) src/dst src/optimizer src/parser src/runtime src/types src/wcl tools/wake
+
 WAKE_C    := $(foreach dir,$(WAKE_DIRS),$(wildcard $(dir)/*.c)) \
-             vendor/blake2/blake2b-ref.c vendor/utf8proc/utf8proc.c \
+             $(BLAKE3_C) vendor/utf8proc/utf8proc.c \
              vendor/siphash/siphash.c vendor/whereami/whereami.c \
              vendor/gopt/gopt.c vendor/gopt/gopt-errors.c vendor/gopt/gopt-arg.c
 WAKE_CPP  := $(foreach dir,$(WAKE_DIRS),$(wildcard $(dir)/*.cpp))
 WAKE_OBJS := src/parser/lexer.o src/parser/parser.o src/json/jlexer.o \
-             $(patsubst %.cpp,%.o,$(WAKE_CPP)) $(patsubst %.c,%.o,$(WAKE_C))
+             $(patsubst %.cpp,%.o,$(WAKE_CPP)) $(patsubst %.c,%.o,$(WAKE_C)) $(BLAKE3_ASM_OBJS)
 
 WAKE_ENV := WAKE_PATH=$(shell dirname $(shell which $(firstword $(CC))))
 
@@ -104,10 +135,10 @@ bin/wakebox:		tools/wakebox/main.cpp src/wakefs/*.cpp vendor/gopt/*.c $(COMMON_O
 lib/wake/fuse-waked:	tools/fuse-waked/main.cpp $(COMMON_OBJS)
 	$(CXX) $(CFLAGS) $(LOCAL_CFLAGS) $(FUSE_CFLAGS) $(CXX_VERSION) $^ -o $@ $(LDFLAGS)  $(CORE_LDFLAGS) $(FUSE_LDFLAGS)
 
-lib/wake/shim-wake:	tools/shim-wake/main.o vendor/blake2/blake2b-ref.o src/wcl/filepath.o
+lib/wake/shim-wake:	tools/shim-wake/main.o $(BLAKE3_OBJS) src/wcl/filepath.o
 	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(CORE_LDFLAGS)
 
-lib/wake/wake-hash: tools/wake-hash/main.o vendor/blake2/blake2b-ref.o $(COMMON_OBJS)
+lib/wake/wake-hash: tools/wake-hash/main.o $(BLAKE3_OBJS) $(COMMON_OBJS)
 	$(CXX) $(CFLAGS) -o $@ $^ $(LOCAL_CFLAGS) $(CXX_VERSION) $(LDFLAGS) $(CORE_LDFLAGS)
 
 bin/wake-migrate: tools/wake-migrate/main.o $(COMMON_OBJS)
@@ -118,6 +149,14 @@ bin/wake-migrate: tools/wake-migrate/main.o $(COMMON_OBJS)
 
 %.o:	%.c	$(filter-out src/version.h,$(wildcard */*.h))
 	$(CC) $(CFLAGS) $(LOCAL_CFLAGS) -o $@ -c $<
+
+# C rule for BLAKE3 files (needs BLAKE3_CFLAGS for NEON on aarch64)
+vendor/blake3/%.o:	vendor/blake3/%.c
+	$(CC) $(CFLAGS) $(LOCAL_CFLAGS) $(BLAKE3_CFLAGS) -o $@ -c $<
+
+# Assembly rule for BLAKE3 SIMD implementations
+vendor/blake3/%.o:	vendor/blake3/%.S
+	$(CC) $(CFLAGS) -o $@ -c $<
 
 # Rely on wake to recreate this file if re2c is available
 %.cpp:	%.cpp.gz

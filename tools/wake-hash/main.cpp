@@ -40,7 +40,7 @@
 #include <thread>
 #include <vector>
 
-#include "blake2/blake2.h"
+#include "blake3/blake3.h"
 #include "compat/nofollow.h"
 #include "wcl/optional.h"
 #include "wcl/unique_fd.h"
@@ -130,7 +130,7 @@ static wcl::optional<Hash256> hash_exotic() {
 static wcl::optional<Hash256> hash_dir() { return wcl::some(Hash256()); }
 
 static wcl::optional<Hash256> hash_link(const char* link) {
-  blake2b_state S;
+  blake3_hasher hasher;
   uint8_t hash[HASH_BYTES];
   std::vector<char> buffer(8192, 0);
 
@@ -147,21 +147,22 @@ static wcl::optional<Hash256> hash_link(const char* link) {
     buffer.resize(2 * buffer.size(), 0);
   }
 
-  blake2b_init(&S, sizeof(hash));
-  blake2b_update(&S, reinterpret_cast<uint8_t*>(buffer.data()), buffer.size());
-  blake2b_final(&S, &hash[0], sizeof(hash));
+  blake3_hasher_init(&hasher);
+  blake3_hasher_update(&hasher, reinterpret_cast<uint8_t*>(buffer.data()), buffer.size());
+  blake3_hasher_finalize(&hasher, &hash[0], sizeof(hash));
 
   return wcl::some(Hash256::from_hash(&hash));
 }
 
 static wcl::optional<Hash256> hash_file(const char* file, int fd) {
-  blake2b_state S;
+  blake3_hasher hasher;
   uint8_t hash[HASH_BYTES], buffer[8192];
   ssize_t got;
 
-  blake2b_init(&S, sizeof(hash));
-  while ((got = read(fd, &buffer[0], sizeof(buffer))) > 0) blake2b_update(&S, &buffer[0], got);
-  blake2b_final(&S, &hash[0], sizeof(hash));
+  blake3_hasher_init(&hasher);
+  while ((got = read(fd, &buffer[0], sizeof(buffer))) > 0)
+    blake3_hasher_update(&hasher, &buffer[0], got);
+  blake3_hasher_finalize(&hasher, &hash[0], sizeof(hash));
 
   if (got < 0) {
     std::cerr << "wake-hash read(" << file << "): " << strerror(errno) << std::endl;

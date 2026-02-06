@@ -29,7 +29,7 @@
 #include <fstream>
 #include <sstream>
 
-#include "blake2/blake2.h"
+#include "blake3/blake3.h"
 #include "gc.h"
 #include "json/utf8.h"
 #include "prim.h"
@@ -756,11 +756,11 @@ static PRIMTYPE(type_hash_str) {
   return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(Data::typeString);
 }
 
-static void blake2b(const std::string &str, uint64_t (*out)[4]) {
-  blake2b_state S;
-  blake2b_init(&S, sizeof(*out));
-  blake2b_update(&S, reinterpret_cast<const uint8_t *>(str.data()), str.size());
-  blake2b_final(&S, reinterpret_cast<uint8_t *>(*out), sizeof(*out));
+static void blake3(const std::string &str, uint64_t (*out)[4]) {
+  blake3_hasher hasher;
+  blake3_hasher_init(&hasher);
+  blake3_hasher_update(&hasher, reinterpret_cast<const uint8_t *>(str.data()), str.size());
+  blake3_hasher_finalize(&hasher, reinterpret_cast<uint8_t *>(*out), sizeof(*out));
 }
 
 static PRIMFN(prim_hash_str) {
@@ -768,7 +768,7 @@ static PRIMFN(prim_hash_str) {
   STRING(str, 0);
 
   uint64_t hash[4];
-  blake2b(str->as_str(), &hash);
+  blake3(str->as_str(), &hash);
   auto hex = wcl::to_hex(&hash);
 
   RETURN(String::alloc(runtime.heap, std::move(hex)));

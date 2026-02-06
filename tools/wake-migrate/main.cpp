@@ -190,6 +190,22 @@ static std::vector<Migration> get_migrations() {
        },
        "Convert runner_status from INTEGER to TEXT"},
 
+      // Version 9 -> 10: Hash algorithm changed from BLAKE2b to BLAKE3
+      // Migration is not supported - user must delete wake.db and reinitialize
+      {9, 10,
+       [](sqlite3* db) -> bool {
+         (void)db;  // unused
+         std::cerr << std::endl;
+         std::cerr << "Wake has been upgraded from BLAKE2b to BLAKE3 hashing." << std::endl;
+         std::cerr << "Your existing wake.db is incompatible and must be deleted." << std::endl;
+         std::cerr << std::endl;
+         std::cerr << "Please run:" << std::endl;
+         std::cerr << "  rm wake.db && wake --init ." << std::endl;
+         std::cerr << std::endl;
+         return false;
+       },
+       "Hash algorithm changed from BLAKE2b to BLAKE3 - manual deletion required"},
+
   };
 }
 
