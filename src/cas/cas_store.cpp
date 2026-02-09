@@ -27,7 +27,8 @@
 #include <fstream>
 #include <sstream>
 
-#include "file_ops.h"
+#include "util/mkdir_parents.h"
+#include "wcl/file_copy.h"
 #include "wcl/filepath.h"
 
 namespace cas {
@@ -60,8 +61,7 @@ wcl::result<CASStore, CASError> CASStore::open(const std::string& root) {
   CASStore store(root);
 
   // Create directory structure
-  auto result = mkdir_parents(store.blobs_dir_);
-  if (!result) {
+  if (mkdir_with_parents(store.blobs_dir_, 0755) != 0) {
     return wcl::make_error<CASStore, CASError>(CASError::IOError);
   }
 
@@ -74,8 +74,7 @@ wcl::result<CASStore, CASError> CASStore::open(const std::string& root) {
 
 wcl::result<bool, CASError> CASStore::ensure_shard_dir(const ContentHash& hash) const {
   std::string shard_dir = wcl::join_paths(blobs_dir_, hash.prefix());
-  auto result = mkdir_parents(shard_dir);
-  if (!result) {
+  if (mkdir_with_parents(shard_dir, 0755) != 0) {
     return wcl::make_error<bool, CASError>(CASError::IOError);
   }
   return wcl::make_result<bool, CASError>(true);
@@ -89,7 +88,7 @@ std::string CASStore::blob_path(const ContentHash& hash) const {
 // Blob operations
 // ============================================================================
 
-bool CASStore::has_blob(const ContentHash& hash) const { return path_exists(blob_path(hash)); }
+bool CASStore::has_blob(const ContentHash& hash) const { return wcl::path_exists(blob_path(hash)); }
 
 wcl::result<ContentHash, CASError> CASStore::store_blob_from_file(const std::string& path) {
   // First, compute the hash
@@ -102,7 +101,7 @@ wcl::result<ContentHash, CASError> CASStore::store_blob_from_file(const std::str
 
   // Check if blob already exists
   std::string dest = blob_path(hash);
-  if (path_exists(dest)) {
+  if (wcl::path_exists(dest)) {
     return wcl::make_result<ContentHash, CASError>(hash);
   }
 
@@ -113,14 +112,13 @@ wcl::result<ContentHash, CASError> CASStore::store_blob_from_file(const std::str
   }
 
   // Get source file mode
-  auto mode_result = get_file_mode(path);
+  auto mode_result = wcl::get_file_mode(path);
   if (!mode_result) {
     return wcl::make_error<ContentHash, CASError>(CASError::IOError);
   }
 
   // Copy file to store (using reflink if possible)
-  // Use hardlink=false since we want the CAS to own the file
-  auto copy_result = copy_file(path, dest, *mode_result, false);
+  auto copy_result = wcl::reflink_or_copy_file(path, dest, *mode_result);
   if (!copy_result) {
     return wcl::make_error<ContentHash, CASError>(CASError::IOError);
   }
@@ -133,7 +131,7 @@ wcl::result<ContentHash, CASError> CASStore::store_blob(const std::string& data)
 
   // Check if blob already exists
   std::string dest = blob_path(hash);
-  if (path_exists(dest)) {
+  if (wcl::path_exists(dest)) {
     return wcl::make_result<ContentHash, CASError>(hash);
   }
 
@@ -188,15 +186,14 @@ wcl::result<bool, CASError> CASStore::materialize_blob(const ContentHash& hash,
                                                        mode_t mode) const {
   std::string src_path = blob_path(hash);
 
-  if (!path_exists(src_path)) {
+  if (!wcl::path_exists(src_path)) {
     return wcl::make_error<bool, CASError>(CASError::NotFound);
   }
 
   // Create parent directories if needed
   auto parent = wcl::parent_and_base(dest_path);
   if ((bool)parent && !parent->first.empty()) {
-    auto mkdir_result = mkdir_parents(parent->first);
-    if (!mkdir_result) {
+    if (mkdir_with_parents(parent->first, 0755) != 0) {
       return wcl::make_error<bool, CASError>(CASError::IOError);
     }
   }
@@ -204,8 +201,8 @@ wcl::result<bool, CASError> CASStore::materialize_blob(const ContentHash& hash,
   // Remove existing file if present (copy_file uses O_EXCL)
   (void)unlink(dest_path.c_str());
 
-  // Use reflink/copy to materialize (copy_file takes mode as 3rd arg)
-  auto copy_result = copy_file(src_path, dest_path, mode, true);
+  // Use reflink/copy to materialize
+  auto copy_result = wcl::reflink_or_copy_file(src_path, dest_path, mode);
   if (!copy_result) {
     return wcl::make_error<bool, CASError>(CASError::IOError);
   }

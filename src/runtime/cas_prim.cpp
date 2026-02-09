@@ -29,10 +29,10 @@
 #include <iostream>
 
 #include "cas/cas_store.h"
-#include "cas/file_ops.h"
 #include "prim.h"
 #include "types/data.h"
 #include "types/primfn.h"
+#include "util/mkdir_parents.h"
 #include "value.h"
 #include "wcl/filepath.h"
 
@@ -159,6 +159,139 @@ static PRIMFN(prim_cas_materialize_file) {
   RETURN(claim_result(runtime.heap, true, claim_unit(runtime.heap)));
 }
 
+// prim "cas_materialize_item" destPath type hashOrTarget mode mtimeSec mtimeNsec -> Result Unit Error
+// Materialize an item from CAS to workspace (files already in CAS) or create symlink/directory
+// - type="file": hashOrTarget = content hash, uses mode/mtime
+// - type="symlink": hashOrTarget = symlink target
+// - type="directory": hashOrTarget = "" (unused), uses mode
+static PRIMTYPE(type_cas_materialize_item) {
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeUnit);
+  result[1].unify(Data::typeString);  // Error message as String, converted to Error in Wake
+  return args.size() == 6 && args[0]->unify(Data::typeString) &&   // destPath
+         args[1]->unify(Data::typeString) &&                       // type
+         args[2]->unify(Data::typeString) &&                       // hashOrTarget
+         args[3]->unify(Data::typeInteger) &&                      // mode
+         args[4]->unify(Data::typeInteger) &&                      // mtimeSec
+         args[5]->unify(Data::typeInteger) &&                      // mtimeNsec
+         out->unify(result);
+}
+
+static PRIMFN(prim_cas_materialize_item) {
+  CASContext* ctx = static_cast<CASContext*>(data);
+  EXPECT(6);
+  STRING(dest_path, 0);
+  STRING(type_str, 1);
+  STRING(hash_or_target, 2);
+  INTEGER_MPZ(mode_mpz, 3);
+  INTEGER_MPZ(mtime_sec_mpz, 4);
+  INTEGER_MPZ(mtime_nsec_mpz, 5);
+
+  std::string type = type_str->c_str();
+  std::string dest_str = dest_path->c_str();
+
+  // Create parent directories for all types
+  auto parent = wcl::parent_and_base(dest_str);
+  if ((bool)parent && !parent->first.empty()) {
+    if (mkdir_with_parents(parent->first, 0755) != 0) {
+      std::string msg = "Failed to create parent directories for " + dest_str;
+      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+      auto err = String::claim(runtime.heap, msg);
+      RETURN(claim_result(runtime.heap, false, err));
+    }
+  }
+
+  if (type == "file") {
+    // Handle regular file: materialize from CAS (already stored by wakebox), apply timestamps
+    cas::CASStore* store = ctx->get_store(".");
+    if (!store) {
+      runtime.heap.reserve(reserve_result() + String::reserve(28));
+      auto err = String::claim(runtime.heap, "CAS store not initialized");
+      RETURN(claim_result(runtime.heap, false, err));
+    }
+
+    std::string hash_str_val = hash_or_target->c_str();
+    cas::ContentHash hash = cas::ContentHash::from_hex(hash_str_val.c_str());
+    mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
+
+    // Materialize from CAS to workspace
+    auto mat_result = store->materialize_blob(hash, dest_str.c_str(), mode);
+    if (!mat_result) {
+      std::string msg = "Failed to materialize blob " + hash_str_val + " to " + dest_str;
+      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+      auto err = String::claim(runtime.heap, msg);
+      RETURN(claim_result(runtime.heap, false, err));
+    }
+
+    // Apply timestamps
+    struct timespec times[2];
+    times[0].tv_sec = 0;
+    times[0].tv_nsec = UTIME_OMIT;  // Don't change atime
+    times[1].tv_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
+    times[1].tv_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
+
+    if (utimensat(AT_FDCWD, dest_str.c_str(), times, 0) != 0) {
+      std::cerr << "Warning: Failed to set timestamps on " << dest_str << std::endl;
+    }
+
+  } else if (type == "symlink") {
+    // Handle symlink: create symlink with target
+    std::string target = hash_or_target->c_str();
+
+    // Remove existing file/symlink if present
+    (void)unlink(dest_str.c_str());
+
+    // Create the symlink
+    if (symlink(target.c_str(), dest_str.c_str()) != 0) {
+      std::string msg =
+          "Failed to create symlink " + dest_str + " -> " + target + ": " + strerror(errno);
+      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+      auto err = String::claim(runtime.heap, msg);
+      RETURN(claim_result(runtime.heap, false, err));
+    }
+
+  } else if (type == "directory") {
+    // Handle directory: create directory with mode
+    mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
+
+    // Remove existing file if present (but not directory)
+    struct stat st;
+    if (stat(dest_str.c_str(), &st) == 0) {
+      if (S_ISDIR(st.st_mode)) {
+        // Directory already exists, just update mode
+        chmod(dest_str.c_str(), mode);
+      } else {
+        // It's a file, remove it and create directory
+        (void)unlink(dest_str.c_str());
+        if (mkdir(dest_str.c_str(), mode) != 0) {
+          std::string msg = "Failed to create directory " + dest_str + ": " + strerror(errno);
+          runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+          auto err = String::claim(runtime.heap, msg);
+          RETURN(claim_result(runtime.heap, false, err));
+        }
+      }
+    } else {
+      // Directory doesn't exist, create it
+      if (mkdir(dest_str.c_str(), mode) != 0) {
+        std::string msg = "Failed to create directory " + dest_str + ": " + strerror(errno);
+        runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+        auto err = String::claim(runtime.heap, msg);
+        RETURN(claim_result(runtime.heap, false, err));
+      }
+    }
+
+  } else {
+    std::string msg = "Unknown item type: " + type;
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    auto err = String::claim(runtime.heap, msg);
+    RETURN(claim_result(runtime.heap, false, err));
+  }
+
+  runtime.heap.reserve(reserve_result() + reserve_unit());
+  RETURN(claim_result(runtime.heap, true, claim_unit(runtime.heap)));
+}
+
 // prim "cas_ingest_staging_file" destPath type stagingPathOrTarget hash mode mtimeSec mtimeNsec -> Result Unit Error
 // Unified atomic operation for all staged item types (file, symlink, directory)
 // - type="file": stagingPathOrTarget = staging path, uses hash/mode/mtime
@@ -196,8 +329,7 @@ static PRIMFN(prim_cas_ingest_staging_file) {
   // Create parent directories for all types
   auto parent = wcl::parent_and_base(dest_str);
   if ((bool)parent && !parent->first.empty()) {
-    auto mkdir_result = cas::mkdir_parents(parent->first);
-    if (!mkdir_result) {
+    if (mkdir_with_parents(parent->first, 0755) != 0) {
       std::string msg = "Failed to create parent directories for " + dest_str;
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
@@ -328,6 +460,8 @@ void prim_register_cas(CASContext* ctx, PrimMap& pmap) {
   prim_register(pmap, "cas_store_file", prim_cas_store_file, type_cas_store_file, PRIM_IMPURE, ctx);
   prim_register(pmap, "cas_has_blob", prim_cas_has_blob, type_cas_has_blob, PRIM_PURE, ctx);
   prim_register(pmap, "cas_materialize_file", prim_cas_materialize_file, type_cas_materialize_file,
+                PRIM_IMPURE, ctx);
+  prim_register(pmap, "cas_materialize_item", prim_cas_materialize_item, type_cas_materialize_item,
                 PRIM_IMPURE, ctx);
   prim_register(pmap, "cas_ingest_staging_file", prim_cas_ingest_staging_file,
                 type_cas_ingest_staging_file, PRIM_IMPURE, ctx);

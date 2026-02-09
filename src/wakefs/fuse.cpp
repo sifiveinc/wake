@@ -42,6 +42,7 @@
 #endif
 
 #include "cas/cas.h"
+#include "cas/cas_store.h"
 #include "compat/rusage.h"
 #include "json/json5.h"
 #include "namespace.h"
@@ -135,7 +136,15 @@ int execve_wrapper(const std::vector<std::string> &command,
 
 // Process staging items from FUSE daemon: hash files, pass through symlinks/directories
 // Wake will handle CAS storage and materialization for all types
-static bool process_staging_files(const JAST &staging_files, JAST &staging_files_with_hash) {
+static bool process_staging_files(const JAST &staging_files, JAST &staging_files_with_hash,
+                                  cas::CASStore *cas_store) {
+  // Debug: log to a file since stderr might be redirected to /dev/null
+  FILE *debug_log = fopen(".cas/staging_debug.log", "a");
+  if (debug_log) {
+    fprintf(debug_log, "process_staging_files called with %zu entries\n", staging_files.children.size());
+    fflush(debug_log);
+  }
+
   for (const auto &entry : staging_files.children) {
     const std::string &dest_path = entry.first;
     const JAST &item_info = entry.second;
@@ -151,7 +160,7 @@ static bool process_staging_files(const JAST &staging_files, JAST &staging_files
     out_entry.add("type", type);
 
     if (type == "file") {
-      // For files: hash the staging file and pass through metadata
+      // For files: hash, store in CAS, delete staging file, output hash
       std::string staging_path = item_info.get("staging_path").value;
       if (staging_path.empty()) {
         std::cerr << "Missing staging_path for file " << dest_path << std::endl;
@@ -171,18 +180,34 @@ static bool process_staging_files(const JAST &staging_files, JAST &staging_files
         continue;
       }
 
-      // Compute content hash
-      auto hash_result = cas::ContentHash::from_file(staging_path);
-      if (!hash_result) {
-        std::cerr << "Failed to hash " << staging_path << std::endl;
+      // Store file in CAS (this also computes the hash)
+      auto store_result = cas_store->store_blob_from_file(staging_path);
+      if (!store_result) {
+        std::cerr << "Failed to store " << staging_path << " in CAS" << std::endl;
+        if (debug_log) {
+          fprintf(debug_log, "FAILED to store %s in CAS\n", staging_path.c_str());
+          fflush(debug_log);
+        }
         continue;
       }
+      if (debug_log) {
+        fprintf(debug_log, "Stored %s -> hash %s\n", staging_path.c_str(), store_result->to_hex().c_str());
+        fflush(debug_log);
+      }
 
-      out_entry.add("staging_path", staging_path);
+      std::string hash_hex = store_result->to_hex();
+
+      // Delete staging file (it's now in CAS)
+      if (unlink(staging_path.c_str()) != 0) {
+        std::cerr << "Warning: Failed to delete staging file " << staging_path << std::endl;
+        // Continue anyway - file is in CAS
+      }
+
+      // Output hash and metadata (no staging_path - file is in CAS)
       out_entry.add("mode", mode);
       out_entry.add("mtime_sec", mtime_sec);
       out_entry.add("mtime_nsec", mtime_nsec);
-      out_entry.add("hash", hash_result->to_hex());
+      out_entry.add("hash", hash_hex);
 
     } else if (type == "symlink") {
       // For symlinks: just pass through the target
@@ -200,13 +225,18 @@ static bool process_staging_files(const JAST &staging_files, JAST &staging_files
     }
   }
 
+  if (debug_log) {
+    fprintf(debug_log, "process_staging_files completed\n");
+    fclose(debug_log);
+  }
+
   return true;
 }
 
 static bool collect_result_metadata(const std::string daemon_output, const struct timeval &start,
                                     const struct timeval &stop, const pid_t pid, const int status,
                                     const RUsage &rusage, bool timed_out,
-                                    std::string &result_json) {
+                                    cas::CASStore *cas_store, std::string &result_json) {
   JAST from_daemon;
   std::stringstream ss;
   if (!JAST::parse(daemon_output, ss, from_daemon)) {
@@ -228,11 +258,11 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
   result_jast.add("outputs", JSON_ARRAY).children = std::move(from_daemon.get("outputs").children);
   result_jast.add_bool("timed-out", timed_out);
 
-  // Process staging_files from FUSE daemon: hash files, pass through symlinks/directories
-  // Wake will handle CAS storage and materialization for all types
+  // Process staging_files from FUSE daemon: hash files, store in CAS, output hash
+  // Wake will handle materialization from CAS for files, symlinks and directories
   const JAST &staging_files = from_daemon.get("staging_files");
   JAST &staging_files_out = result_jast.add("staging_files", JSON_OBJECT);
-  process_staging_files(staging_files, staging_files_out);
+  process_staging_files(staging_files, staging_files_out, cas_store);
 
   char hostname[HOST_NAME_MAX + 1];
   if (0 == gethostname(hostname, sizeof(hostname))) result_jast.add("run-host", hostname);
@@ -249,6 +279,23 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     std::cerr << "chdir " << args.working_dir << ": " << strerror(errno) << std::endl;
     return false;
   }
+
+  // Open CAS store for storing job outputs
+  // CAS root is the parent of the blobs directory (e.g., ".cas" from ".cas/blobs")
+  std::string cas_root = args.cas_blobs_dir;
+  auto last_slash = cas_root.rfind('/');
+  if (last_slash != std::string::npos) {
+    cas_root = cas_root.substr(0, last_slash);
+  } else {
+    cas_root = ".cas";  // fallback
+  }
+
+  auto cas_store_result = cas::CASStore::open(cas_root);
+  if (!cas_store_result) {
+    std::cerr << "Failed to open CAS store at " << cas_root << std::endl;
+    return false;
+  }
+  cas::CASStore cas_store = std::move(*cas_store_result);
 
   if (!args.daemon.connect(args.visible, args.cas_blobs_dir, args.isolate_pids)) return false;
 
@@ -362,7 +409,7 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
       std::string output;
       args.daemon.disconnect(output);
       RUsage usage = {};
-      return collect_result_metadata(output, start, stop, payload_pid, 124, usage, true,
+      return collect_result_metadata(output, start, stop, payload_pid, 124, usage, true, &cas_store,
                                      result_json);
     }
 
@@ -393,6 +440,6 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
   std::string output;
   args.daemon.disconnect(output);
 
-  return collect_result_metadata(output, start, stop, payload_pid, status, usage, false,
+  return collect_result_metadata(output, start, stop, payload_pid, status, usage, false, &cas_store,
                                  result_json);
 }

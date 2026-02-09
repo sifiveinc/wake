@@ -18,8 +18,11 @@
 #pragma once
 
 #include <dirent.h>
+#include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
+#include <climits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -380,6 +383,72 @@ inline std::string relative_to(std::string relative, std::string path) {
   out += join('/', path_begin, path_range.end());
 
   return out;
+}
+
+// ============================================================================
+// File stat utilities
+// ============================================================================
+
+// Check if a path exists
+inline bool path_exists(const std::string& path) {
+  struct stat st;
+  return stat(path.c_str(), &st) == 0;
+}
+
+// Check if a path is a directory
+inline bool is_directory(const std::string& path) {
+  struct stat st;
+  return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+// Check if a path is a regular file
+inline bool is_regular_file(const std::string& path) {
+  struct stat st;
+  return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+// Check if a path is a symlink
+inline bool is_symlink(const std::string& path) {
+  struct stat st;
+  return lstat(path.c_str(), &st) == 0 && S_ISLNK(st.st_mode);
+}
+
+// Read a symlink target
+inline result<std::string, posix_error_t> read_symlink(const std::string& path) {
+  char buf[PATH_MAX];
+  ssize_t len = readlink(path.c_str(), buf, sizeof(buf) - 1);
+  if (len < 0) {
+    return make_errno<std::string>();
+  }
+  buf[len] = '\0';
+  return make_result<std::string, posix_error_t>(std::string(buf));
+}
+
+// Create a symlink
+inline result<bool, posix_error_t> create_symlink(const std::string& target,
+                                                  const std::string& link_path) {
+  if (symlink(target.c_str(), link_path.c_str()) < 0) {
+    return make_errno<bool>();
+  }
+  return make_result<bool, posix_error_t>(true);
+}
+
+// Get file mode
+inline result<mode_t, posix_error_t> get_file_mode(const std::string& path) {
+  struct stat st;
+  if (stat(path.c_str(), &st) < 0) {
+    return make_errno<mode_t>();
+  }
+  return make_result<mode_t, posix_error_t>(st.st_mode);
+}
+
+// Check if two paths are on the same filesystem
+inline bool same_filesystem(const std::string& path1, const std::string& path2) {
+  struct stat st1, st2;
+  if (stat(path1.c_str(), &st1) < 0 || stat(path2.c_str(), &st2) < 0) {
+    return false;
+  }
+  return st1.st_dev == st2.st_dev;
 }
 
 }  // namespace wcl

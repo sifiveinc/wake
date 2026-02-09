@@ -746,6 +746,16 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
 
   if (it->second.is_visible(key.second)) return -EEXIST;
 
+  // Check if this path was already staged by this job - if so, delete the old staging file
+  // to avoid orphaning it when we create a new one
+  auto staged_key = std::make_pair(key.first, key.second);
+  auto existing_it = g_staged_files.find(staged_key);
+  if (existing_it != g_staged_files.end() && existing_it->second.type == "file") {
+    // Delete the old staging file before creating a new one
+    unlink(existing_it->second.staging_path.c_str());
+    g_staged_files.erase(existing_it);
+  }
+
   // Write to staging directory (wakebox will hash and store in CAS)
   // Include PID to avoid collisions between concurrent wake processes
   std::string staging_path = g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
@@ -753,7 +763,6 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
   int fd = open(staging_path.c_str(), O_CREAT | O_RDWR | O_TRUNC, perm_bits);
   if (fd == -1) return -errno;
 
-  auto staged_key = std::make_pair(key.first, key.second);
   StagedFile &staged = g_staged_files[staged_key];
   staged.type = "file";
   staged.staging_path = staging_path;

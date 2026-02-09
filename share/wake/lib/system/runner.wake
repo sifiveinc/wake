@@ -339,14 +339,12 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             | field "inbytes" (jsonUsage // `inbytes` | getJInteger)
             | field "outbytes" (jsonUsage // `outbytes` | getJInteger)
 
-        # Process staging items: ingest each item into workspace (files go to CAS, symlinks/directories are created)
-        # This handles the CAS-first staging architecture where wakebox outputs items to staging area
+        # Process staging items: materialize each item from CAS to workspace
+        # Files are already stored in CAS by wakebox, so we just materialize from hash
+        # Symlinks and directories are created directly
 
-        # Helper for processing file type staging items
+        # Helper for processing file type staging items (files already in CAS)
         def processStagingFile destPath itemInfo =
-            require Some stagingPath = itemInfo // `staging_path` | getJString
-            else failWithError "Missing staging_path for file {destPath}"
-
             require Some hash = itemInfo // `hash` | getJString
             else failWithError "Missing hash for file {destPath}"
 
@@ -359,21 +357,21 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             require Some mtimeNsec = itemInfo // `mtime_nsec` | getJInteger
             else failWithError "Missing mtime_nsec for file {destPath}"
 
-            casIngestStagingFile destPath "file" stagingPath hash mode mtimeSec mtimeNsec
-            | addErrorContext "Ingesting staging file {stagingPath} -> {destPath}"
+            casMaterializeItem destPath "file" hash mode mtimeSec mtimeNsec
+            | addErrorContext "Materializing file from CAS {hash} -> {destPath}"
 
         # Helper for processing symlink type staging items
         def processStagingSymlink destPath itemInfo =
             require Some linkTarget = itemInfo // `target` | getJString
             else failWithError "Missing target for symlink {destPath}"
 
-            casIngestStagingFile destPath "symlink" linkTarget "" 0 0 0
+            casMaterializeItem destPath "symlink" linkTarget 0 0 0
             | addErrorContext "Creating symlink {destPath} -> {linkTarget}"
 
         # Helper for processing directory type staging items
         def processStagingDirectory destPath itemInfo =
             def mode = itemInfo // `mode` | getJInteger | getOrElse 493  # 0755 octal
-            casIngestStagingFile destPath "directory" "" "" mode 0 0
+            casMaterializeItem destPath "directory" "" mode 0 0
             | addErrorContext "Creating directory {destPath}"
 
         def processStagingItem (destPath: String) (itemInfo: JValue): Result Unit Error =

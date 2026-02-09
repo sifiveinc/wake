@@ -19,7 +19,8 @@
 
 #include <sstream>
 
-#include "file_ops.h"
+#include "util/mkdir_parents.h"
+#include "wcl/file_copy.h"
 #include "wcl/filepath.h"
 
 namespace cas {
@@ -76,14 +77,13 @@ wcl::result<bool, CASJobCacheError> materialize_file(CASStore& store, const Cont
   // Create parent directories
   auto parent_base = wcl::parent_and_base(dest_path);
   if ((bool)parent_base && !parent_base->first.empty()) {
-    auto mkdir_result = mkdir_parents(parent_base->first);
-    if (!mkdir_result) {
+    if (mkdir_with_parents(parent_base->first, 0755) != 0) {
       return wcl::make_error<bool, CASJobCacheError>(CASJobCacheError::IOError);
     }
   }
 
   // Copy using reflink if possible
-  auto copy_result = copy_file(blob_path, dest_path, mode, true);
+  auto copy_result = wcl::reflink_or_copy_file(blob_path, dest_path, mode);
   if (!copy_result) {
     return wcl::make_error<bool, CASJobCacheError>(CASJobCacheError::MaterializeFailed);
   }

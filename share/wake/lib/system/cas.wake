@@ -15,11 +15,23 @@
 
 package wake
 
+# Materialize an item from CAS to workspace (files already stored in CAS by wakebox).
+# Handles files, symlinks, and directories based on the type parameter.
+# - type="file": hashOrTarget = content hash, uses mode/mtime, materializes from CAS
+# - type="symlink": hashOrTarget = symlink target, creates symlink
+# - type="directory": hashOrTarget = "" (unused), uses mode, creates directory
+export def casMaterializeItem (destPath: String) (itemType: String) (hashOrTarget: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
+    def raw destPath itemType hashOrTarget mode mtimeSec mtimeNsec = prim "cas_materialize_item"
+
+    raw destPath itemType hashOrTarget mode mtimeSec mtimeNsec
+    | rmapError makeError
+
 # Ingest a staging item into the workspace (atomic operation).
 # Handles files, symlinks, and directories based on the type parameter.
 # - type="file": stagingPathOrTarget = staging path, uses hash/mode/mtime
 # - type="symlink": stagingPathOrTarget = symlink target
 # - type="directory": stagingPathOrTarget = "" (unused), uses mode
+# NOTE: This is deprecated. Use casMaterializeItem instead since wakebox now stores files in CAS.
 export def casIngestStagingFile (destPath: String) (itemType: String) (stagingPathOrTarget: String) (hash: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
     def raw destPath itemType stagingPathOrTarget hash mode mtimeSec mtimeNsec = prim "cas_ingest_staging_file"
 

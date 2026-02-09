@@ -18,23 +18,24 @@ The CAS system uses a **split architecture** for performance, scalability, and r
 2. **Wakebox Client** (`wakebox`): Per-job, parallel, runs locally OR remotely
    - Receives staging paths and metadata from FUSE daemon
    - Hashes staged files (can run in parallel across jobs)
-   - Outputs hash in JSON alongside metadata
-   - Does **NOT** store in CAS (Wake does this)
+   - **Stores files in CAS** (`.cas/blobs/{prefix}/{suffix}`)
+   - Deletes staging files after CAS storage (no longer needed)
+   - Outputs hash in JSON (no staging_path for files - already in CAS)
    - Does **NOT** materialize to workspace (Wake does this)
 
 3. **Wake** (main process): Centralized, consistent
    - Receives JSON from wakebox (with hash included)
-   - For remote execution: receives staging files via rsync
-   - Stores content in CAS using provided hash (no re-hashing)
-   - Materializes outputs to workspace
+   - For remote execution: receives CAS blobs via rsync (not staging files)
+   - **Materializes outputs from CAS to workspace** (no CAS storage needed)
    - Applies metadata (permissions, timestamps)
-   - Cleans up staging files
+   - Creates symlinks and directories
 
 This separation ensures:
 - FUSE daemon stays fast and responsive
-- Hashing runs in parallel per-job (in wakebox)
-- CAS storage and materialization run locally (in Wake)
+- Hashing and CAS storage run in parallel per-job (in wakebox)
+- Materialization runs locally (in Wake)
 - **Same data flow for local and remote execution**
+- **Less data transferred for remote execution** (CAS blobs are deduplicated)
 
 ## Goals
 
@@ -107,13 +108,14 @@ CAS-first staging solves these problems by **isolating job outputs until complet
 5. **Job completes** → FUSE outputs staging paths + metadata in JSON
 6. **Wakebox processes outputs**:
    - Hashes each staging file
-   - Adds hash to JSON output
-   - Does NOT store in CAS or materialize
-7. **For remote execution**: rsync transfers staging files + JSON to local
+   - **Stores in CAS** (`.cas/blobs/{prefix}/{suffix}`)
+   - **Deletes staging file** (no longer needed)
+   - Adds hash to JSON output (no staging_path - file is in CAS)
+7. **For remote execution**: rsync transfers **CAS blobs** + JSON to local (not staging files)
 8. **Wake processes outputs** (in runner post-processing):
-   - Stores in CAS using provided hash (no re-hashing)
-   - Materializes to workspace with correct permissions/timestamps
-   - Cleans up staging files
+   - **Materializes from CAS** to workspace (reflink)
+   - Applies permissions/timestamps
+   - Creates symlinks and directories
 9. **Other jobs** → Read from CAS by hash, not in-progress workspace writes
 
 ```
@@ -139,12 +141,12 @@ CAS-first staging solves these problems by **isolating job outputs until complet
 │                                                                              │
 │  [job exits]     ──► output JSON:    ──► receive JSON                       │
 │                      {                   hash files                          │
-│                        "staging_files":  add hash to JSON ──► receive JSON  │
-│                        {...}                                  store in CAS  │
-│                      }                                        materialize   │
-│                                                               apply meta    │
-│                                          [REMOTE: rsync     ──► cleanup     │
-│                                           staging + JSON]                   │
+│                        "staging_files":  STORE IN CAS  ──► receive JSON     │
+│                        {...}             delete staging    materialize      │
+│                      }                   output hash       apply meta       │
+│                                                                              │
+│                                          [REMOTE: rsync  ──►                │
+│                                           .cas/blobs/ + JSON]               │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -165,21 +167,27 @@ For remote execution (e.g., Slurm runner), the data flow adds an rsync step:
 │  │ Job → FUSE → staging/               │                                      │
 │  │                                     │                                      │
 │  │ Wakebox: hash files                 │                                      │
+│  │          STORE IN CAS               │  ◄── New: CAS storage in wakebox    │
+│  │          delete staging             │                                      │
 │  │          output JSON with hash      │                                      │
 │  └─────────────────────────────────────┘                                      │
 │                    │                                                          │
-│                    │ rsync .cas/staging/ + result.json                        │
-│                    ▼                                                          │
+│                    │ rsync .cas/blobs/{new_hashes} + result.json              │
+│                    ▼        ◄── Only new blobs, not staging files!            │
 │                                              ┌────────────────────────────────┐│
 │                                              │ Wake: parse JSON               ││
-│                                              │       store in CAS (with hash) ││
-│                                              │       materialize to workspace ││
+│                                              │       materialize from CAS     ││
 │                                              │       apply mode + timestamps  ││
-│                                              │       cleanup staging files    ││
+│                                              │       (no CAS storage needed)  ││
 │                                              └────────────────────────────────┘│
 │                                                                               │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Benefits of Wakebox CAS Storage**:
+- **Less data transferred**: Only CAS blobs (deduplicated), not staging files
+- **Immediate cleanup**: Staging files deleted right after CAS storage
+- **Simpler Wake logic**: Just materialize, no CAS storage needed
 
 ## CAS-Based Reads
 
@@ -999,6 +1007,120 @@ Result: A2 reads H1 content (from CAS), not H2 (from workspace)
         CAS-based reads solve the race condition
 ```
 
+## RSC (Remote Source Cache) Compatibility
+
+RSC is a distributed caching system that stores job outputs on a remote server. This section analyzes its compatibility with the CAS architecture.
+
+### Current RSC Behavior
+
+RSC has two paths:
+
+**Cache Miss (Upload)**:
+1. Job runs locally via `baseDoIt` (uses CAS architecture normally)
+2. Outputs are stored in CAS, materialized to workspace
+3. RSC uploads output files from workspace to RSC server via `rscApiPostFileBlob`
+4. RSC uploads stdout/stderr as blobs
+5. RSC posts job metadata with blob IDs
+
+**Cache Hit (Download/Rehydrate)**:
+1. RSC downloads blobs from server via `rscApiGetFileBlob`
+2. **Writes files directly to workspace** (using hardlink + atomic mv)
+3. Creates symlinks and directories directly in workspace
+4. Calls `primJobVirtual` to mark job as complete
+
+### Compatibility Issues
+
+| Aspect | Current RSC Behavior | CAS Architecture Expectation | Compatible? |
+|--------|---------------------|------------------------------|-------------|
+| **Upload (cache miss)** | Reads from workspace after job completes | Files are in workspace (materialized from CAS) | ✅ Yes |
+| **Download (cache hit)** | Writes directly to workspace | Should go through CAS staging first | ❌ **Bypasses CAS** |
+| **Hash tracking** | RSC has its own `content_hash` in blobs | CAS uses BLAKE2b hash in Path tuple | ⚠️ Duplicate hashing |
+| **Concurrent builds** | Downloads to workspace directly | CAS-based reads expect files in `.cas/blobs/` | ❌ **Race condition not solved** |
+
+### The Core Problem
+
+When RSC rehydrates a cached job (cache hit), it downloads directly to the workspace:
+
+```wake
+# remote_cache_runner.wake:148
+def doDownload (CacheSearchOutputFile path mode blob) = rscApiGetFileBlob blob path mode
+```
+
+And `rscApiGetFileBlob` writes directly to the workspace:
+
+```wake
+# remote_cache_api.wake:696-710
+def fixupScript =
+    """
+    ...
+    cp -l %{blobPath.getPathName} '%{path}.rsctmp'
+    chmod %{mode | strOctal} '%{path}.rsctmp'
+    mv '%{path}.rsctmp' '%{path}'   # ← Direct write to workspace!
+    """
+```
+
+This means:
+
+1. **No CAS storage**: The file isn't stored in `.cas/blobs/`
+2. **No hash in Path**: The returned `Path` won't have the correct hash for CAS-based reads
+3. **Race condition persists**: If two Wake processes both get cache hits for different versions of the same file, they'll overwrite each other in the workspace
+
+### What `avoid-unproductive-localRunner` Branch Does (And Doesn't Do)
+
+The `avoid-unproductive-localRunner` branch changes some operations to use `fuseRunner` instead of `localRunner`:
+
+| Change | File | Purpose |
+|--------|------|---------|
+| `makeRequest` → `fuseRunner` | `http.wake` | Avoid cyclic value errors in defaultRunner |
+| `makeBinaryRequest` → `fuseRunner` | `http.wake` | Same - used for RSC blob fetches |
+| `generateID` → `fuseRunner` | `remote_cache_api.wake` | Avoid loop through makeRemoteCacheAPI |
+| `mkdir`, `symlink`, `readlink` → still `localRunner` | `remote_cache_runner.wake` | Need full workspace visibility |
+
+**This does NOT solve CAS compatibility.** The changes are about fixing runner dependency cycles, not CAS integration. RSC cache hits still:
+- Bypass the CAS store
+- Write directly to workspace
+- Not provide hashes for CAS-based reads
+- Remain vulnerable to race conditions in concurrent builds
+
+### Changes Needed for Full Compatibility
+
+To make RSC fully CAS-compatible, the rehydration path needs to:
+
+1. **Download to staging**: Instead of downloading to `{path}.rsctmp`, download to `.cas/staging/{id}`
+
+2. **Store in CAS**: Call `casIngestStagingFile` to:
+   - Store the blob in `.cas/blobs/{prefix}/{suffix}`
+   - Materialize to workspace via reflink
+   - Return a proper `Path` with the hash
+
+3. **Use existing content hash**: RSC already has `content_hash` in its blob metadata - this could be used directly instead of re-hashing
+
+Example of what the change would look like:
+
+```wake
+# Instead of direct download in remote_cache_runner.wake:
+def doDownload (CacheSearchOutputFile path mode (CacheSearchBlob _ uri contentHash)) =
+    # 1. Download to temp/staging
+    require Pass tempPath = downloadToStaging uri
+
+    # 2. Ingest through CAS (store + materialize)
+    # Use RSC's content_hash directly (no re-hashing needed)
+    require Pass _ = casIngestStagingFile path "file" tempPath contentHash mode 0 0
+
+    Pass path
+```
+
+### Current State: Partial Compatibility
+
+RSC is **partially compatible** with the CAS architecture:
+
+- ✅ **Cache miss path works**: Jobs run through CAS, outputs are stored in CAS, then RSC uploads from workspace
+- ❌ **Cache hit path bypasses CAS**: Downloads go directly to workspace, missing CAS benefits
+
+This means:
+- Single-process builds with RSC cache hits work fine
+- **Multi-process concurrent builds with RSC cache hits could still have race conditions**
+
 ## Future Work
 
 1. **Remote CAS**: Support remote content-addressable storage backends (S3, NFS)
@@ -1006,6 +1128,7 @@ Result: A2 reads H1 content (from CAS), not H2 (from workspace)
 3. **Hash-based Job Caching**: Use content hashes for finer-grained cache invalidation
 4. **Shared CAS Across Workspaces**: Enable cross-workspace content sharing
 5. **CAS Verification**: Verify file integrity using stored hashes
+6. **RSC Integration**: Modify RSC rehydration to go through CAS for full concurrent build safety
 
 ## Design Decisions
 
