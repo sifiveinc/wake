@@ -747,8 +747,9 @@ void Database::clean() {
   }
   finish_stmt(why, imp->revtop_order, imp->debugdb);
 
-  bind_integer(why, imp->delete_jobs, 1, imp->run_id);
-  single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
+  // TODO: Rework this!
+  //bind_integer(why, imp->delete_jobs, 1, imp->run_id);
+  //single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
   single_step("Could not clean database dups", imp->delete_dups, imp->debugdb);
   single_step("Could not clean database stats", imp->delete_stats, imp->debugdb);
   end_txn();
