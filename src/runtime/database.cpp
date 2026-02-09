@@ -1025,23 +1025,27 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
     single_step(why, imp->insert_unhashed_file, imp->debugdb);
   }
 
-  bind_integer(why, imp->delete_prior, 1, imp->run_id);
-  bind_integer(why, imp->delete_prior, 2, job);
-  single_step(why, imp->delete_prior, imp->debugdb);
+  //bind_integer(why, imp->delete_prior, 1, imp->run_id);
+  //bind_integer(why, imp->delete_prior, 2, job);
+  //single_step(why, imp->delete_prior, imp->debugdb);
 
-  bind_integer(why, imp->delete_overlap, 1, imp->run_id);
-  bind_integer(why, imp->delete_overlap, 2, job);
-  single_step(why, imp->delete_overlap, imp->debugdb);
+  // TODO: Rework this!
+  //bind_integer(why, imp->delete_overlap, 1, imp->run_id);
+  //bind_integer(why, imp->delete_overlap, 2, job);
+  //single_step(why, imp->delete_overlap, imp->debugdb);
 
   bool fail = false;
-  bind_integer(why, imp->detect_overlap, 1, job);
-  while (sqlite3_step(imp->detect_overlap) == SQLITE_ROW) {
-    std::stringstream s;
-    s << "File output by multiple Jobs: " << rip_column(imp->detect_overlap, 0) << std::endl;
-    status_get_generic_stream(STREAM_ERROR) << s.str() << std::endl;
-    fail = true;
-  }
-  finish_stmt(why, imp->detect_overlap, imp->debugdb);
+  // TODO: Fix overlap detection: error if multiple jobs produce same output within a run.
+  // Note, we don't presently "know" all the jobs used in this run?
+  // (a job's use_id points to latest use, for example)
+  //bind_integer(why, imp->detect_overlap, 1, job);
+  //while (sqlite3_step(imp->detect_overlap) == SQLITE_ROW) {
+  //  std::stringstream s;
+  //  s << "File output by multiple Jobs: " << rip_column(imp->detect_overlap, 0) << std::endl;
+  //  status_get_generic_stream(STREAM_ERROR) << s.str() << std::endl;
+  //  fail = true;
+  //}
+  //finish_stmt(why, imp->detect_overlap, imp->debugdb);
 
   end_txn();
 
