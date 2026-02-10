@@ -207,13 +207,6 @@ static int schema_cb(void *data, int columns, char **values, char **labels) {
 std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   if (imp->db) return "";
 
-  // Try to acquire build lock for write operations
-  if (!readonly) {
-    if (!try_acquire_build_lock(wait, tty)) {
-      return "Failed to acquire build lock";
-    }
-  }
-
   // Increment the SCHEMA_VERSION every time the below string changes.
   const char *schema_sql = WAKE_SCHEMA_SQL;
   int flags = readonly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE;
@@ -571,70 +564,6 @@ void Database::close() {
   FINALIZE(set_runner_status);
   FINALIZE(get_runner_status);
   close_db(this);
-  release_build_lock();
-}
-
-bool Database::try_acquire_build_lock(bool wait, bool tty) {
-  const char *lock_file = ".wake-build-lock";
-  WaitingIndicator indicator(tty);
-
-  while (true) {
-    int fd = ::open(lock_file, O_CREAT | O_EXCL | O_WRONLY, 0644);
-
-    if (fd != -1) {
-      // Successfully acquired lock
-      char pid_str[32];
-      snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
-      ::write(fd, pid_str, strlen(pid_str));
-      ::close(fd);
-
-      indicator.finish();
-      build_lock_acquired = true;
-      return true;
-    }
-
-    if (errno != EEXIST) {
-      std::cerr << "Failed to create build lock: " << strerror(errno) << std::endl;
-      return false;
-    }
-
-    // Lock exists - check if process is still alive
-    if (!is_lock_valid(lock_file)) {
-      unlink(lock_file);  // Stale lock, remove and retry
-      continue;
-    }
-
-    if (!wait) {
-      std::cerr << "Another wake target is running. Exiting early because of '--no-wait' argument."
-                << std::endl;
-      return false;
-    }
-
-    indicator.show_waiting("Another wake target is running; waiting");
-    sleep(1);
-  }
-}
-
-void Database::release_build_lock() {
-  if (build_lock_acquired) {
-    unlink(".wake-build-lock");
-    build_lock_acquired = false;
-  }
-}
-
-bool Database::is_lock_valid(const char *lock_file) {
-  FILE *f = fopen(lock_file, "r");
-  if (!f) return false;
-
-  int pid;
-  if (fscanf(f, "%d", &pid) != 1) {
-    fclose(f);
-    return false;
-  }
-  fclose(f);
-
-  // Check if process exists
-  return kill(pid, 0) == 0;
 }
 
 static void finish_stmt(const char *why, sqlite3_stmt *stmt, bool debug) {
