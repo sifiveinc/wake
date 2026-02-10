@@ -59,10 +59,18 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
     return false;
   }
 
+  bool debug_fuse = getenv("DEBUG_FUSE_WAKE") != nullptr;
+
   int ffd = -1;
   int wait_ms = 10;
   for (int retry = 0; (ffd = open(is_running_path.c_str(), O_RDONLY)) == -1 && retry < 12;
        ++retry) {
+    int open_errno = errno;
+    if (debug_fuse) {
+      std::cerr << "[fuse_client] connect retry=" << retry
+                << " errno=" << open_errno << " (" << strerror(open_errno) << ")" << std::endl;
+    }
+
     struct timespec delay;
     delay.tv_sec = wait_ms / 1000;
     delay.tv_nsec = (wait_ms % 1000) * INT64_C(1000000);
@@ -74,7 +82,7 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
       if (exit_delay < 2) exit_delay = 2;
       std::string delayStr = std::to_string(exit_delay);
       const char *env[3] = {"PATH=/usr/bin:/bin:/usr/sbin:/sbin", 0, 0};
-      if (getenv("DEBUG_FUSE_WAKE")) env[1] = "DEBUG_FUSE_WAKE=1";
+      if (debug_fuse) env[1] = "DEBUG_FUSE_WAKE=1";
       execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), nullptr, env);
       std::cerr << "execl " << executable << ": " << strerror(errno) << std::endl;
       exit(1);
@@ -94,7 +102,12 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
   }
 
   if (ffd == -1) {
-    std::cerr << "Could not contact FUSE daemon" << std::endl;
+    int final_errno = errno;
+    std::cerr << "[fuse_client] Could not contact FUSE daemon" << std::endl;
+    if (debug_fuse) {
+      std::cerr << "[fuse_client] errno=" << final_errno
+                << " (" << strerror(final_errno) << ")" << std::endl;
+    }
     return false;
   }
 
