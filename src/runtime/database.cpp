@@ -852,6 +852,7 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
   finish_stmt(why, imp->get_tree, imp->debugdb);
 
   // Confirm all outputs still exist, and report their old hashes
+  // TODO: Do I/O outside the transaction? (!)
   bind_integer(why, imp->get_tree, 1, job);
   bind_integer(why, imp->get_tree, 2, OUTPUT);
   while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
