@@ -696,7 +696,7 @@ void Database::entropy(uint64_t *key, int words) {
   const char *why = "Could not restore entropy";
   int word;
 
-  begin_rw_txn();
+  begin_ro_txn();
 
   // Use entropy from DB
   for (word = 0; word < words; ++word) {
@@ -704,6 +704,16 @@ void Database::entropy(uint64_t *key, int words) {
     key[word] = sqlite3_column_int64(imp->get_entropy, 0);
   }
   finish_stmt(why, imp->get_entropy, imp->debugdb);
+  end_txn();
+
+  if (word == words) return;
+
+  begin_rw_txn();
+
+  for (word = 0; word < words; ++word) {
+    if (sqlite3_step(imp->get_entropy) != SQLITE_ROW) break;
+    key[word] = sqlite3_column_int64(imp->get_entropy, 0);
+  }
 
   // Save any additional entropy needed
   for (; word < words; ++word) {
