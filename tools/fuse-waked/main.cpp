@@ -1492,6 +1492,13 @@ int main(int argc, char *argv[]) {
     goto term;
   }
 
+// Macro to write to stderr, and also to log if debug is enabled
+#define startup_fprintf(fmt, ...)                \
+  do {                                           \
+    fprintf(stderr, fmt, ##__VA_ARGS__);         \
+    if (debug) dprintf(log, fmt, ##__VA_ARGS__); \
+  } while (0)
+
   // Open the logfile and use as lock on it to ensure we retain ownership
   // This has to happen after fork (which would drop the lock)
   memset(&fl, 0, sizeof(fl));
@@ -1502,12 +1509,12 @@ int main(int argc, char *argv[]) {
   if (fcntl(log, F_SETLK, &fl) != 0) {
     if (errno == EAGAIN || errno == EACCES) {
       if (debug) {
-        fprintf(stderr, "fcntl(%s.log): %s -- assuming another daemon exists\n", path.c_str(),
-                strerror(errno));
+        startup_fprintf("fcntl(%s.log): %s -- assuming another daemon exists\n", path.c_str(),
+                        strerror(errno));
       }
       status = 0;  // another daemon is already running
     } else {
-      fprintf(stderr, "fcntl(%s.log): %s\n", path.c_str(), strerror(errno));
+      startup_fprintf("fcntl(%s.log): %s\n", path.c_str(), strerror(errno));
     }
     goto term;
   }
@@ -1548,30 +1555,31 @@ int main(int argc, char *argv[]) {
 #else
   if (fuse_opt_add_arg(&args, "wake") != 0) {
 #endif
-    fprintf(stderr, "fuse_opt_add_arg failed\n");
+    startup_fprintf("fuse_opt_add_arg failed\n");
     goto rmroot;
   }
 
   if (debug && fuse_opt_add_arg(&args, "-odebug") != 0) {
-    fprintf(stderr, "fuse_opt_add_arg debug failed\n");
+    startup_fprintf("fuse_opt_add_arg debug failed\n");
     goto rmroot;
   }
 
   fc = fuse_mount(path.c_str(), &args);
   if (!fc) {
-    fprintf(stderr, "fuse_mount failed\n");
+    startup_fprintf("fuse_mount failed\n");
     goto freeargs;
   }
 
   fh = fuse_new(fc, &args, &wakefuse_ops, sizeof(wakefuse_ops), 0);
   if (!fh) {
-    fprintf(stderr, "fuse_new failed\n");
+    startup_fprintf("fuse_new failed\n");
     goto unmount;
   }
 
   fflush(stdout);
   fflush(stderr);
 
+#undef startup_fprintf
   dup2(log, STDERR_FILENO);
 
   if (null != STDIN_FILENO) {
