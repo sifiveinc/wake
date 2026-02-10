@@ -31,19 +31,19 @@ export def debugCFlags =
     ("-Wall", "-Wextra", "-Wno-format-security", "-O0", "-g", "-pg", Nil)
 
 export def debugLFlags =
-    ("-lpthread", "-g", "-pg", "-Wl,--build-id", Nil)
+    ("-lpthread", "-g", "-pg", "-Wl,--build-id", "-lstdc++fs", Nil)
 
 export def releaseCFlags =
     ("-Wall", "-Wno-format-security", "-g", "-O2", Nil)
 
 export def releaseLFlags =
-    ("-lpthread", "-Wl,--build-id", Nil)
+    ("-lpthread", "-Wl,--build-id", "-lstdc++fs", Nil)
 
 export def staticCFlags =
     ("-Wall", "-Wno-format-security", "-g", "-O2", "-flto", Nil)
 
 export def staticLFlags =
-    ("-lpthread", "-flto", "-static", "-Wl,--build-id", Nil)
+    ("-lpthread", "-flto", "-static", "-Wl,--build-id", "-lstdc++fs", Nil)
 
 def doCompileC variant gcc flags headers cfile =
     def obj = replace `\.c(pp)?$` ".{variant}.o" cfile.getPathName
