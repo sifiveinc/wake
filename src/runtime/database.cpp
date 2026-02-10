@@ -730,19 +730,18 @@ void Database::prepare(const std::string &cmdline) {
 
 void Database::clean() {
   const char *why = "Could not compute critical path";
-  begin_ro_txn();
+  begin_rw_txn();
   while (sqlite3_step(imp->revtop_order) == SQLITE_ROW) {
     bind_integer(why, imp->setcrit_path, 1, sqlite3_column_int64(imp->revtop_order, 0));
     single_step(why, imp->setcrit_path, imp->debugdb);
   }
   finish_stmt(why, imp->revtop_order, imp->debugdb);
-  end_txn();
 
-  // Single-statement operations, implicit transactions.
   bind_integer(why, imp->delete_jobs, 1, imp->run_id);
   single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
   single_step("Could not clean database dups", imp->delete_dups, imp->debugdb);
   single_step("Could not clean database stats", imp->delete_stats, imp->debugdb);
+  end_txn();
 
   // Add checkpoint after cleanup operations
   checkpoint(false);  // Non-blocking checkpoint for sync point
