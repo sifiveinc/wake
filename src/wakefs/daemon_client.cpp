@@ -67,8 +67,8 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
        ++retry) {
     int open_errno = errno;
     if (debug_fuse) {
-      std::cerr << "[fuse_client] connect retry=" << retry
-                << " errno=" << open_errno << " (" << strerror(open_errno) << ")" << std::endl;
+      std::cerr << "[fuse_client] connect retry=" << retry << " errno=" << open_errno << " ("
+                << strerror(open_errno) << ")" << std::endl;
     }
 
     struct timespec delay;
@@ -105,8 +105,8 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
     int final_errno = errno;
     std::cerr << "[fuse_client] Could not contact FUSE daemon" << std::endl;
     if (debug_fuse) {
-      std::cerr << "[fuse_client] errno=" << final_errno
-                << " (" << strerror(final_errno) << ")" << std::endl;
+      std::cerr << "[fuse_client] errno=" << final_errno << " (" << strerror(final_errno) << ")"
+                << std::endl;
     }
     return false;
   }
