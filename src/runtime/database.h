@@ -133,7 +133,8 @@ struct Database {
   // blocking=false: PASSIVE mode, non-blocking sync attempt
   void checkpoint(bool blocking = false);
 
-  void begin_txn() const;
+  void begin_ro_txn() const;
+  void begin_rw_txn() const;
   void end_txn() const;
 
   Usage reuse_job(const std::string &directory, const std::string &environment,

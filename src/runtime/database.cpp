@@ -52,7 +52,8 @@ struct Database::detail {
   sqlite3_stmt *get_entropy;
   sqlite3_stmt *set_entropy;
   sqlite3_stmt *add_run;
-  sqlite3_stmt *begin_txn;
+  sqlite3_stmt *begin_ro_txn;
+  sqlite3_stmt *begin_rw_txn;
   sqlite3_stmt *commit_txn;
   sqlite3_stmt *predict_job;
   sqlite3_stmt *stats_job;
@@ -100,7 +101,8 @@ struct Database::detail {
         get_entropy(0),
         set_entropy(0),
         add_run(0),
-        begin_txn(0),
+        begin_ro_txn(0),
+        begin_rw_txn(0),
         commit_txn(0),
         predict_job(0),
         stats_job(0),
@@ -330,7 +332,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_get_entropy = "select seed from entropy order by row_id";
   const char *sql_set_entropy = "insert into entropy(seed) values(?)";
   const char *sql_add_run = "insert into runs(time, cmdline) values(?, ?)";
-  const char *sql_begin_txn = "begin immediate transaction";
+  const char *sql_begin_ro_txn = "begin transaction";
+  const char *sql_begin_rw_txn = "begin immediate transaction";
   const char *sql_commit_txn = "commit transaction";
   const char *sql_predict_job =
       "select status, runtime, cputime, membytes, ibytes, obytes, pathtime"
@@ -462,7 +465,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_get_entropy, get_entropy);
   PREPARE(sql_set_entropy, set_entropy);
   PREPARE(sql_add_run, add_run);
-  PREPARE(sql_begin_txn, begin_txn);
+  PREPARE(sql_begin_ro_txn, begin_ro_txn);
+  PREPARE(sql_begin_rw_txn, begin_rw_txn);
   PREPARE(sql_commit_txn, commit_txn);
   PREPARE(sql_predict_job, predict_job);
   PREPARE(sql_stats_job, stats_job);
@@ -523,7 +527,8 @@ void Database::close() {
   FINALIZE(get_entropy);
   FINALIZE(set_entropy);
   FINALIZE(add_run);
-  FINALIZE(begin_txn);
+  FINALIZE(begin_ro_txn);
+  FINALIZE(begin_rw_txn);
   FINALIZE(commit_txn);
   FINALIZE(predict_job);
   FINALIZE(stats_job);
@@ -691,7 +696,7 @@ void Database::entropy(uint64_t *key, int words) {
   const char *why = "Could not restore entropy";
   int word;
 
-  begin_txn();
+  begin_rw_txn();
 
   // Use entropy from DB
   for (word = 0; word < words; ++word) {
@@ -715,7 +720,7 @@ void Database::prepare(const std::string &cmdline) {
   int64_t ts = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
 
   const char *why = "Could not insert run";
-  begin_txn();
+  begin_rw_txn();
   bind_integer(why, imp->add_run, 1, ts);
   bind_string(why, imp->add_run, 2, cmdline);
   single_step(why, imp->add_run, imp->debugdb);
@@ -725,7 +730,7 @@ void Database::prepare(const std::string &cmdline) {
 
 void Database::clean() {
   const char *why = "Could not compute critical path";
-  begin_txn();
+  begin_ro_txn();
   while (sqlite3_step(imp->revtop_order) == SQLITE_ROW) {
     bind_integer(why, imp->setcrit_path, 1, sqlite3_column_int64(imp->revtop_order, 0));
     single_step(why, imp->setcrit_path, imp->debugdb);
@@ -733,6 +738,7 @@ void Database::clean() {
   finish_stmt(why, imp->revtop_order, imp->debugdb);
   end_txn();
 
+  // Single-statement operations, implicit transactions.
   bind_integer(why, imp->delete_jobs, 1, imp->run_id);
   single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
   single_step("Could not clean database dups", imp->delete_dups, imp->debugdb);
@@ -761,8 +767,12 @@ void Database::checkpoint(bool blocking) {
   }
 }
 
-void Database::begin_txn() const {
-  single_step("Could not begin a transaction", imp->begin_txn, imp->debugdb);
+void Database::begin_ro_txn() const {
+  single_step("Could not begin a deferred transaction", imp->begin_ro_txn, imp->debugdb);
+}
+
+void Database::begin_rw_txn() const {
+  single_step("Could not begin an immediate transaction", imp->begin_rw_txn, imp->debugdb);
 }
 
 void Database::end_txn() const {
@@ -780,7 +790,7 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
   long stat_id;
 
   const char *why = "Could not check for a cached job";
-  begin_txn();
+  begin_rw_txn();
   bind_string(why, imp->find_prior, 1, directory);
   bind_blob(why, imp->find_prior, 2, commandline);
   bind_blob(why, imp->find_prior, 3, environment);
@@ -861,7 +871,7 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
 Usage Database::predict_job(uint64_t hashcode, double *pathtime) {
   Usage out;
   const char *why = "Could not predict a job";
-  begin_txn();
+  begin_ro_txn();
   bind_integer(why, imp->predict_job, 1, hashcode);
   if (sqlite3_step(imp->predict_job) == SQLITE_ROW) {
     out.found = true;
@@ -892,7 +902,7 @@ void Database::insert_job(const std::string &directory, const std::string &comma
                           uint64_t signature, const std::string &label, const std::string &stack,
                           bool is_atty, const std::string &visible, long *job) {
   const char *why = "Could not insert a job";
-  begin_txn();
+  begin_rw_txn();
   bind_integer(why, imp->insert_job, 1, imp->run_id);
   bind_string(why, imp->insert_job, 2, label);
   bind_string(why, imp->insert_job, 3, directory);
@@ -951,7 +961,7 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   });
 
   const char *why = "Could not save job inputs and outputs";
-  begin_txn();
+  begin_rw_txn();
 
   bind_integer(why, imp->add_stats, 1, hashcode);
   bind_integer(why, imp->add_stats, 2, reality.status);
@@ -1038,7 +1048,7 @@ std::vector<std::string> Database::clear_jobs() {
   const char *why = "Could not clear jobs";
   std::vector<std::string> out;
 
-  begin_txn();
+  begin_rw_txn();
 
   while (sqlite3_step(imp->get_output_files) == SQLITE_ROW) {
     out.emplace_back(rip_column(imp->get_output_files, 0));
@@ -1061,7 +1071,7 @@ std::vector<std::string> Database::clear_jobs() {
 
 void Database::tag_job(long job, const std::string &uri, const std::string &content) {
   const char *why = "Could not tag a job";
-  begin_txn();
+  begin_rw_txn();
   bind_integer(why, imp->tag_job, 1, job);
   bind_string(why, imp->tag_job, 2, uri);
   bind_string(why, imp->tag_job, 3, content);
@@ -1072,7 +1082,7 @@ void Database::tag_job(long job, const std::string &uri, const std::string &cont
 std::vector<FileReflection> Database::get_tree(int kind, long job) {
   std::vector<FileReflection> out;
   const char *why = "Could not read job tree";
-  begin_txn();
+  begin_ro_txn();
   bind_integer(why, imp->get_tree, 1, job);
   bind_integer(why, imp->get_tree, 2, kind);
   while (sqlite3_step(imp->get_tree) == SQLITE_ROW)
@@ -1084,7 +1094,7 @@ std::vector<FileReflection> Database::get_tree(int kind, long job) {
 
 void Database::save_output(long job, int descriptor, const char *buffer, int size, double runtime) {
   const char *why = "Could not save job output";
-  begin_txn();
+  begin_rw_txn();
   bind_integer(why, imp->insert_log, 1, job);
   bind_integer(why, imp->insert_log, 2, descriptor);
   bind_double(why, imp->insert_log, 3, runtime);
@@ -1096,7 +1106,7 @@ void Database::save_output(long job, int descriptor, const char *buffer, int siz
 std::string Database::get_output(long job, int descriptor) const {
   std::stringstream out;
   const char *why = "Could not read job output";
-  begin_txn();
+  begin_ro_txn();
   bind_integer(why, imp->get_log, 1, job);
   bind_integer(why, imp->get_log, 2, descriptor);
   while (sqlite3_step(imp->get_log) == SQLITE_ROW) {
@@ -1111,7 +1121,7 @@ std::string Database::get_output(long job, int descriptor) const {
 void Database::replay_output(long job, const char *stdout, const char *stderr,
                              const char *runner_out, const char *runner_err) {
   const char *why = "Could not replay job output";
-  begin_txn();
+  begin_ro_txn();
   bind_integer(why, imp->replay_log, 1, job);
   while (sqlite3_step(imp->replay_log) == SQLITE_ROW) {
     int fd = sqlite3_column_int64(imp->replay_log, 0);
@@ -1135,7 +1145,7 @@ void Database::replay_output(long job, const char *stdout, const char *stderr,
 
 void Database::add_hash(const std::string &file, const std::string &hash, long modified) {
   const char *why = "Could not insert a hash";
-  begin_txn();
+  begin_rw_txn();
   bind_string(why, imp->wipe_file, 1, file);
   bind_string(why, imp->wipe_file, 2, hash);
   single_step(why, imp->wipe_file, imp->debugdb);
@@ -1153,7 +1163,7 @@ void Database::add_hash(const std::string &file, const std::string &hash, long m
 std::string Database::get_hash(const std::string &file, long modified) {
   std::string out;
   const char *why = "Could not fetch a hash";
-  begin_txn();
+  begin_ro_txn();
   bind_string(why, imp->fetch_hash, 1, file);
   bind_integer(why, imp->fetch_hash, 2, modified);
   if (sqlite3_step(imp->fetch_hash) == SQLITE_ROW) out = rip_column(imp->fetch_hash, 0);
@@ -1461,7 +1471,7 @@ static std::vector<JobReflection> find_all(const Database *db, sqlite3_stmt *que
   const char *why = "Could not explain file";
   std::vector<JobReflection> out;
 
-  db->begin_txn();
+  db->begin_ro_txn();
   while (sqlite3_step(query) == SQLITE_ROW) out.emplace_back(find_one(db, query));
   finish_stmt(why, query, db->imp->debugdb);
   db->end_txn();
@@ -1473,7 +1483,7 @@ std::vector<std::string> Database::get_outputs() const {
   const char *why = "Could not get outputs";
   std::vector<std::string> out;
 
-  begin_txn();
+  begin_ro_txn();
   while (sqlite3_step(imp->get_output_files) == SQLITE_ROW) {
     out.emplace_back(rip_column(imp->get_output_files, 0));
   }
@@ -1492,7 +1502,7 @@ static std::vector<FileDependency> get_all_file_dependencies(const Database *db,
   const char *why = "Could not get file dependencies";
   std::vector<FileDependency> out;
 
-  db->begin_txn();
+  db->begin_ro_txn();
   while (sqlite3_step(query) == SQLITE_ROW) {
     FileDependency dep;
     dep.writer = sqlite3_column_int64(query, 0);
@@ -1681,7 +1691,7 @@ std::vector<JobReflection> Database::matching(
 
 void Database::set_runner_status(long job_id) {
   const char *why = "Could not set runner status";
-  begin_txn();
+  begin_rw_txn();
   // Explicitly bind NULL (successful runner case)
   int ret = sqlite3_bind_null(imp->set_runner_status, 1);
   if (ret != SQLITE_OK) {
@@ -1696,7 +1706,7 @@ void Database::set_runner_status(long job_id) {
 
 void Database::set_runner_status(long job_id, const std::string &status_message) {
   const char *why = "Could not set runner status";
-  begin_txn();
+  begin_rw_txn();
   bind_string(why, imp->set_runner_status, 1, status_message);
   bind_integer(why, imp->set_runner_status, 2, job_id);
   single_step(why, imp->set_runner_status, imp->debugdb);
@@ -1705,7 +1715,7 @@ void Database::set_runner_status(long job_id, const std::string &status_message)
 
 std::pair<bool, std::string> Database::get_runner_status(long job_id) {
   const char *why = "Could not get runner status";
-  begin_txn();
+  begin_ro_txn();
   bind_integer(why, imp->get_runner_status, 1, job_id);
   std::pair<bool, std::string> status{false, ""};
   if (sqlite3_step(imp->get_runner_status) == SQLITE_ROW) {
@@ -1744,7 +1754,7 @@ std::vector<JobTag> Database::get_tags() {
 
 std::vector<RunReflection> Database::get_runs() const {
   std::vector<RunReflection> out;
-  begin_txn();
+  begin_ro_txn();
   while (sqlite3_step(imp->get_all_runs) == SQLITE_ROW) {
     RunReflection run;
     run.id = sqlite3_column_int(imp->get_all_runs, 0);
