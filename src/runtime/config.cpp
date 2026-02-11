@@ -213,6 +213,7 @@ POLICY_STATIC_DEFINES(LogHeaderPolicy)
 POLICY_STATIC_DEFINES(LogHeaderSourceWidthPolicy)
 POLICY_STATIC_DEFINES(LabelFilterPolicy)
 POLICY_STATIC_DEFINES(SharedCacheMissOnFailure)
+POLICY_STATIC_DEFINES(PersistentFuseDaemonPolicy)
 POLICY_STATIC_DEFINES(LogHeaderAlignPolicy)
 POLICY_STATIC_DEFINES(BulkLoggingDirPolicy)
 POLICY_STATIC_DEFINES(InterpreterRuntimeWarningPolicy)
@@ -259,6 +260,13 @@ void SharedCacheMissOnFailure::set(SharedCacheMissOnFailure& p, const JAST& json
   auto json_shared_cache_miss_on_failure = json.expect_boolean();
   if (json_shared_cache_miss_on_failure) {
     p.cache_miss_on_failure = *json_shared_cache_miss_on_failure;
+  }
+}
+
+void PersistentFuseDaemonPolicy::set(PersistentFuseDaemonPolicy& p, const JAST& json) {
+  auto json_persistent_fuse_daemon = json.expect_boolean();
+  if (json_persistent_fuse_daemon) {
+    p.persistent_fuse_daemon = *json_persistent_fuse_daemon;
   }
 }
 

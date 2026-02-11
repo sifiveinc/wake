@@ -64,6 +64,7 @@
 #include "util/shell.h"
 #include "util/term.h"
 #include "value.h"
+#include "wakefs/daemon_manager.h"
 #include "wcl/defer.h"
 
 // How many times to SIGTERM a process before SIGKILL
@@ -328,11 +329,15 @@ struct JobTable::detail {
   bool quiet;
   bool check;
   bool batch;
+  bool fuse_daemon_enabled;  // Whether to use fuse daemon for job isolation
   struct timespec wall;
   RUsage childrenUsage;
 
   std::unordered_map<int, std::unique_ptr<std::streambuf>> fd_bufs;
   std::unordered_map<int, std::unique_ptr<TermInfoBuf>> term_bufs;
+
+  // Fuse daemon manager for job isolation (lazily initialized when jobs are launched)
+  std::unique_ptr<FuseDaemonManager> fuse_daemon;
 
   detail() {}
 
@@ -500,6 +505,7 @@ JobTable::JobTable(Database *db, ResourceBudget memory, ResourceBudget cpu, bool
   imp->quiet = quiet;
   imp->check = check;
   imp->batch = batch;
+  imp->fuse_daemon_enabled = WakeConfig::get()->persistent_fuse_daemon;
   imp->db = db;
   imp->active = 0;
   imp->limit = cpu.get(get_concurrency());
@@ -989,6 +995,18 @@ bool JobTable::wait(Runtime &runtime) {
   char buffer[4096];
   struct timespec nowait;
   memset(&nowait, 0, sizeof(nowait));
+
+  // Ensure fuse daemon is running before launching any jobs (if enabled).
+  if (imp->fuse_daemon_enabled && !imp->pending.empty()) {
+    if (!imp->fuse_daemon) {
+      imp->fuse_daemon = std::make_unique<FuseDaemonManager>(get_cwd());
+    }
+    if (!imp->fuse_daemon->is_daemon_alive()) {
+      if (!imp->fuse_daemon->ensure_daemon_running()) {
+        std::cerr << "Warning: Could not start FUSE daemon for job isolation." << std::endl;
+      }
+    }
+  }
 
   launch(this);
 
