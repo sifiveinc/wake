@@ -21,6 +21,6 @@ target runtime variant =
     src
     @here
     variant
-    (optimizer, dst, types, json, util, Nil)
+    (optimizer, dst, types, json, util, wakefs, Nil)
     (util, gmp, sqlite3, re2, ncurses, blake2, Nil)
     Nil

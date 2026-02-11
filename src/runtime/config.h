@@ -191,6 +191,36 @@ struct SharedCacheMissOnFailure {
   }
 };
 
+struct PersistentFuseDaemonPolicy {
+  using type = bool;
+  using input_type = type;
+  static constexpr const char* key = "persistent_fuse_daemon";
+  static constexpr bool allowed_in_wakeroot = true;
+  static constexpr bool allowed_in_userconfig = false;
+  type persistent_fuse_daemon = true;  // Enabled by default
+  static constexpr type PersistentFuseDaemonPolicy::*value =
+      &PersistentFuseDaemonPolicy::persistent_fuse_daemon;
+  static constexpr Override<input_type> override_value = nullptr;
+  static constexpr const char* env_var = "WAKE_PERSISTENT_FUSE_DAEMON";
+
+  static void set(PersistentFuseDaemonPolicy& p, const JAST& json);
+  static void set_input(PersistentFuseDaemonPolicy& p, const input_type& v) { p.*value = v; }
+  static void emit(const PersistentFuseDaemonPolicy& p, std::ostream& os) {
+    if (p.persistent_fuse_daemon) {
+      os << "true";
+    } else {
+      os << "false";
+    }
+  }
+  static void set_env_var(PersistentFuseDaemonPolicy& p, const char* env_var) {
+    if (std::string(env_var) == "1") {
+      p.*value = true;
+    } else {
+      p.*value = false;
+    }
+  }
+};
+
 struct LogHeaderAlignPolicy {
   using type = bool;
   using input_type = type;
@@ -400,8 +430,8 @@ struct WakeConfigImpl : public Policies... {
 
 using WakeConfigImplFull =
     WakeConfigImpl<UserConfigPolicy, VersionPolicy, LogHeaderPolicy, LogHeaderSourceWidthPolicy,
-                   LabelFilterPolicy, SharedCacheMissOnFailure, LogHeaderAlignPolicy,
-                   BulkLoggingDirPolicy, InterpreterRuntimeWarningPolicy>;
+                   LabelFilterPolicy, SharedCacheMissOnFailure, PersistentFuseDaemonPolicy,
+                   LogHeaderAlignPolicy, BulkLoggingDirPolicy, InterpreterRuntimeWarningPolicy>;
 
 struct WakeConfig final : public WakeConfigImplFull {
   static bool init(const std::string& wakeroot_path, const WakeConfigOverrides& overrides);
