@@ -65,13 +65,27 @@ bool json_as_struct(const std::string &json, json_args &result) {
   if (timeout_entry.kind == JSON_INTEGER) {
     int timeout = std::stoi(timeout_entry.value);
     if (timeout <= 0) {
-      std::cerr << "timeout must be be an integer value greater than 0" << std::endl;
+      std::cerr << "command-timeout must be an integer value greater than 0" << std::endl;
       return false;
     }
 
     result.command_timeout = wcl::make_some<int>(timeout);
   } else if (timeout_entry.kind != JSON_NULLVAL) {
-    std::cerr << "timeout must be be an integer value greater than 0" << std::endl;
+    std::cerr << "command-timeout must be an integer value greater than 0" << std::endl;
+    return false;
+  }
+
+  JAST linger_entry = jast.get("linger-timeout");
+  if (linger_entry.kind == JSON_INTEGER) {
+    int linger = std::stoi(linger_entry.value);
+    if (linger <= 0) {
+      std::cerr << "linger-timeout must be an integer value greater than 0" << std::endl;
+      return false;
+    }
+
+    result.linger_timeout = wcl::make_some<int>(linger);
+  } else if (linger_entry.kind != JSON_NULLVAL) {
+    std::cerr << "linger-timeout must be an integer value greater than 0" << std::endl;
     return false;
   }
 
@@ -154,7 +168,7 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     return false;
   }
 
-  if (!args.daemon.connect(args.visible, args.isolate_pids)) return false;
+  if (!args.daemon.connect(args.visible, args.isolate_pids, args.linger_timeout)) return false;
 
   struct timeval start;
   gettimeofday(&start, 0);
