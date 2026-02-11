@@ -26,6 +26,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -34,6 +35,12 @@
 #include "json/json5.h"
 #include "util/execpath.h"
 #include "util/mkdir_parents.h"
+
+// Default time the fuse daemon will wait for a new client before exiting.
+static constexpr int default_linger_timeout_secs = 2;
+
+// Maximum time to wait for the daemon to start on each retry attempt.
+static constexpr int max_retry_wait_ms = 30000;
 
 // The user-id and group-id are used so that fuse daemons with different uid:gid pairs
 // running within the same build can co-exist without trying to share. The kernel
@@ -52,7 +59,10 @@ daemon_client::daemon_client(const std::string &base_dir)
       visibles_path(mount_path + "/.i." + std::to_string(getpid())) {}
 
 // The arg 'visible' is destroyed/moved in the interest of performance with large visible lists.
-bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_file) {
+bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_file,
+                            wcl::optional<int> linger_timeout) {
+  int linger_secs = linger_timeout ? *linger_timeout : default_linger_timeout_secs;
+
   int err = mkdir_with_parents(mount_path, 0775);
   if (0 != err) {
     std::cerr << "mkdir_with_parents ('" << mount_path << "'):" << strerror(err) << std::endl;
@@ -69,10 +79,7 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
 
     pid_t pid = fork();
     if (pid == 0) {
-      // The daemon should wait at least 4x as long to exit as we wait for it to start.
-      int exit_delay = 4 * delay.tv_sec;
-      if (exit_delay < 2) exit_delay = 2;
-      std::string delayStr = std::to_string(exit_delay);
+      std::string delayStr = std::to_string(linger_secs);
       const char *env[3] = {"PATH=/usr/bin:/bin:/usr/sbin:/sbin", 0, 0};
       if (getenv("DEBUG_FUSE_WAKE")) env[1] = "DEBUG_FUSE_WAKE=1";
       execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), nullptr, env);
@@ -86,7 +93,7 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
       ok = nanosleep(&delay, &delay);
     } while (ok == -1 && errno == EINTR);
 
-    wait_ms <<= 1;
+    wait_ms = std::min(wait_ms << 1, max_retry_wait_ms);
 
     int status;
     do waitpid(pid, &status, 0);
