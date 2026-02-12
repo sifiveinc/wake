@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -53,8 +54,23 @@
 // We ensure STDIN is /dev/null, so this is a safe sentinel value for open files
 #define BAD_FD STDIN_FILENO
 
+// How long to wait for daemon startup before giving up
+static int startup_timeout;
 // How long to wait for a new client to connect before the daemon exits
 static int linger_timeout;
+// File descriptor for communicating startup success back to parent
+static int startup_pipe_fd = -1;
+
+// Signal successful startup to the watcher process
+static void signal_startup_success() {
+  if (startup_pipe_fd >= 0) {
+    char success = 'S';
+    (void)!write(startup_pipe_fd, &success, 1);
+    close(startup_pipe_fd);
+    startup_pipe_fd = -1;
+  }
+}
+
 static std::set<std::string> hardlinks = {};
 
 // How to retry umount while quitting
@@ -1408,9 +1424,11 @@ int main(int argc, char *argv[]) {
   int log, null;
   bool madedir;
   struct rlimit rlim;
+  int startup_pipe[2] = {-1, -1};
 
-  if (argc != 3) {
-    fprintf(stderr, "Syntax: fuse-waked <mount-point> <min-timeout-seconds>\n");
+  if (argc != 4) {
+    fprintf(stderr,
+            "Syntax: fuse-waked <mount-point> <min-timeout-seconds> <startup-timeout-seconds>\n");
     goto term;
   }
   path = argv[1];
@@ -1418,6 +1436,9 @@ int main(int argc, char *argv[]) {
   linger_timeout = atol(argv[2]);
   if (linger_timeout < 1) linger_timeout = 1;
   if (linger_timeout > 240) linger_timeout = 240;
+
+  startup_timeout = atol(argv[3]);
+  if (startup_timeout < 1) startup_timeout = 1;
 
   null = open("/dev/null", O_RDONLY);
   if (null == -1) {
@@ -1468,15 +1489,57 @@ int main(int argc, char *argv[]) {
     goto rmroot;
   }
 
+  // Create pipe for startup timeout communication
+  if (pipe(startup_pipe) == -1) {
+    perror("pipe");
+    goto rmroot;
+  }
+
   // Become a daemon
   pid = fork();
   if (pid == -1) {
     perror("fork");
     goto rmroot;
   } else if (pid != 0) {
-    status = 0;
+    // First fork parent: wait for success signal or timeout
+    close(startup_pipe[1]);  // Close write end in parent
+
+    fd_set readfds;
+    struct timeval tv;
+    tv.tv_sec = startup_timeout;
+    tv.tv_usec = 0;
+
+    FD_ZERO(&readfds);
+    FD_SET(startup_pipe[0], &readfds);
+
+    int ret = select(startup_pipe[0] + 1, &readfds, nullptr, nullptr, &tv);
+    if (ret > 0) {
+      // Got data - read success byte
+      char buf;
+      if (read(startup_pipe[0], &buf, 1) == 1 && buf == 'S') {
+        status = 0;  // Success
+      } else {
+        status = 1;  // Daemon failed during startup
+      }
+    } else if (ret == 0) {
+      // Timeout - kill the session leader (and its children via process group)
+      fprintf(stderr, "fuse-waked startup timeout after %d seconds, killing daemon\n",
+              startup_timeout);
+      kill(-pid, SIGKILL);  // Kill process group
+      waitpid(pid, nullptr, 0);
+      status = 1;
+    } else {
+      // Error
+      perror("select");
+      status = 1;
+    }
+    close(startup_pipe[0]);
     goto term;
   }
+
+  // Child: close read end, keep write end for grandchild
+  close(startup_pipe[0]);
+  startup_pipe_fd = startup_pipe[1];
 
   if (setsid() == -1) {
     perror("setsid");
@@ -1488,6 +1551,11 @@ int main(int argc, char *argv[]) {
     perror("fork2");
     goto rmroot;
   } else if (pid != 0) {
+    // Session leader exits immediately; close pipe so grandchild owns it
+    if (startup_pipe_fd >= 0) {
+      close(startup_pipe_fd);
+      startup_pipe_fd = -1;
+    }
     status = 0;
     goto term;
   }
@@ -1505,7 +1573,9 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "fcntl(%s.log): %s -- assuming another daemon exists\n", path.c_str(),
                 strerror(errno));
       }
-      status = 0;  // another daemon is already running
+      // Another daemon is already running
+      signal_startup_success();
+      status = 0;
     } else {
       fprintf(stderr, "fcntl(%s.log): %s\n", path.c_str(), strerror(errno));
     }
@@ -1568,6 +1638,8 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "fuse_new failed\n");
     goto unmount;
   }
+
+  signal_startup_success();
 
   fflush(stdout);
   fflush(stderr);
