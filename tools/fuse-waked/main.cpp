@@ -1512,7 +1512,7 @@ int main(int argc, char *argv[]) {
     goto term;
   }
   if (debug) {
-    fprintf(stderr, "Successfully acquired lock on %s.log\n", path.c_str());
+    dprintf(log, "Successfully acquired lock on %s.log\n", path.c_str());
   }
 
   // block those signals where we wish to terminate cleanly
@@ -1561,7 +1561,7 @@ int main(int argc, char *argv[]) {
   }
 
   if (debug) {
-    fprintf(stderr, "Calling fuse_mount(path=%s)\n", path.c_str());
+    dprintf(log, "Calling fuse_mount(path=%s)\n", path.c_str());
   }
   fc = fuse_mount(path.c_str(), &args);
   if (!fc) {
@@ -1569,11 +1569,11 @@ int main(int argc, char *argv[]) {
     goto freeargs;
   }
   if (debug) {
-    fprintf(stderr, "fuse_mount succeeded, fuse_chan=%p\n", (void *)fc);
+    dprintf(log, "fuse_mount succeeded, fuse_chan=%p\n", (void *)fc);
   }
 
   if (debug) {
-    fprintf(stderr, "Calling fuse_new(fuse_chan=%p, ops_size=%zu)\n", (void *)fc,
+    dprintf(log, "Calling fuse_new(fuse_chan=%p, ops_size=%zu)\n", (void *)fc,
             sizeof(wakefuse_ops));
   }
   fh = fuse_new(fc, &args, &wakefuse_ops, sizeof(wakefuse_ops), 0);
@@ -1582,7 +1582,7 @@ int main(int argc, char *argv[]) {
     goto unmount;
   }
   if (debug) {
-    fprintf(stderr, "fuse_new succeeded, fuse=%p\n", (void *)fh);
+    dprintf(log, "fuse_new succeeded, fuse=%p\n", (void *)fh);
   }
 
   fflush(stdout);
