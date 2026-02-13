@@ -381,8 +381,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_find_prior =
       "select job_id, stat_id from jobs where "
       "directory=? and commandline=? and environment=? and stdin=? and signature=? and is_atty=? "
-      "and keep=1 and "
-      "stale=0";
+      "and keep=1 and stale=0 and stat_id is not null";
   const char *sql_update_prior = "update jobs set use_id=? where job_id=?";
   const char *sql_delete_prior =
       "delete from jobs where use_id<>?1 and job_id in"
