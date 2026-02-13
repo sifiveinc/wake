@@ -1,0 +1,20 @@
+# Two jobs output same file - wake should detect overlap and fail
+
+export def job1 Unit =
+    makeExecPlan ("sh", "-c", "echo job1 > overlap.txt", Nil) Nil
+    | setPlanLabel "overlap-test: job1"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutput
+
+export def job2 Unit =
+    makeExecPlan ("sh", "-c", "echo job2 > overlap.txt", Nil) Nil
+    | setPlanLabel "overlap-test: job2"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutput
+
+export def test _ =
+    require Pass _ = job1 Unit
+    require Pass _ = job2 Unit
+    Pass Unit
