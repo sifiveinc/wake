@@ -1511,6 +1511,9 @@ int main(int argc, char *argv[]) {
     }
     goto term;
   }
+  if (debug) {
+    fprintf(stderr, "Successfully acquired lock on %s.log\n", path.c_str());
+  }
 
   // block those signals where we wish to terminate cleanly
   sigemptyset(&block);
@@ -1557,16 +1560,29 @@ int main(int argc, char *argv[]) {
     goto rmroot;
   }
 
+  if (debug) {
+    fprintf(stderr, "Calling fuse_mount(path=%s)\n", path.c_str());
+  }
   fc = fuse_mount(path.c_str(), &args);
   if (!fc) {
     fprintf(stderr, "fuse_mount failed\n");
     goto freeargs;
   }
+  if (debug) {
+    fprintf(stderr, "fuse_mount succeeded, fuse_chan=%p\n", (void *)fc);
+  }
 
+  if (debug) {
+    fprintf(stderr, "Calling fuse_new(fuse_chan=%p, ops_size=%zu)\n", (void *)fc,
+            sizeof(wakefuse_ops));
+  }
   fh = fuse_new(fc, &args, &wakefuse_ops, sizeof(wakefuse_ops), 0);
   if (!fh) {
     fprintf(stderr, "fuse_new failed\n");
     goto unmount;
+  }
+  if (debug) {
+    fprintf(stderr, "fuse_new succeeded, fuse=%p\n", (void *)fh);
   }
 
   fflush(stdout);
