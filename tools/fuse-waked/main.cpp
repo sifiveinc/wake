@@ -1047,6 +1047,11 @@ static int wakefuse_rename(const char *from, const char *to) {
     sf.dest_path = keyt.second;
     g_staged_files.erase(staged_it);
     auto staged_key_to = std::make_pair(keyt.first, keyt.second);
+    // Check if destination already has a staged file - if so, delete its staging file
+    auto existing_to = g_staged_files.find(staged_key_to);
+    if (existing_to != g_staged_files.end() && existing_to->second.type == "file") {
+      unlink(existing_to->second.staging_path.c_str());
+    }
     g_staged_files[staged_key_to] = sf;
     it->second.staged_paths.erase(keyf.second);
     it->second.staged_paths.insert(keyt.second);
