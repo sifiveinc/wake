@@ -35,6 +35,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 
 #ifdef __linux__
@@ -145,88 +146,115 @@ static bool process_staging_files(const JAST &staging_files, JAST &staging_files
     fflush(debug_log);
   }
 
+  // Single-pass processing using staging_path as deduplication key.
+  // Both files and hardlinks have staging_path; hardlinks share the same
+  // staging_path as their source file. First encounter hashes and deletes
+  // the staging file; subsequent encounters reuse the cached hash.
+  std::map<std::string, std::string> staging_path_to_hash;
+
   for (const auto &entry : staging_files.children) {
     const std::string &dest_path = entry.first;
     const JAST &item_info = entry.second;
 
-    // Get the type field (file, symlink, or directory)
     std::string type = item_info.get("type").value;
-    if (type.empty()) {
-      // Default to "file" for backward compatibility
-      type = "file";
+    if (type.empty()) type = "file";
+
+    if (debug_log) {
+      fprintf(debug_log, "Processing: dest_path=%s type=%s\n", dest_path.c_str(), type.c_str());
+      fflush(debug_log);
     }
 
     JAST &out_entry = staging_files_with_hash.add(dest_path, JSON_OBJECT);
-    out_entry.add("type", type);
 
-    if (type == "file") {
-      // For files: hash, store in CAS, delete staging file, output hash
+    if (type == "file" || type == "hardlink") {
       std::string staging_path = item_info.get("staging_path").value;
       if (staging_path.empty()) {
-        std::cerr << "Missing staging_path for file " << dest_path << std::endl;
+        std::cerr << "Missing staging_path for " << type << " " << dest_path << std::endl;
         continue;
       }
 
-      // Parse integer fields
-      long long mode = 0;
-      long long mtime_sec = 0;
-      long long mtime_nsec = 0;
-      try {
-        mode = std::stoll(item_info.get("mode").value);
-        mtime_sec = std::stoll(item_info.get("mtime_sec").value);
-        mtime_nsec = std::stoll(item_info.get("mtime_nsec").value);
-      } catch (const std::exception &e) {
-        std::cerr << "Failed to parse metadata for " << dest_path << ": " << e.what() << std::endl;
-        continue;
-      }
-
-      // Store file in CAS (this also computes the hash)
-      auto store_result = cas_store->store_blob_from_file(staging_path);
-      if (!store_result) {
-        std::cerr << "Failed to store " << staging_path << " in CAS" << std::endl;
-        if (debug_log) {
-          fprintf(debug_log, "FAILED to store %s in CAS\n", staging_path.c_str());
-          fflush(debug_log);
-        }
-        continue;
-      }
       if (debug_log) {
-        fprintf(debug_log, "Stored %s -> hash %s\n", staging_path.c_str(), store_result->to_hex().c_str());
+        fprintf(debug_log, "  staging_path=%s\n", staging_path.c_str());
         fflush(debug_log);
       }
 
-      std::string hash_hex = store_result->to_hex();
+      // Check if we've already hashed this staging file
+      std::string hash_hex;
+      auto cached = staging_path_to_hash.find(staging_path);
+      if (cached != staging_path_to_hash.end()) {
+        // Reuse cached hash (hardlink case - staging file already deleted)
+        hash_hex = cached->second;
+        if (debug_log) {
+          fprintf(debug_log, "  Using cached hash=%s\n", hash_hex.c_str());
+          fflush(debug_log);
+        }
+      } else {
+        // First time seeing this staging_path - hash and store in CAS
+        if (debug_log) {
+          fprintf(debug_log, "  Calling store_blob_from_file...\n");
+          fflush(debug_log);
+        }
+        auto store_result = cas_store->store_blob_from_file(staging_path);
+        if (!store_result) {
+          std::cerr << "Failed to store " << staging_path << " in CAS" << std::endl;
+          if (debug_log) {
+            fprintf(debug_log, "  FAILED to store in CAS\n");
+            fflush(debug_log);
+          }
+          continue;
+        }
 
-      // Delete staging file (it's now in CAS)
-      if (unlink(staging_path.c_str()) != 0) {
-        std::cerr << "Warning: Failed to delete staging file " << staging_path << std::endl;
-        // Continue anyway - file is in CAS
+        hash_hex = store_result->to_hex();
+        staging_path_to_hash[staging_path] = hash_hex;
+
+        if (debug_log) {
+          fprintf(debug_log, "  Stored -> hash=%s\n", hash_hex.c_str());
+          fflush(debug_log);
+        }
+
+        // Delete staging file after hashing
+        if (unlink(staging_path.c_str()) != 0) {
+          std::cerr << "Warning: Failed to delete staging file " << staging_path << std::endl;
+        }
       }
 
-      // Output hash and metadata (no staging_path - file is in CAS)
-      out_entry.add("mode", mode);
-      out_entry.add("mtime_sec", mtime_sec);
-      out_entry.add("mtime_nsec", mtime_nsec);
+      // Output as file type (hardlinks become regular files in output)
+      out_entry.add("type", "file");
       out_entry.add("hash", hash_hex);
 
+      // Parse and add metadata
+      long long mode = 0644LL;
+      try {
+        mode = std::stoll(item_info.get("mode").value);
+      } catch (const std::exception &) {}
+      out_entry.add("mode", mode);
+
+      try {
+        out_entry.add("mtime_sec", std::stoll(item_info.get("mtime_sec").value));
+        out_entry.add("mtime_nsec", std::stoll(item_info.get("mtime_nsec").value));
+      } catch (const std::exception &) {
+        // Skip mtime if parsing fails
+      }
+
     } else if (type == "symlink") {
-      // For symlinks: just pass through the target
+      out_entry.add("type", "symlink");
       std::string target = item_info.get("target").value;
       out_entry.add("target", target);
 
     } else if (type == "directory") {
-      // For directories: pass through the mode
+      out_entry.add("type", "directory");
       try {
         long long mode = std::stoll(item_info.get("mode").value);
         out_entry.add("mode", mode);
-      } catch (const std::exception &e) {
-        out_entry.add("mode", 0755LL);  // Default mode
+      } catch (const std::exception &) {
+        out_entry.add("mode", 0755LL);
       }
     }
   }
 
   if (debug_log) {
-    fprintf(debug_log, "process_staging_files completed\n");
+    fprintf(debug_log, "process_staging_files completed, processed %zu unique staging files\n",
+            staging_path_to_hash.size());
     fclose(debug_log);
   }
 
@@ -371,16 +399,10 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     exit(1);
   }
 
-  // Redirect IO to /dev/null while waiting (don't just close, as that would
-  // cause subsequent open() calls to reuse fd 0/1/2, and unique_fd::valid()
-  // returns false for fd=0)
-  int devnull = open("/dev/null", O_RDWR);
-  if (devnull >= 0) {
-    dup2(devnull, STDIN_FILENO);
-    dup2(devnull, STDOUT_FILENO);
-    dup2(devnull, STDERR_FILENO);
-    if (devnull > STDERR_FILENO) close(devnull);
-  }
+  // Don't hold IO open while waiting
+  (void)close(STDIN_FILENO);
+  (void)close(STDOUT_FILENO);
+  (void)close(STDERR_FILENO);
 
   pid_t timeout_pid = -1;
 

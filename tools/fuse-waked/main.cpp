@@ -60,13 +60,13 @@ static std::set<std::string> hardlinks = {};
 // Staging directory for CAS (wakebox handles CAS storage)
 static std::string g_staging_dir;
 
-// Structure to track a staged item (file, symlink, or directory)
+// Structure to track a staged item (file, symlink, directory, or hardlink)
 // All output types use the same structure with a type discriminator
 struct StagedFile {
-  std::string type;          // "file", "symlink", or "directory"
+  std::string type;          // "file", "symlink", "directory", or "hardlink"
   std::string staging_path;  // Path in staging directory (for files only)
   std::string dest_path;     // Final destination path (relative to workspace)
-  std::string target;        // Symlink target (for symlinks only)
+  std::string target;        // Symlink target OR hardlink source path
   std::string job_id;        // Job that owns this item
   mode_t mode;               // File/directory mode (permissions)
   struct timespec mtime;     // Modification timestamp (for files only)
@@ -221,6 +221,12 @@ void Job::dump(const std::string &job_id) {
       s << ",\"target\":\"" << json_escape(sf.target) << "\"";
     } else if (sf.type == "directory") {
       s << ",\"mode\":" << (sf.mode & 07777);
+    } else if (sf.type == "hardlink") {
+      // Hardlink has same staging_path as source - client uses it as deduplication key
+      s << ",\"staging_path\":\"" << json_escape(sf.staging_path) << "\"";
+      s << ",\"mode\":" << (sf.mode & 07777);
+      s << ",\"mtime_sec\":" << sf.mtime.tv_sec;
+      s << ",\"mtime_nsec\":" << sf.mtime.tv_nsec;
     }
 
     s << "}";
@@ -261,6 +267,18 @@ bool Job::is_readable(const std::string &path) {
 }
 
 bool Job::should_erase() const { return 0 == uses && 0 == json_in_uses && 0 == json_out_uses; }
+
+// Clean up staged files for a job before erasing it from the jobs map
+// This removes entries from g_staged_files that belong to the given job_id
+// Uses range-based lookup for O(k) where k is the number of staged files for this job,
+// rather than O(n) where n is total staged files across all jobs
+static void cleanup_staged_files_for_job(const std::string &job_id) {
+  // Find the range of entries with this job_id using the map's ordering
+  // Keys are (job_id, path), so all entries for a job_id are contiguous
+  auto low = g_staged_files.lower_bound(std::make_pair(job_id, std::string()));
+  auto high = g_staged_files.lower_bound(std::make_pair(job_id + '\0', std::string()));
+  g_staged_files.erase(low, high);
+}
 
 static std::pair<std::string, std::string> split_key(const char *path) {
   const char *end = strchr(path + 1, '/');
@@ -350,7 +368,6 @@ static const char *trace_out(int code) {
     return &buf[0];
   }
 }
-
 static int wakefuse_getattr(const char *path, struct stat *stbuf) {
   if (auto s = is_special(path)) {
     int res = fstat(context.rootfd, stbuf);
@@ -401,32 +418,40 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
 
   if (!it->second.is_readable(key.second)) return -ENOENT;
 
-  // Check if item is staged (file, symlink, or directory)
+  // Check if item is staged (file, symlink, directory, or hardlink)
   auto staged_key = std::make_pair(key.first, key.second);
   auto staged_it = g_staged_files.find(staged_key);
   if (staged_it != g_staged_files.end()) {
-    const StagedFile &sf = staged_it->second;
+    const StagedFile *sf = &staged_it->second;
 
-    if (sf.type == "file") {
+    // For hardlinks, resolve to the source file
+    if (sf->type == "hardlink") {
+      auto source_key = std::make_pair(key.first, sf->target);
+      auto source_it = g_staged_files.find(source_key);
+      if (source_it == g_staged_files.end()) return -ENOENT;
+      sf = &source_it->second;
+    }
+
+    if (sf->type == "file") {
       // Stat the actual staging file
-      int res = stat(sf.staging_path.c_str(), stbuf);
+      int res = stat(sf->staging_path.c_str(), stbuf);
       if (res == -1) return -errno;
       // Combine file type from staging file with tracked permissions
-      stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (sf.mode & ~S_IFMT);
+      stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (sf->mode & ~S_IFMT);
       return 0;
-    } else if (sf.type == "symlink") {
+    } else if (sf->type == "symlink") {
       // Return synthetic symlink stat
       memset(stbuf, 0, sizeof(*stbuf));
       stbuf->st_mode = S_IFLNK | 0777;
       stbuf->st_nlink = 1;
-      stbuf->st_size = sf.target.size();
+      stbuf->st_size = sf->target.size();
       stbuf->st_uid = getuid();
       stbuf->st_gid = getgid();
       return 0;
-    } else if (sf.type == "directory") {
+    } else if (sf->type == "directory") {
       // Return synthetic directory stat
       memset(stbuf, 0, sizeof(*stbuf));
-      stbuf->st_mode = S_IFDIR | (sf.mode & 07777);
+      stbuf->st_mode = S_IFDIR | (sf->mode & 07777);
       stbuf->st_nlink = 2;
       stbuf->st_uid = getuid();
       stbuf->st_gid = getgid();
@@ -727,7 +752,10 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
     ++job.uses;
     if (!cancel_exit()) {
       --job.uses;
-      if (job.should_erase()) context.jobs.erase(jobid);
+      if (job.should_erase()) {
+        cleanup_staged_files_for_job(jobid);
+        context.jobs.erase(jobid);
+      }
       return -EPERM;
     }
     fi->fh = BAD_FD;
@@ -1083,13 +1111,25 @@ static int wakefuse_link(const char *from, const char *to) {
   auto staged_key_from = std::make_pair(keyf.first, keyf.second);
   auto staged_it = g_staged_files.find(staged_key_from);
   if (staged_it != g_staged_files.end()) {
-    // For staged files, we create a new staging entry pointing to the same staging path
-    StagedFile sf = staged_it->second;
+    // For staged files, create a hardlink entry with the same staging_path
+    // The client uses staging_path as the deduplication key for one-pass processing
+    StagedFile sf;
+    sf.type = "hardlink";
     sf.dest_path = keyt.second;
+    sf.target = keyf.second;  // Reference to the source file path (for debugging)
+    sf.staging_path = staged_it->second.staging_path;  // Same staging_path as source
+    sf.job_id = keyf.first;
+    sf.mode = staged_it->second.mode;
+    sf.mtime = staged_it->second.mtime;
+    sf.atime = staged_it->second.atime;
+
     auto staged_key_to = std::make_pair(keyt.first, keyt.second);
     g_staged_files[staged_key_to] = sf;
     it->second.staged_paths.insert(keyt.second);
     it->second.files_wrote.insert(keyt.second);
+    // Both hardlink paths need direct_io to prevent kernel caching issues
+    hardlinks.insert(std::string(from));
+    hardlinks.insert(std::string(to));
     return 0;
   }
 
@@ -1329,9 +1369,19 @@ static int wakefuse_open(const char *path, struct fuse_file_info *fi) {
   auto staged_key = std::make_pair(key.first, key.second);
   auto staged_it = g_staged_files.find(staged_key);
   if (staged_it != g_staged_files.end()) {
-    int fd = open(staged_it->second.staging_path.c_str(), fi->flags, 0);
+    StagedFile *sf = &staged_it->second;
+
+    // For hardlinks, resolve to the source file's staging path
+    if (sf->type == "hardlink") {
+      auto source_key = std::make_pair(key.first, sf->target);
+      auto source_it = g_staged_files.find(source_key);
+      if (source_it == g_staged_files.end()) return -ENOENT;
+      sf = &source_it->second;
+    }
+
+    int fd = open(sf->staging_path.c_str(), fi->flags, 0);
     if (fd == -1) return -errno;
-    g_fd_to_staged[fd] = &staged_it->second;
+    g_fd_to_staged[fd] = sf;
     fi->fh = fd;
     return 0;
   }
@@ -1542,7 +1592,10 @@ static int wakefuse_release(const char *path, struct fuse_file_info *fi) {
       default:
         return -EIO;
     }
-    if ('f' != s.kind && s.job->second.should_erase()) context.jobs.erase(s.job);
+    if ('f' != s.kind && s.job->second.should_erase()) {
+      cleanup_staged_files_for_job(s.job->first);
+      context.jobs.erase(s.job);
+    }
     if (context.should_exit()) schedule_exit();
   }
 
