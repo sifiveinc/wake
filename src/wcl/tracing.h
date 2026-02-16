@@ -28,8 +28,8 @@
 #include <cstdarg>
 #include <functional>
 #include <memory>
-#include <ostream>
 #include <optional>
+#include <ostream>
 #include <string>
 #include <unordered_map>
 

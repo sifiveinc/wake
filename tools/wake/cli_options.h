@@ -23,8 +23,6 @@
 #include <string>
 #include <vector>
 
-#include <optional>
-
 #include "gopt/gopt-arg.h"
 #include "gopt/gopt.h"
 #include "wcl/iterator.h"
