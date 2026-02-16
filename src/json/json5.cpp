@@ -25,7 +25,6 @@
 #include <optional>
 #include <sstream>
 
-#include "wcl/optional.h"
 #include "wcl/tracing.h"
 
 const char *jsymbolTable[] = {
@@ -57,7 +56,7 @@ std::optional<const JAST *> JAST::get_opt(const std::string &key) const {
   if (&item == &null) {
     return {};
   }
-  return wcl::some(&item);
+  return std::make_optional(&item);
 }
 
 JAST &JAST::add(std::string key, SymbolJSON kind, std::string &&value) {

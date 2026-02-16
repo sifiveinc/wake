@@ -29,10 +29,9 @@
 #include <functional>
 #include <memory>
 #include <ostream>
+#include <optional>
 #include <string>
 #include <unordered_map>
-
-#include "optional.h"
 
 namespace wcl {
 namespace log {

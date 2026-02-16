@@ -25,7 +25,6 @@
 #include <vector>
 
 #include "util/location.h"
-#include "wcl/optional.h"
 #include "wcl/tracing.h"
 #include "wcl/unique_fd.h"
 
@@ -144,24 +143,24 @@ struct JAST {
 
   std::optional<std::string> expect_string() const {
     if (kind == JSON_STR) {
-      return wcl::make_some<std::string>(value);
+      return std::optional<std::string>{value};
     }
     return {};
   }
 
   std::optional<int64_t> expect_integer() const {
     if (kind == JSON_INTEGER) {
-      return wcl::make_some<int64_t>(std::stol(value));
+      return std::optional<int64_t>{std::stol(value)};
     }
     return {};
   }
 
   std::optional<bool> expect_boolean() const {
     if (kind == JSON_TRUE) {
-      return wcl::some(true);
+      return std::make_optional(true);
     }
     if (kind == JSON_FALSE) {
-      return wcl::some(false);
+      return std::make_optional(false);
     }
     return {};
   }

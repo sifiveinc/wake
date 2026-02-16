@@ -21,10 +21,10 @@
 
 #include <optional>
 #include <string>
+#include <optional>
 #include <vector>
 
 #include "namespace.h"
-#include "wcl/optional.h"
 
 struct daemon_client {
   // Path to the fuse-waked daemon executable.

@@ -55,7 +55,7 @@ class trie {
 
   std::optional<size_t> matching_start(const Key& key) const {
     for (size_t index : starts) {
-      if (key == nodes[index].key) return std::optional<size_t>(std::in_place, index);
+      if (key == nodes[index].key) return index;
     }
     return {};
   }
@@ -63,7 +63,7 @@ class trie {
   std::optional<size_t> matching_child(size_t pindex, const Key& key) const {
     const trie_node* node = &nodes[pindex];
     for (size_t child_index : node->child_indexes) {
-      if (key == nodes[child_index].key) return std::optional<size_t>(std::in_place, child_index);
+      if (key == nodes[child_index].key) return child_index;
     }
     return {};
   }
@@ -101,7 +101,7 @@ class trie {
   void move_emplace(KeyIter begin, KeyIter end, Args&&... args) {
     // First handle the empty sequence
     if (begin == end) {
-      empty_seq = std::optional<Value>(std::in_place, std::forward<Args>(args)...);
+      empty_seq = std::make_optional<Value>(std::forward<Args>(args)...);
       return;
     }
 
@@ -137,7 +137,7 @@ class trie {
 
     // TODO: We're actually adding a move here and really there's no requirement that
     //       Value be movable. std::optional has an "emplace" method that could be used.
-    nodes[root].value = std::optional<Value>(std::in_place, std::forward<Args>(args)...);
+    nodes[root].value = std::make_optional<Value>(std::forward<Args>(args)...);
   }
 
   // Find the maximum prefix of a given sequence in the trie.

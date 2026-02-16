@@ -23,10 +23,11 @@
 #include <string>
 #include <vector>
 
+#include <optional>
+
 #include "gopt/gopt-arg.h"
 #include "gopt/gopt.h"
 #include "wcl/iterator.h"
-#include "wcl/optional.h"
 
 struct CommandLineOptions {
   bool check;
@@ -246,23 +247,23 @@ struct CommandLineOptions {
     user_config = arg(options, "user-config")->argument;
 
     if (arg(options, "log-header-align")->count) {
-      log_header_align = wcl::some(true);
+      log_header_align = std::make_optional(true);
     }
 
     if (arg(options, "no-log-header-align")->count) {
-      log_header_align = wcl::some(false);
+      log_header_align = std::make_optional(false);
     }
 
     if (arg(options, "cache-miss-on-failure")->count) {
-      cache_miss_on_failure = wcl::some(true);
+      cache_miss_on_failure = std::make_optional(true);
     }
 
     if (arg(options, "no-cache-miss-on-failure")->count) {
-      cache_miss_on_failure = wcl::some(false);
+      cache_miss_on_failure = std::make_optional(false);
     }
 
     auto lhsw_str = arg(options, "log-header-source-width")->argument;
-    if (lhsw_str) log_header_source_width = wcl::make_some<int64_t>(std::stol(lhsw_str));
+    if (lhsw_str) log_header_source_width = std::optional<int64_t>{std::stol(lhsw_str)};
 
     for (unsigned int i = 0; i < arg(options, "job")->count; i++) {
       std::string line(job_ids_buffer[i]);
@@ -314,47 +315,47 @@ struct CommandLineOptions {
 
   std::optional<std::string> validate() {
     if (quiet && verbose) {
-      return wcl::some<std::string>("Cannot specify both -v and -q!");
+      return std::optional<std::string>{"Cannot specify both -v and -q!"};
     }
 
     if (profile && !debug) {
-      return wcl::some<std::string>("Cannot profile without stack trace support (-d)!");
+      return std::optional<std::string>{"Cannot profile without stack trace support (-d)!"};
     }
 
     if (shebang && chdir) {
-      return wcl::some<std::string>("Cannot specify chdir and shebang simultaneously!");
+      return std::optional<std::string>{"Cannot specify chdir and shebang simultaneously!"};
     }
 
     if (shebang && argc < 2) {
-      return wcl::some<std::string>(
-          "Shebang invocation requires a script name as the first non-option argument");
+      return std::optional<std::string>{
+          "Shebang invocation requires a script name as the first non-option argument"};
     }
 
     struct stat sbuf;
 
     if (fstat(1, &sbuf) != 0) {
-      return wcl::some<std::string>(
-          "Wake must be run with an open standard output (file descriptor 1)");
+      return std::optional<std::string>{
+          "Wake must be run with an open standard output (file descriptor 1)"};
     }
 
     if (fstat(2, &sbuf) != 0) {
-      return wcl::some<std::string>(
-          "Wake must be run with an open standard error (file descriptor 2)");
+      return std::optional<std::string>{
+          "Wake must be run with an open standard error (file descriptor 2)"};
     }
 
     if (fd3 && fstat(3, &sbuf) != 0) {
-      return wcl::some<std::string>(
-          "Cannot specify --fd:3 unless file descriptor 3 is already open");
+      return std::optional<std::string>{
+          "Cannot specify --fd:3 unless file descriptor 3 is already open"};
     }
 
     if (fd4 && fstat(4, &sbuf) != 0) {
-      return wcl::some<std::string>(
-          "Cannot specify --fd:4 unless file descriptor 4 is already open");
+      return std::optional<std::string>{
+          "Cannot specify --fd:4 unless file descriptor 4 is already open"};
     }
 
     if (fd5 && fstat(5, &sbuf) != 0) {
-      return wcl::some<std::string>(
-          "Cannot specify --fd:5 unless file descriptor 5 is already open");
+      return std::optional<std::string>{
+          "Cannot specify --fd:5 unless file descriptor 5 is already open"};
     }
 
     return {};

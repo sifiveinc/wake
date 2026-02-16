@@ -21,8 +21,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include "optional.h"
-
 namespace wcl {
 
 // assumes that type != DT_UNKNOWN
@@ -72,7 +70,7 @@ void directory_iterator::step() {
   errno = 0;
   dirent *entry = readdir(dir);
   if (entry == nullptr && errno != 0) {
-    value = some(make_errno<directory_entry>());
+    value = std::make_optional(make_errno<directory_entry>());
     return;
   }
 
@@ -85,7 +83,7 @@ void directory_iterator::step() {
     // We set value not just to empty but to an error for EBADF.
     // This mimics what would happen if you called readdir again
     // after passing the end of the DIR
-    value = some(make_error<directory_entry, posix_error_t>(EBADF));
+    value = std::make_optional(make_error<directory_entry, posix_error_t>(EBADF));
     return;
   }
 
@@ -105,7 +103,7 @@ void directory_iterator::step() {
     out.type = dir_type_conv(entry->d_type);
   }
 
-  value = some(make_result<directory_entry, posix_error_t>(std::move(out)));
+  value = std::make_optional(make_result<directory_entry, posix_error_t>(std::move(out)));
 }
 
 }  // namespace wcl

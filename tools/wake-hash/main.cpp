@@ -43,7 +43,6 @@
 
 #include "blake2/blake2.h"
 #include "compat/nofollow.h"
-#include "wcl/optional.h"
 #include "wcl/unique_fd.h"
 #include "wcl/xoshiro_256.h"
 
@@ -125,10 +124,10 @@ struct Hash256 {
 static std::optional<Hash256> hash_exotic() {
   Hash256 out;
   out.data[0] = 1;
-  return wcl::make_some<Hash256>(out);
+  return std::make_optional(out);
 }
 
-static std::optional<Hash256> hash_dir() { return wcl::some(Hash256()); }
+static std::optional<Hash256> hash_dir() { return std::make_optional(Hash256()); }
 
 static std::optional<Hash256> hash_link(const char* link) {
   blake2b_state S;
@@ -152,7 +151,7 @@ static std::optional<Hash256> hash_link(const char* link) {
   blake2b_update(&S, reinterpret_cast<uint8_t*>(buffer.data()), buffer.size());
   blake2b_final(&S, &hash[0], sizeof(hash));
 
-  return wcl::some(Hash256::from_hash(&hash));
+  return std::make_optional(Hash256::from_hash(&hash));
 }
 
 static std::optional<Hash256> hash_file(const char* file, int fd) {
@@ -169,7 +168,7 @@ static std::optional<Hash256> hash_file(const char* file, int fd) {
     return {};
   }
 
-  return wcl::some(Hash256::from_hash(&hash));
+  return std::make_optional(Hash256::from_hash(&hash));
 }
 
 static std::optional<Hash256> do_hash(const char* file) {
