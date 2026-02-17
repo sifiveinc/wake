@@ -3,15 +3,22 @@
 
 #define SCHEMA_VERSION "9"
 
+// Connection-level pragmas that must be set on EVERY database connection.
+// These do not persist in the database file and must be reapplied each time.
+inline const char* getConnectionPragmaSQL() {
+  return "pragma synchronous=0;"        // Faster writes
+         "pragma locking_mode=normal;"  // Allow other connections
+         "pragma busy_timeout=30000;"   // Wait up to 30s for locks
+         "pragma foreign_keys=on;";     // Enforce FK constraints
+}
+
+// Database-level pragmas and schema DDL.
+// Database-level pragmas (auto_vacuum, journal_mode) persist in the database file.
 // Increment the SCHEMA_VERSION every time the below string changes.
 // Also add migrations to the wake-migration tool if needed.
 inline const char* getWakeSchemaSQL() {
   return "pragma auto_vacuum=incremental;"
          "pragma journal_mode=wal;"
-         "pragma synchronous=0;"
-         "pragma locking_mode=normal;"
-         "pragma busy_timeout=30000;"
-         "pragma foreign_keys=on;"
          "create table if not exists entropy("
          "  row_id integer primary key autoincrement,"
          "  seed   integer not null);"
