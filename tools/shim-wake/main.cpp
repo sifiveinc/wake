@@ -208,15 +208,20 @@ int main(int argc, char **argv) {
   }
 
   // Close all open file handles except 0-4 so we leak less into the child process
-  auto res = wcl::directory_range::open("/proc/self/fd/");
+#ifdef __linux__
+  const char *fd_dir = "/proc/self/fd/";
+#else
+  const char *fd_dir = "/dev/fd/";
+#endif
+  auto res = wcl::directory_range::open(fd_dir);
   if (!res) {
-    fprintf(stderr, "wcl::directory_range::open(/proc/self/fd/): %s\n", strerror(res.error()));
+    fprintf(stderr, "wcl::directory_range::open(%s): %s\n", fd_dir, strerror(res.error()));
     return 127;
   }
   std::vector<int> fds_to_close;
   for (const auto &entry : *res) {
     if (!entry) {
-      fprintf(stderr, "bad /proc/self/fd/ entry: %s\n", strerror(entry.error()));
+      fprintf(stderr, "bad %s entry: %s\n", fd_dir, strerror(entry.error()));
       return 127;
     }
     if (entry->name == "." || entry->name == "..") continue;

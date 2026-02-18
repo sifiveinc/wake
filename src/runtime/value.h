@@ -19,6 +19,7 @@
 #define VALUE_H
 
 #include <gmp.h>
+#include <re2/stringpiece.h>
 #include <stdlib.h>
 
 #include <limits>
@@ -30,7 +31,6 @@
 
 namespace re2 {
 class RE2;
-class StringPiece;
 }  // namespace re2
 
 #define APP_PRECEDENCE 14

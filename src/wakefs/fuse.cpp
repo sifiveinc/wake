@@ -244,7 +244,9 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     }
 
     if (timeout_pid == 0) {
+#ifdef __linux__
       prctl(PR_SET_NAME, "wb-timer", 0, 0, 0);
+#endif
       sleep(*args.command_timeout);
       exit(124);
     }
