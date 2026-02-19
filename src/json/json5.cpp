@@ -22,9 +22,9 @@
 #include "json5.h"
 
 #include <memory>
+#include <optional>
 #include <sstream>
 
-#include "wcl/optional.h"
 #include "wcl/tracing.h"
 
 const char *jsymbolTable[] = {
@@ -51,12 +51,12 @@ JAST &JAST::get(const std::string &key) {
   return null;
 }
 
-wcl::optional<const JAST *> JAST::get_opt(const std::string &key) const {
+std::optional<const JAST *> JAST::get_opt(const std::string &key) const {
   const JAST &item = get(key);
   if (&item == &null) {
     return {};
   }
-  return wcl::some(&item);
+  return std::make_optional(&item);
 }
 
 JAST &JAST::add(std::string key, SymbolJSON kind, std::string &&value) {

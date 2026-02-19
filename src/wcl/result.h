@@ -20,9 +20,8 @@
 #include <errno.h>
 
 #include <cstdint>
+#include <optional>
 #include <utility>
-
-#include "optional.h"
 
 namespace wcl {
 
@@ -88,11 +87,9 @@ class alignas(max(alignof(T), alignof(E))) result_base<T, E, true> {
     is_error = other.is_error;
     // NOTE: On move we just use the move constructors
     // of each value and we don't call their destructors yet.
-    // So if you move a result, it will keeps its errorness
-    // but the underlying value may be changed. This is
-    // distinct from wcl::optional which reverts the state
-    // the default state on move rather than leaving itself
-    // a populated state.
+    // So if you move a result, it will keep its errorness
+    // but the underlying value may be changed. This matches
+    // the behavior of std::optional.
     if (is_error) {
       new (&error_) E(std::move(other.error_));
     } else {
@@ -135,7 +132,8 @@ class alignas(max(alignof(T), alignof(E))) result_base<T, E, true> {
   }
 
   template <class... Args>
-  result_base(in_place_t, Args&&... args) : value(std::forward<Args>(args)...), is_error(false) {}
+  result_base(std::in_place_t, Args&&... args)
+      : value(std::forward<Args>(args)...), is_error(false) {}
 
   template <class... Args>
   result_base(in_place_error_t, Args&&... args)
@@ -195,7 +193,8 @@ class alignas(max(alignof(T), alignof(E))) result_base<T, E, false> {
   }
 
   template <class... Args>
-  result_base(in_place_t, Args&&... args) : value(std::forward<Args>(args)...), is_error(false) {}
+  result_base(std::in_place_t, Args&&... args)
+      : value(std::forward<Args>(args)...), is_error(false) {}
 
   template <class... Args>
   result_base(in_place_error_t, Args&&... args)
@@ -211,7 +210,7 @@ template <class T, class E>
 class result : public result_base_t<T, E> {
  public:
   template <class... Args>
-  result(in_place_t x, Args&&... args) : result_base_t<T, E>(x, std::forward<Args>(args)...) {}
+  result(std::in_place_t x, Args&&... args) : result_base_t<T, E>(x, std::forward<Args>(args)...) {}
   template <class... Args>
   result(in_place_error_t x, Args&&... args)
       : result_base_t<T, E>(x, std::forward<Args>(args)...) {}
@@ -246,7 +245,7 @@ class result : public result_base_t<T, E> {
 // for instance.
 template <class E, class T>
 result<T, E> result_value(T&& x) {
-  return result<T, E>{in_place_t{}, std::forward<T>(x)};
+  return result<T, E>{std::in_place, std::forward<T>(x)};
 }
 
 // `make_result` is the more general sibling of `result_value`
@@ -254,7 +253,7 @@ result<T, E> result_value(T&& x) {
 // constructor. Both types must be specified when using this.
 template <class T, class E, class... Args>
 result<T, E> make_result(Args&&... args) {
-  return result<T, E>{in_place_t{}, std::forward<Args>(args)...};
+  return result<T, E>{std::in_place, std::forward<Args>(args)...};
 }
 
 // Creates a result error from an existing object. Only requires the

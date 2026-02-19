@@ -16,7 +16,6 @@
  */
 
 #include <wcl/diff.h>
-#include <wcl/optional.h>
 #include <wcl/xoshiro_256.h>
 
 #include <string>

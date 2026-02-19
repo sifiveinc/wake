@@ -34,16 +34,6 @@ PASSED:
   iterator_split_by_no_delim
   iterator_split_by_nominal
   iterator_split_by_only_delim
-  option_assign1
-  option_assign2
-  option_copy
-  option_destructs
-  option_forward
-  option_inplace
-  option_move
-  option_no_construct
-  option_none_is_none
-  option_some
   result_assign1
   result_assign2
   result_copy

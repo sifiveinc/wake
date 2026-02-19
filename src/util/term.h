@@ -17,8 +17,7 @@
 
 #pragma once
 
-#include <wcl/optional.h>
-
+#include <optional>
 #include <stack>
 #include <streambuf>
 #include <vector>

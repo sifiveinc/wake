@@ -21,6 +21,9 @@ export def cpp11Flags =
 export def cpp14Flags =
     ("-std=c++14", Nil)
 
+export def cpp17Flags =
+    ("-std=c++17", Nil)
+
 export def c11Flags =
     ("-std=c11", Nil)
 
@@ -125,6 +128,15 @@ publish compileC =
 publish compileC =
     makeCompileC "native-cpp14-static" (which "c++") (cpp14Flags ++ staticCFlags)
 
+publish compileC =
+    makeCompileC "native-cpp17-debug" (which "c++") (cpp17Flags ++ debugCFlags)
+
+publish compileC =
+    makeCompileC "native-cpp17-release" (which "c++") (cpp17Flags ++ releaseCFlags)
+
+publish compileC =
+    makeCompileC "native-cpp17-static" (which "c++") (cpp17Flags ++ staticCFlags)
+
 export topic linkO: Pair String ((extraFlags: List String) => (objects: List Path) => (targ: String) => (extraFiles: List Path) => Result (List Path) Error)
 
 publish linkO =
@@ -153,6 +165,15 @@ publish linkO =
 
 publish linkO =
     makeLinkO "native-cpp14-static" (which "c++") (cpp14Flags ++ staticLFlags)
+
+publish linkO =
+    makeLinkO "native-cpp17-debug" (which "c++") (cpp17Flags ++ debugLFlags)
+
+publish linkO =
+    makeLinkO "native-cpp17-release" (which "c++") (cpp17Flags ++ releaseLFlags)
+
+publish linkO =
+    makeLinkO "native-cpp17-static" (which "c++") (cpp17Flags ++ staticLFlags)
 
 def pickVariant variant variants = match (find (variant ==* _.getPairFirst) variants)
     Some (Pair x _) -> Pass x.getPairSecond

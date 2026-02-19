@@ -785,7 +785,7 @@ static void setup_fd_buf(JobTable *jobtable, int fd) {
 // Helper function to create a stream buffer
 static std::unique_ptr<std::streambuf> create_stream_buf(
     JobTable *jobtable, int fd, const char *stream_name,
-    const wcl::optional<std::string> &job_label_str, int color) {
+    const std::optional<std::string> &job_label_str, int color) {
   if (fd != -1 && RE2::FullMatch(*job_label_str, *WakeConfig::get()->label_filter)) {
     return std::make_unique<StatusBuf>(stream_name, job_label_str, color,
                                        *jobtable->imp->term_bufs[fd].get());
@@ -852,7 +852,7 @@ static void launch(JobTable *jobtable) {
 
     // Now we need to figure out if we're outputting to a null buffer to avoid rendering
     // or if we're going to output to a nicely rendered StatusBuf.
-    auto job_label_str = wcl::some(task.job->label->as_str());
+    auto job_label_str = std::make_optional(task.job->label->as_str());
     std::unique_ptr<std::streambuf> out =
         create_stream_buf(jobtable, fd_out, task.job->stream_out.c_str(), job_label_str, color_out);
     std::unique_ptr<std::streambuf> err =

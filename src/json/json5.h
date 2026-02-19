@@ -19,12 +19,12 @@
 #define JSON5_H
 
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <vector>
 
 #include "util/location.h"
-#include "wcl/optional.h"
 #include "wcl/tracing.h"
 #include "wcl/unique_fd.h"
 
@@ -101,7 +101,7 @@ struct JAST {
 
   const JAST &get(const std::string &key) const;
   JAST &get(const std::string &key);
-  wcl::optional<const JAST *> get_opt(const std::string &key) const;
+  std::optional<const JAST *> get_opt(const std::string &key) const;
 
   // Add a child to a JObject
   JAST &add(std::string key, SymbolJSON kind, std::string &&value);
@@ -141,26 +141,26 @@ struct JAST {
   JAST &add(SymbolJSON kind) { return add(std::string(), kind, std::string()); }
   JAST &add(std::string value) { return add(std::string(), JSON_STR, std::move(value)); }
 
-  wcl::optional<std::string> expect_string() const {
+  std::optional<std::string> expect_string() const {
     if (kind == JSON_STR) {
-      return wcl::make_some<std::string>(value);
+      return std::optional<std::string>{value};
     }
     return {};
   }
 
-  wcl::optional<int64_t> expect_integer() const {
+  std::optional<int64_t> expect_integer() const {
     if (kind == JSON_INTEGER) {
-      return wcl::make_some<int64_t>(std::stol(value));
+      return std::optional<int64_t>{std::stol(value)};
     }
     return {};
   }
 
-  wcl::optional<bool> expect_boolean() const {
+  std::optional<bool> expect_boolean() const {
     if (kind == JSON_TRUE) {
-      return wcl::some(true);
+      return std::make_optional(true);
     }
     if (kind == JSON_FALSE) {
-      return wcl::some(false);
+      return std::make_optional(false);
     }
     return {};
   }

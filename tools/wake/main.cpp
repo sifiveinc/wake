@@ -377,7 +377,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  wcl::optional<std::string> validate_msg = clo.validate();
+  std::optional<std::string> validate_msg = clo.validate();
   if (validate_msg) {
     std::cerr << *validate_msg << std::endl;
     return 1;
@@ -504,13 +504,13 @@ int main(int argc, char **argv) {
   // Now check for any flags that override config options
   WakeConfigOverrides config_override;
   if (clo.label_filter) {
-    config_override.label_filter = wcl::some(wcl::make_some<std::string>(clo.label_filter));
+    config_override.label_filter = std::make_optional(std::optional<std::string>{clo.label_filter});
   }
   if (clo.log_header) {
-    config_override.log_header = wcl::make_some<std::string>(clo.log_header);
+    config_override.log_header = std::optional<std::string>{clo.log_header};
   }
   if (clo.user_config) {
-    config_override.user_config = wcl::make_some<std::string>(clo.user_config);
+    config_override.user_config = std::optional<std::string>{clo.user_config};
   }
   config_override.log_header_source_width = clo.log_header_source_width;
   config_override.log_header_align = clo.log_header_align;

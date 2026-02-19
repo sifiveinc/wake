@@ -69,7 +69,7 @@ bool json_as_struct(const std::string &json, json_args &result) {
       return false;
     }
 
-    result.command_timeout = wcl::make_some<int>(timeout);
+    result.command_timeout = std::optional<int>{timeout};
   } else if (timeout_entry.kind != JSON_NULLVAL) {
     std::cerr << "timeout must be be an integer value greater than 0" << std::endl;
     return false;

@@ -20,10 +20,10 @@
 
 #include <sys/time.h>
 #include <util/term.h>
-#include <wcl/optional.h>
 
 #include <iostream>
 #include <list>
+#include <optional>
 #include <string>
 
 struct Status {
@@ -55,7 +55,7 @@ struct StatusState {
 class StatusBuf : public std::streambuf {
  private:
   std::string name;
-  wcl::optional<std::string> extra;
+  std::optional<std::string> extra;
   int color;
   TermInfoBuf &buf;
   std::string line_buf;
@@ -70,7 +70,7 @@ class StatusBuf : public std::streambuf {
   void emit_header();
 
  public:
-  explicit StatusBuf(std::string name, wcl::optional<std::string> extra, int color,
+  explicit StatusBuf(std::string name, std::optional<std::string> extra, int color,
                      TermInfoBuf &buf);
 
   virtual ~StatusBuf() override;
