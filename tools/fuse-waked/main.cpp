@@ -53,6 +53,16 @@
 // We ensure STDIN is /dev/null, so this is a safe sentinel value for open files
 #define BAD_FD STDIN_FILENO
 
+#ifndef __APPLE__
+// Attempt to lazily unmount a stale mount point (fails silently if not mounted)
+static void try_unmount_stale(const char *path, bool debug) {
+  std::string cmd = "fusermount -uz '" + std::string(path) + "' 2>/dev/null";
+  if (system(cmd.c_str()) == 0 && debug) {
+    fprintf(stderr, "Unmounted stale mount at %s\n", path);
+  }
+}
+#endif
+
 // How long to wait for a new client to connect before the daemon exits
 static int linger_timeout;
 static std::set<std::string> hardlinks = {};
@@ -1556,6 +1566,11 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "fuse_opt_add_arg debug failed\n");
     goto rmroot;
   }
+
+#ifndef __APPLE__
+  // Attempt to clean up any stale mount before trying to mount
+  try_unmount_stale(path.c_str(), debug);
+#endif
 
   fc = fuse_mount(path.c_str(), &args);
   if (!fc) {
