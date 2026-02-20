@@ -50,18 +50,20 @@ result<bool, posix_error_t> try_reflink(const std::string& src, const std::strin
 #ifdef HAS_FICLONE
   auto src_fd = unique_fd::open(src.c_str(), O_RDONLY);
   if (!src_fd) {
-    return make_errno<bool>();
+    return make_error<bool, posix_error_t>(src_fd.error());
   }
 
   auto dst_fd = unique_fd::open(dst.c_str(), O_WRONLY | O_CREAT | O_EXCL, mode);
   if (!dst_fd) {
-    return make_errno<bool>();
+    return make_error<bool, posix_error_t>(dst_fd.error());
   }
 
   if (ioctl(dst_fd->get(), FICLONE, src_fd->get()) < 0) {
-    // Clean up the created file on failure
-    unlink(dst.c_str());
-    return make_errno<bool>();
+    int saved_errno = errno;
+    dst_fd->close();
+    std::error_code ec;
+    fs::remove(dst, ec);  // Ignore error
+    return make_error<bool, posix_error_t>(saved_errno);
   }
 
   return make_result<bool, posix_error_t>(true);
@@ -69,8 +71,7 @@ result<bool, posix_error_t> try_reflink(const std::string& src, const std::strin
   (void)src;
   (void)dst;
   (void)mode;
-  errno = EOPNOTSUPP;
-  return make_errno<bool>();
+  return make_errno<bool>(EOPNOTSUPP);
 #endif
 }
 
@@ -98,15 +99,21 @@ result<CopyResult, posix_error_t> reflink_or_copy_file(const std::string& src,
   // Set the file permissions (copy_file preserves source permissions, but we want explicit mode)
   fs::permissions(dst, static_cast<fs::perms>(mode), ec);
   if (ec) {
-    fs::remove(dst);
-    return make_error<CopyResult, posix_error_t>(ec.value());
+    int orig_err = ec.value();
+    fs::remove(dst, ec);  // Ignore error
+    return make_error<CopyResult, posix_error_t>(orig_err);
   }
 
   // Get file size for the result
   auto file_size = fs::file_size(dst, ec);
-  size_t bytes_copied = ec ? 0 : static_cast<size_t>(file_size);
+  if (ec) {
+    int orig_err = ec.value();
+    fs::remove(dst, ec);
+    return make_error<CopyResult, posix_error_t>(orig_err);
+  }
 
-  return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Copy, bytes_copied});
+  return make_result<CopyResult, posix_error_t>(
+      CopyResult{CopyStrategy::Copy, static_cast<size_t>(file_size)});
 }
 
 }  // namespace wcl

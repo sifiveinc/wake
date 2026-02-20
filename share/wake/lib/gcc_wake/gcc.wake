@@ -15,6 +15,42 @@
 
 package gcc_wake
 
+# Detect the system GCC version
+target detectGccVersion Unit: Integer =
+    def gxx = which "g++"
+
+    def result =
+        makeExecPlan (gxx, "--version", Nil) Nil
+        | setPlanLabel "g++: detect version for libstdc++"
+        | setPlanStdout logNever
+        | setPlanStderr logNever
+        | runJobWith localRunner
+
+    require True = result.isJobOk
+    else 0
+
+    def output =
+        result.getJobStdout
+        | getWhenFail ""
+
+    match (extract `^g\+\+.*\) ([0-9]+)\..*` output)
+        (majorStr, Nil) -> match (int majorStr)
+            Some major -> major
+            None -> 0
+        _ -> 0
+
+
+def needsFilesystemLib Unit: Boolean =
+    def gccVersion = detectGccVersion Unit
+
+    gccVersion > 0 && gccVersion < 9
+
+def filesystemLFlag Unit =
+    if needsFilesystemLib Unit then
+        "-lstdc++fs", Nil
+    else
+        Nil
+
 export def cpp11Flags =
     ("-std=c++11", Nil)
 
@@ -31,19 +67,19 @@ export def debugCFlags =
     ("-Wall", "-Wextra", "-Wno-format-security", "-O0", "-g", "-pg", Nil)
 
 export def debugLFlags =
-    ("-lpthread", "-g", "-pg", "-Wl,--build-id", "-lstdc++fs", Nil)
+    ("-lpthread", "-g", "-pg", "-Wl,--build-id", Nil) ++ filesystemLFlag Unit
 
 export def releaseCFlags =
     ("-Wall", "-Wno-format-security", "-g", "-O2", Nil)
 
 export def releaseLFlags =
-    ("-lpthread", "-Wl,--build-id", "-lstdc++fs", Nil)
+    ("-lpthread", "-Wl,--build-id", Nil) ++ filesystemLFlag Unit
 
 export def staticCFlags =
     ("-Wall", "-Wno-format-security", "-g", "-O2", "-flto", Nil)
 
 export def staticLFlags =
-    ("-lpthread", "-flto", "-static", "-Wl,--build-id", "-lstdc++fs", Nil)
+    ("-lpthread", "-flto", "-static", "-Wl,--build-id", Nil) ++ filesystemLFlag Unit
 
 def doCompileC variant gcc flags headers cfile =
     def obj = replace `\.c(pp)?$` ".{variant}.o" cfile.getPathName

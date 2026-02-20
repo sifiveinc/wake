@@ -17,56 +17,71 @@
 
 #pragma once
 
-#define _XOPEN_SOURCE 700
-#define _POSIX_C_SOURCE 200809L
-
-#include <sys/types.h>
-
 #include <string>
 
-#include "blake2/blake2.h"
+#include "content_hash.h"
 #include "wcl/result.h"
 
 namespace cas {
 
-// Forward declarations
-class CASStore;
+// Error types for CAS operations
+enum class CASError { NotFound, IOError, CorruptedData, AlreadyExists, InvalidHash };
 
-// 256-bit content hash using BLAKE2b
-struct ContentHash {
-  uint64_t data[4] = {0};
+// Convert CASError to string for logging
+std::string cas_error_to_string(CASError error);
 
-  ContentHash() = default;
-  ContentHash(const ContentHash&) = default;
-  ContentHash& operator=(const ContentHash&) = default;
+// Content-addressable storage for blobs
+// Directory structure:
+//   {root}/
+//     blobs/
+//       {prefix}/
+//         {suffix}          # Blob content
+class Cas {
+ public:
+  Cas() = delete;
+  Cas(const Cas&) = delete;
+  Cas(Cas&&) = default;
 
-  // Create hash from raw bytes
-  static ContentHash from_bytes(const uint8_t* bytes, size_t len);
+  // Create a CAS store at the given root directory
+  // Creates the directory structure if it doesn't exist
+  static wcl::result<Cas, CASError> open(const std::string& root,
+                                         const std::string& blobs_subdir = "blobs",
+                                         const std::string& staging_subdir = "staging");
 
-  // Create hash from a file's contents
-  static wcl::result<ContentHash, wcl::posix_error_t> from_file(const std::string& path);
+  // Get the root directory of this store
+  const std::string& root() const { return root_; }
 
-  // Create hash from string data
-  static ContentHash from_string(const std::string& data);
+  // Store a blob from a file, returns the content hash
+  // Uses reflink if possible, otherwise copies the file
+  wcl::result<ContentHash, CASError> store_blob_from_file(const std::string& path);
 
-  // Create hash from hex string (64 characters)
-  static ContentHash from_hex(const std::string& hex);
+  // Store a blob from memory, returns the content hash
+  wcl::result<ContentHash, CASError> store_blob(const std::string& data);
 
-  // Convert to hex string
-  std::string to_hex() const;
+  // Check if a blob exists
+  bool has_blob(const ContentHash& hash) const;
 
-  // Get the first two hex characters (for directory sharding)
-  std::string prefix() const;
+  // Get the path to a blob in the store (may not exist)
+  std::string blob_path(const ContentHash& hash) const;
 
-  // Get the remaining hex characters (for filename)
-  std::string suffix() const;
+  // Read a blob's contents
+  wcl::result<std::string, CASError> read_blob(const ContentHash& hash) const;
 
-  bool operator==(const ContentHash& other) const;
-  bool operator!=(const ContentHash& other) const;
-  bool operator<(const ContentHash& other) const;
+  // Materialize a blob to a file path (uses reflink if possible)
+  wcl::result<bool, CASError> materialize_blob(const ContentHash& hash,
+                                               const std::string& dest_path, mode_t mode) const;
 
-  // Check if hash is zero/empty
-  bool is_empty() const;
+ private:
+  std::string root_;
+  std::string blobs_dir_;
+  std::string staging_dir_;
+
+  explicit Cas(const std::string& root, const std::string& blobs_dir,
+               const std::string& staging_dir);
+
+  // Ensure the shard directory exists for a given hash
+  // Returns true on success
+  wcl::result<bool, CASError> ensure_shard_dir(const ContentHash& hash) const;
 };
 
 }  // namespace cas
