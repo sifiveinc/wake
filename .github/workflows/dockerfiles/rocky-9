@@ -4,7 +4,7 @@ RUN echo fastestmirror=1 >> /etc/dnf/dnf.conf
 RUN dnf clean all
 RUN dnf install -y epel-release
 RUN dnf --enablerepo=crb install -y fuse-devel
-RUN dnf install -y rpm-build rpm-devel rpmlint make python3 bash diffutils patch rpmdevtools m4 tar xz dash git which make gcc gcc-c++ fuse gmp-devel ncurses-devel sqlite-devel re2-devel squashfuse dash wget iproute jq openssl-devel
+RUN dnf install -y rpm-build rpm-devel rpmlint make python3 bash diffutils patch rpmdevtools m4 tar xz dash git which make gcc gcc-c++ fuse gmp-devel ncurses-devel sqlite-devel sqlite re2-devel squashfuse dash wget iproute jq openssl-devel
 
 RUN rpmdev-setuptree
 
