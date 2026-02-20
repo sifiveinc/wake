@@ -214,6 +214,7 @@ def computeHashes (prefix: String) (files: List String): List String =
     def job =
         plan
         | setPlanEcho logDebug
+        # localRunner is required to avoid an infinite loop through makeJSONRunner/writeImp.
         | runJobWith localRunner
         | setJobInspectVisibilityHidden
 
@@ -252,6 +253,8 @@ def hashUsage =
     | setUsageCPUtime 0.1
 
 target hashcode (f: String): String =
+    # Check if the file was already hashed as an output from a previous job.  The prim also checks
+    # the modtime to determine whether the file needs to be rehashed even if it *is* in the db.
     def get f = prim "get_hash"
     def reuse = get f
 
@@ -262,6 +265,8 @@ target hashcode (f: String): String =
             Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
 
         def job =
+            # "<hash>" is a magic string which triggers main.cpp to hash the file rather than read
+            # the "command" as an actual command.
             hashPlan ("<hash>", f, Nil)
             | setPlanLabel "hash: {f}"
             | setPlanEcho logDebug

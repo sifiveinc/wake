@@ -738,26 +738,27 @@ def timeoutErrorMessage: String =
 def cascadeTimeoutErrorMessage: String =
     "rsc: Remote cache previously disabled due to timeout"
 
-# Generates a UUID (using date in nano seconds) for the current wake invocation.
+# Generates a unique ID (using date in nano seconds) for the current wake invocation.
 # This is used to verify and disable requests to the cache that are from the same invocation.
-def generateUUID Unit: Result String Error =
-    def uuidJob =
+def generateID Unit: Result String Error =
+    def idJob =
         makeExecPlan ("date", "+%s%N", Nil) Nil
-        | setPlanLabel "rsc: generate client uuid"
-        | setPlanPersistence Once # Exactly one UUID per wake invocation
+        | setPlanLabel "rsc: generate client id"
+        | setPlanPersistence Once # Exactly one ID per wake invocation
         | setPlanEcho logDebug
-        | runJobWith localRunner
+        # Use fuseRunner rather than defaultRunner to avoid a loop through makeRemoteCacheAPI.
+        | runJobWith fuseRunner
         | setJobInspectVisibilityHidden
 
-    require True = isJobOk uuidJob
-    else failWithError "failed to generate UUID for Wake invocation."
+    require True = isJobOk idJob
+    else failWithError "failed to generate ID for Wake invocation."
 
-    uuidJob
+    idJob
     | getJobStdout
 
 def disableRemoteCache Unit: Result Unit Error =
-    require Pass uuid = generateUUID Unit
-    require Pass _ = write disableCacheFilePath uuid
+    require Pass id = generateID Unit
+    require Pass _ = write disableCacheFilePath id
 
     Pass Unit
 
@@ -775,7 +776,7 @@ export def guardRemoteCacheDisabled Unit: Result Unit Error =
     require Pass writtenUuid = readTmpFile disableCacheFilePath
     else Pass Unit
 
-    require Pass currentWakeUuid = generateUUID Unit
+    require Pass currentWakeUuid = generateID Unit
 
     require True = writtenUuid !=* currentWakeUuid
     else failWithError cascadeTimeoutErrorMessage
