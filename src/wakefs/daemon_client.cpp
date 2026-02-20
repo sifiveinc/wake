@@ -52,7 +52,8 @@ daemon_client::daemon_client(const std::string &base_dir)
       visibles_path(mount_path + "/.i." + std::to_string(getpid())) {}
 
 // The arg 'visible' is destroyed/moved in the interest of performance with large visible lists.
-bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_file) {
+bool daemon_client::connect(std::vector<visible_file> &visible, const std::string &cas_blobs_dir,
+                            bool close_live_file) {
   int err = mkdir_with_parents(mount_path, 0775);
   if (0 != err) {
     std::cerr << "mkdir_with_parents ('" << mount_path << "'):" << strerror(err) << std::endl;
@@ -117,8 +118,17 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
 
   // The fuse-waked process takes an input file containing visible files, json formatted.
   JAST for_daemon(JSON_OBJECT);
+
+  // Add CAS blobs directory
+  for_daemon.add("cas_blobs_dir", cas_blobs_dir);
+
+  // Add visible files with path and hash
   auto &vis = for_daemon.add("visible", JSON_ARRAY);
-  for (auto &s : visible) vis.add(std::move(s));
+  for (auto &v : visible) {
+    auto &obj = vis.add(JSON_OBJECT);
+    obj.add("path", v.path);
+    obj.add("hash", v.hash);
+  }
 
   std::ofstream ijson(visibles_path);
   ijson << for_daemon;

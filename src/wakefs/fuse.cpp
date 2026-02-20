@@ -41,15 +41,50 @@
 #include <sys/prctl.h>
 #endif
 
+#include "blake2/blake2.h"
 #include "compat/rusage.h"
 #include "json/json5.h"
 #include "namespace.h"
 #include "util/execpath.h"
 #include "util/shell.h"
+#include "wcl/optional.h"
+#include "wcl/xoshiro_256.h"
 
 #ifndef HOST_NAME_MAX
 #define HOST_NAME_MAX 255
 #endif
+
+// Helper function to compute BLAKE2b hash of a file, returning the hash as a hex string.
+// Returns an empty optional on failure.
+static wcl::optional<std::string> hash_file_blake2b(const std::string &path) {
+  int fd = open(path.c_str(), O_RDONLY);
+  if (fd < 0) {
+    std::cerr << "hash_file_blake2b: open(" << path << "): " << strerror(errno) << std::endl;
+    return {};
+  }
+
+  blake2b_state S;
+  uint8_t hash[32];
+  uint8_t buffer[8192];
+  ssize_t got;
+
+  blake2b_init(&S, sizeof(hash));
+  while ((got = read(fd, buffer, sizeof(buffer))) > 0) {
+    blake2b_update(&S, buffer, got);
+  }
+  blake2b_final(&S, hash, sizeof(hash));
+  close(fd);
+
+  if (got < 0) {
+    std::cerr << "hash_file_blake2b: read(" << path << "): " << strerror(errno) << std::endl;
+    return {};
+  }
+
+  // Convert the hash bytes to a hex string using wcl::to_hex
+  uint64_t data[4];
+  memcpy(data, hash, sizeof(hash));
+  return wcl::some(wcl::to_hex(&data));
+}
 
 bool json_as_struct(const std::string &json, json_args &result) {
   JAST jast;
@@ -59,7 +94,24 @@ bool json_as_struct(const std::string &json, json_args &result) {
 
   for (auto &x : jast.get("environment").children) result.environment.push_back(x.second.value);
 
-  for (auto &x : jast.get("visible").children) result.visible.push_back(x.second.value);
+  for (auto &x : jast.get("visible").children) {
+    visible_file vf;
+    if (x.second.kind == JSON_OBJECT) {
+      vf.path = x.second.get("path").value;
+      vf.hash = x.second.get("hash").value;
+    } else {
+      // TODO: check if we need to keep this Legacy format with just a string path (no CAS lookup possible)
+      vf.path = x.second.value;
+      vf.hash = "";  // Empty hash means read from workspace
+    }
+    result.visible.push_back(vf);
+  }
+
+  // Parse CAS blobs directory with default
+  result.cas_blobs_dir = jast.get("cas-blobs-dir").value;
+  if (result.cas_blobs_dir.empty()) {
+    result.cas_blobs_dir = ".cas/blobs";
+  }
 
   JAST timeout_entry = jast.get("command-timeout");
   if (timeout_entry.kind == JSON_INTEGER) {
@@ -113,6 +165,75 @@ int execve_wrapper(const std::vector<std::string> &command,
   return errno;
 }
 
+// Process staging items from FUSE daemon: hash files, pass through symlinks/directories
+static bool process_staging_files(const JAST &staging_files, JAST &staging_files_with_hash) {
+  for (const auto &entry : staging_files.children) {
+    const std::string &dest_path = entry.first;
+    const JAST &item_info = entry.second;
+
+    // Get the type field (file, symlink, or directory)
+    std::string type = item_info.get("type").value;
+    if (type.empty()) {
+      // Default to "file" for backward compatibility
+      type = "file";
+    }
+
+    JAST &out_entry = staging_files_with_hash.add(dest_path, JSON_OBJECT);
+    out_entry.add("type", type);
+
+    if (type == "file") {
+      // For files: hash the staging file and pass through metadata
+      std::string staging_path = item_info.get("staging_path").value;
+      if (staging_path.empty()) {
+        std::cerr << "Missing staging_path for file " << dest_path << std::endl;
+        continue;
+      }
+
+      // Parse integer fields
+      long long mode = 0;
+      long long mtime_sec = 0;
+      long long mtime_nsec = 0;
+      try {
+        mode = std::stoll(item_info.get("mode").value);
+        mtime_sec = std::stoll(item_info.get("mtime_sec").value);
+        mtime_nsec = std::stoll(item_info.get("mtime_nsec").value);
+      } catch (const std::exception &e) {
+        std::cerr << "Failed to parse metadata for " << dest_path << ": " << e.what() << std::endl;
+        continue;
+      }
+
+      // Compute content hash
+      auto hash_result = hash_file_blake2b(staging_path);
+      if (!hash_result) {
+        std::cerr << "Failed to hash " << staging_path << std::endl;
+        continue;
+      }
+
+      out_entry.add("staging_path", staging_path);
+      out_entry.add("mode", mode);
+      out_entry.add("mtime_sec", mtime_sec);
+      out_entry.add("mtime_nsec", mtime_nsec);
+      out_entry.add("hash", *hash_result);
+
+    } else if (type == "symlink") {
+      // For symlinks: just pass through the target
+      std::string target = item_info.get("target").value;
+      out_entry.add("target", target);
+
+    } else if (type == "directory") {
+      // For directories: pass through the mode
+      try {
+        long long mode = std::stoll(item_info.get("mode").value);
+        out_entry.add("mode", mode);
+      } catch (const std::exception &e) {
+        out_entry.add("mode", 0755LL);  // Default mode
+      }
+    }
+  }
+
+  return true;
+}
+
 static bool collect_result_metadata(const std::string daemon_output, const struct timeval &start,
                                     const struct timeval &stop, const pid_t pid, const int status,
                                     const RUsage &rusage, bool timed_out,
@@ -138,6 +259,12 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
   result_jast.add("outputs", JSON_ARRAY).children = std::move(from_daemon.get("outputs").children);
   result_jast.add_bool("timed-out", timed_out);
 
+  // Process staging_files from FUSE daemon: hash files, pass through symlinks/directories
+  // Wake will handle CAS storage and materialization for all types
+  const JAST &staging_files = from_daemon.get("staging_files");
+  JAST &staging_files_out = result_jast.add("staging_files", JSON_OBJECT);
+  process_staging_files(staging_files, staging_files_out);
+
   char hostname[HOST_NAME_MAX + 1];
   if (0 == gethostname(hostname, sizeof(hostname))) result_jast.add("run-host", hostname);
 
@@ -154,7 +281,7 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     return false;
   }
 
-  if (!args.daemon.connect(args.visible, args.isolate_pids)) return false;
+  if (!args.daemon.connect(args.visible, args.cas_blobs_dir, args.isolate_pids)) return false;
 
   struct timeval start;
   gettimeofday(&start, 0);
@@ -228,10 +355,16 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     exit(1);
   }
 
-  // Don't hold IO open while waiting
-  (void)close(STDIN_FILENO);
-  (void)close(STDOUT_FILENO);
-  (void)close(STDERR_FILENO);
+  // Redirect IO to /dev/null while waiting (don't just close, as that would
+  // cause subsequent open() calls to reuse fd 0/1/2, and unique_fd::valid()
+  // returns false for fd=0)
+  int devnull = open("/dev/null", O_RDWR);
+  if (devnull >= 0) {
+    dup2(devnull, STDIN_FILENO);
+    dup2(devnull, STDOUT_FILENO);
+    dup2(devnull, STDERR_FILENO);
+    if (devnull > STDERR_FILENO) close(devnull);
+  }
 
   pid_t timeout_pid = -1;
 

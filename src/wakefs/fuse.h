@@ -25,6 +25,11 @@
 
 #include "namespace.h"
 
+struct visible_file {
+  std::string path;
+  std::string hash;
+};
+
 struct daemon_client {
   // Path to the fuse-waked daemon executable.
   const std::string executable;
@@ -44,7 +49,8 @@ struct daemon_client {
 
   daemon_client(const std::string &base_dir);
 
-  bool connect(std::vector<std::string> &visible, bool close_live_file);
+  bool connect(std::vector<visible_file> &visible, const std::string &cas_blobs_dir,
+               bool close_live_file);
   bool disconnect(std::string &result);
 
  protected:
@@ -56,9 +62,10 @@ struct json_args {
   std::vector<std::string> command;
   std::optional<int> command_timeout;  // timeout in seconds.
   std::vector<std::string> environment;
-  std::vector<std::string> visible;
+  std::vector<visible_file> visible;
   std::string directory;
   std::string stdin_file;
+  std::string cas_blobs_dir;  // Path to CAS blobs directory
 
   std::string hostname;
   std::string domainname;
