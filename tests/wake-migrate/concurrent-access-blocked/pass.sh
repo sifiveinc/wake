@@ -25,8 +25,9 @@ sqlite3 wake.db "PRAGMA journal_mode=WAL; PRAGMA user_version=8; CREATE TABLE t(
 
 # Read transaction's SHARED lock prevents wake-migrate getting EXCLUSIVE.
 # 'ready' fifo synchronizes: sqlite3 signals when it has the lock.
+# Use 'cat fifo' to keep sqlite3's stdin open (more portable than .read).
 mkfifo fifo ready
-printf 'BEGIN;\nSELECT * FROM t;\n.print READY\n.read fifo\n' | sqlite3 wake.db > ready &
+(printf 'BEGIN;\nSELECT * FROM t;\n.print READY\n'; cat fifo) | sqlite3 wake.db > ready &
 HOLDER=$!
 read _ < ready
 
