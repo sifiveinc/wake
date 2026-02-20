@@ -2,6 +2,7 @@
 #include <sqlite3.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstring>
 #include <functional>
 #include <iostream>
@@ -19,6 +20,23 @@ static bool exec_sql(sqlite3* db, const char* sql) {
     return false;
   }
   return true;
+}
+
+// Returns true only if checkpoint fully completed.
+static bool checkpoint_wal(sqlite3* db) {
+  int wal_pages = 0, checkpointed_pages = 0;
+  int rc = sqlite3_wal_checkpoint_v2(db, nullptr, SQLITE_CHECKPOINT_TRUNCATE, &wal_pages,
+                                     &checkpointed_pages);
+
+  if (rc == SQLITE_OK) {
+    return true;
+  }
+  if (rc == SQLITE_BUSY) {
+    std::cerr << "Checkpoint blocked by concurrent access." << std::endl;
+    return false;
+  }
+  std::cerr << "Checkpoint failed: " << sqlite3_errmsg(db) << std::endl;
+  return false;
 }
 
 static bool run_wake_schema(sqlite3* db) {
@@ -70,12 +88,37 @@ static bool set_version(sqlite3* db, int version) {
   return sqlite3_exec(db, schema_sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK;
 }
 
-static bool backup_database(const std::string& db_path) {
-  std::string backup_path = db_path + ".backup";
-  std::string cmd = "cp '" + db_path + "' '" + backup_path + "'";
+static const char* aux_suffixes[] = {"-wal", "-shm", "-journal"};
 
-  std::cout << "Creating backup: " << backup_path << std::endl;
-  return system(cmd.c_str()) == 0;
+// Remove auxiliary files.
+static void unlink_aux(const std::string& db_path) {
+  for (const char* suffix : aux_suffixes) unlink((db_path + suffix).c_str());
+}
+
+// Remove db and auxiliary files.
+static void remove_with_aux(const std::string& db_path) {
+  unlink(db_path.c_str());
+  unlink_aux(db_path);
+}
+
+static bool move_to_backup(const std::string& db_path) {
+  std::string backup_path = db_path + ".backup";
+
+  std::cout << "Moving to backup: " << backup_path << std::endl;
+  if (rename(db_path.c_str(), backup_path.c_str()) != 0) {
+    std::cerr << "Failed to move " << db_path << ": " << strerror(errno) << std::endl;
+    return false;
+  }
+
+  for (const char* suffix : aux_suffixes) {
+    std::string aux_path = db_path + suffix;
+    std::string aux_backup = backup_path + suffix;
+    if (rename(aux_path.c_str(), aux_backup.c_str()) != 0 && errno != ENOENT) {
+      std::cerr << "Warning: failed to move " << aux_path << ": " << strerror(errno) << std::endl;
+    }
+  }
+
+  return true;
 }
 
 static bool has_column(sqlite3* db, const char* table, const char* column) {
@@ -290,7 +333,7 @@ static bool migrate_via_copy(sqlite3* old_db, const std::string& db_path, int fr
 
     // Commit this migration step
     if (!exec_sql(new_db, "COMMIT;")) {
-      std::cerr << "Failed to commit migration step" << std::endl;
+      std::cerr << "Failed to commit migration step." << std::endl;
       sqlite3_close(new_db);
       return false;
     }
@@ -300,27 +343,29 @@ static bool migrate_via_copy(sqlite3* old_db, const std::string& db_path, int fr
 
   // Apply WAKE_SCHEMA_SQL to ensure all current schema objects exist
   if (!run_wake_schema(new_db)) {
-    std::cerr << "Failed to apply WAKE_SCHEMA_SQL after migration" << std::endl;
+    std::cerr << "Failed to apply WAKE_SCHEMA_SQL after migration." << std::endl;
     sqlite3_close(new_db);
     return false;
   }
 
   // Validate the migrated database
   if (!run_integrity_check(new_db)) {
-    std::cerr << "PRAGMA integrity_check failed on migrated database" << std::endl;
+    std::cerr << "PRAGMA integrity_check failed on migrated database." << std::endl;
+    sqlite3_close(new_db);
+    return false;
+  }
+
+  // Checkpoint before close to flush WAL to main file
+  if (!checkpoint_wal(new_db)) {
+    std::cerr << "Checkpoint of migrated database failed." << std::endl;
     sqlite3_close(new_db);
     return false;
   }
 
   sqlite3_close(new_db);
 
-  // Swap the migrated database into place
-  std::string move_new_cmd = "mv '" + temp_path + "' '" + db_path + "'";
-
-  if (system(move_new_cmd.c_str()) != 0) {
-    std::cerr << "Failed to swap migrated database into place." << std::endl;
-    return false;
-  }
+  // Clean up migrated auxiliary files (safe after checkpoint)
+  unlink_aux(temp_path);
 
   return true;
 }
@@ -336,6 +381,18 @@ int main(int argc, char* argv[]) {
 
   if (sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK) {
     std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << std::endl;
+    return 1;
+  }
+
+  // Prevent concurrent access during migration.
+  if (!exec_sql(db, "PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE; COMMIT;")) {
+    std::cerr << "Failed to set exclusive locking mode." << std::endl;
+    sqlite3_close(db);
+    return 1;
+  }
+  // Checkpoint WAL before backup.
+  if (!checkpoint_wal(db)) {
+    sqlite3_close(db);
     return 1;
   }
 
@@ -369,24 +426,33 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  // Create backup before migration
-  if (!backup_database(db_path)) {
-    std::cerr << "Failed to create backup. Aborting migration." << std::endl;
+  std::cout << "Migrating database from version " << current_version << " to " << target_version
+            << "..." << std::endl;
+  std::cout << "WARNING: Do not start wake until migration completes." << std::endl;
+
+  // Create migrated copy (while original db still at its path)
+  std::string migrated_path = db_path + ".migrated";
+  if (!migrate_via_copy(db, db_path, current_version, target_version)) {
+    std::cerr << "Migration failed." << std::endl;
+    remove_with_aux(migrated_path);
     sqlite3_close(db);
     return 1;
   }
 
-  std::cout << "Migrating database from version " << current_version << " to " << target_version
-            << "..." << std::endl;
+  sqlite3_close(db);
 
-  // Perform the migration
-  if (!migrate_via_copy(db, db_path, current_version, target_version)) {
-    std::cerr << "Migration failed." << std::endl;
-    sqlite3_close(db);
+  if (!move_to_backup(db_path)) {
+    std::cerr << "Failed to move database to backup. Aborting migration." << std::endl;
+    remove_with_aux(migrated_path);
+    return 1;
+  }
+
+  if (rename(migrated_path.c_str(), db_path.c_str()) != 0) {
+    std::cerr << "Failed to move migrated database into place: " << strerror(errno) << std::endl;
+    std::cerr << "Recovery: mv '" << db_path << ".backup' '" << db_path << "'" << std::endl;
     return 1;
   }
 
   std::cout << "Migration completed successfully." << std::endl;
-  sqlite3_close(db);
   return 0;
 }
