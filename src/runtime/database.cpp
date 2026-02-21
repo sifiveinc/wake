@@ -236,6 +236,20 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
     }
 #endif
 
+    // Apply connection-level pragmas immediately after opening.
+    // These must be set on EVERY connection (they don't persist in the DB file).
+    // Critically, this sets busy_timeout BEFORE any queries that could BUSY.
+    {
+      char *pragma_fail = nullptr;
+      ret = sqlite3_exec(imp->db, getConnectionPragmaSQL(), 0, 0, &pragma_fail);
+      if (ret != SQLITE_OK) {
+        std::string out = pragma_fail ? pragma_fail : "unknown error";
+        if (pragma_fail) sqlite3_free(pragma_fail);
+        close_db(this);
+        return "Could not set connection pragmas: " + out;
+      }
+    }
+
     // use PRAGMA user_version to store the schema version in the DB header for quick access.
     int header_ver = 0;
     {
