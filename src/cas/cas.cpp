@@ -213,7 +213,8 @@ wcl::result<std::string, CASError> Cas::read_blob(const ContentHash& hash) const
 }
 
 wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
-                                                  const std::string& dest_path, mode_t mode) const {
+                                                  const std::string& dest_path, mode_t mode,
+                                                  time_t mtime_sec, long mtime_nsec) const {
   std::string src_path = blob_path(hash);
 
   if (!fs::exists(src_path)) {
@@ -234,6 +235,18 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
   std::string temp_path = dest_path + "." + std::to_string(getpid());
   auto copy_result = wcl::reflink_or_copy_file(src_path, temp_path, mode);
   if (!copy_result) {
+    fs::remove(temp_path, ec);
+    return wcl::make_error<bool, CASError>(CASError::IOError);
+  }
+
+  // Apply timestamp to temp file before rename
+  struct timespec times[2];
+  times[0].tv_sec = 0;
+  times[0].tv_nsec = UTIME_OMIT;  // Don't change atime
+  times[1].tv_sec = mtime_sec;
+  times[1].tv_nsec = mtime_nsec;
+
+  if (utimensat(AT_FDCWD, temp_path.c_str(), times, 0) != 0) {
     fs::remove(temp_path, ec);
     return wcl::make_error<bool, CASError>(CASError::IOError);
   }

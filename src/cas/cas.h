@@ -69,7 +69,8 @@ class Cas {
 
   // Materialize a blob to a file path (uses reflink if possible)
   wcl::result<bool, CASError> materialize_blob(const ContentHash& hash,
-                                               const std::string& dest_path, mode_t mode) const;
+                                               const std::string& dest_path, mode_t mode,
+                                               time_t mtime_sec, long mtime_nsec) const;
 
  private:
   std::string root_;

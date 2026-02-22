@@ -19,6 +19,8 @@
 
 #include "cas/cas.h"
 
+#include <sys/stat.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -250,8 +252,10 @@ TEST(cas_store_materialize_blob, "cas") {
   auto hash_result = store.store_blob(content);
   ASSERT_TRUE((bool)hash_result);
   auto hash = *hash_result;
-
-  auto materialize_result = store.materialize_blob(hash, output_file, 0644);
+  mode_t mode = 0644;
+  time_t mtime_sec = 1234567890;
+  long mtime_nsec = 123456789;
+  auto materialize_result = store.materialize_blob(hash, output_file, mode, mtime_sec, mtime_nsec);
   ASSERT_TRUE((bool)materialize_result);
 
   EXPECT_TRUE(fs::exists(output_file));
@@ -260,6 +264,14 @@ TEST(cas_store_materialize_blob, "cas") {
     std::string read_content((std::istreambuf_iterator<char>(ifs)),
                              std::istreambuf_iterator<char>());
     EXPECT_EQUAL(read_content, content);
+
+    // Check mode and mtime using stat
+    struct stat file_stat;
+    int stat_result = ::stat(output_file.c_str(), &file_stat);
+    ASSERT_TRUE(stat_result == 0);
+    EXPECT_EQUAL(static_cast<mode_t>(file_stat.st_mode & 07777), mode);
+    EXPECT_EQUAL(file_stat.st_mtim.tv_sec, mtime_sec);
+    EXPECT_EQUAL(file_stat.st_mtim.tv_nsec, mtime_nsec);
   }
 
   fs::remove(output_file);
