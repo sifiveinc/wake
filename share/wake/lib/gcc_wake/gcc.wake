@@ -15,13 +15,13 @@
 
 package gcc_wake
 
-# Detect the system GCC version
+# Detect the system GCC major version
 target detectGccVersion Unit: Integer =
     def gxx = which "g++"
 
     def result =
-        makeExecPlan (gxx, "--version", Nil) Nil
-        | setPlanLabel "g++: detect version for libstdc++"
+        makeExecPlan (gxx, "-dumpversion", Nil) Nil
+        | setPlanLabel "g++: detect version"
         | setPlanStdout logNever
         | setPlanStderr logNever
         | runJobWith localRunner
@@ -29,24 +29,26 @@ target detectGccVersion Unit: Integer =
     require True = result.isJobOk
     else 0
 
+    # Get output and strip whitespace/newlines
     def output =
         result.getJobStdout
         | getWhenFail ""
+        | replace `\s` ""
 
-    match (extract `^g\+\+.*\) ([0-9]+)\..*` output)
+    # -dumpversion may output versions like "8", "8.5", or "8.5.0"
+    match (extract `^([0-9]+)` output)
         (majorStr, Nil) -> match (int majorStr)
             Some major -> major
             None -> 0
         _ -> 0
 
-
-def needsFilesystemLib Unit: Boolean =
+# Determine if -lstdc++fs is needed based on system GCC version.
+# libstdc++ from GCC < 9 requires this flag for std::filesystem.
+# On Linux, both GCC and Clang use libstdc++ by default.
+def filesystemLFlag Unit: List String =
     def gccVersion = detectGccVersion Unit
 
-    gccVersion > 0 && gccVersion < 9
-
-def filesystemLFlag Unit =
-    if needsFilesystemLib Unit then
+    if gccVersion > 0 && gccVersion < 9 then
         "-lstdc++fs", Nil
     else
         Nil

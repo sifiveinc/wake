@@ -16,11 +16,16 @@ CORE_CFLAGS  := $(shell pkg-config --silence-errors --cflags sqlite3)	\
 		$(shell pkg-config --silence-errors --cflags re2)	\
 		$(shell pkg-config --silence-errors --cflags-only-I ncurses)
 FUSE_LDFLAGS := $(shell pkg-config --silence-errors --libs fuse    || echo -lfuse)
+
+# Detect if -lstdc++fs is needed (GCC < 9)
+# On Linux, both GCC and Clang use libstdc++, so check GCC version
+FILESYSTEM_LIB := $(shell test "$$(g++ -dumpversion 2>/dev/null | cut -d. -f1)" -lt 9 2>/dev/null && echo -lstdc++fs)
+
 CORE_LDFLAGS :=	$(shell pkg-config --silence-errors --libs sqlite3 || echo -lsqlite3)	\
 		$(shell pkg-config --silence-errors --libs gmp || echo -lgmp)	\
 		$(shell pkg-config --silence-errors --libs re2 || echo -lre2)	\
 		$(shell pkg-config --silence-errors --libs ncurses tinfo || pkg-config --silence-errors --libs ncurses || echo -lncurses)	\
-		-lstdc++fs
+		$(FILESYSTEM_LIB)
 
 COMMON_DIRS := src/compat src/util src/json src/wcl
 COMMON_C    := $(foreach dir,$(COMMON_DIRS),$(wildcard $(dir)/*.c)) \
