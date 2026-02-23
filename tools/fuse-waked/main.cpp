@@ -921,6 +921,24 @@ static int wakefuse_rmdir(const char *path) {
 
   if (!it->second.is_writeable(key.second)) return -EACCES;
 
+  // Handle staged directory removal
+  auto staged_key = std::make_pair(key.first, key.second);
+  auto staged_it = g_staged_files.find(staged_key);
+  if (staged_it != g_staged_files.end() && staged_it->second.type == "directory") {
+    // Check if directory has any staged children
+    auto low = g_staged_files.lower_bound(std::make_pair(key.first, key.second + "/"));
+    auto high = g_staged_files.lower_bound(std::make_pair(key.first, key.second + "0"));
+    if (low != high) {
+      // Directory has staged children - can't remove
+      return -ENOTEMPTY;
+    }
+    g_staged_files.erase(staged_it);
+    it->second.staged_paths.erase(key.second);
+    it->second.files_wrote.erase(key.second);
+    it->second.files_read.erase(key.second);
+    return 0;
+  }
+
   int res = unlinkat(context.rootfd, key.second.c_str(), AT_REMOVEDIR);
   if (res == -1) {
     if ((errno == ENOTEMPTY) && !has_written_children(key.second, it->second)) {
@@ -1008,6 +1026,39 @@ static void move_members(std::set<std::string> &from, std::set<std::string> &to,
   }
 }
 
+// Move staged file entries that are children of dir to new paths under dest
+// This is needed when a staged directory is renamed - all its children need new dest_paths
+static void move_staged_children(const std::string &job_id, const std::string &dir,
+                                 const std::string &dest) {
+  // Collect entries to move (can't modify map while iterating)
+  std::vector<std::pair<std::string, StagedFile>> to_add;
+  std::vector<std::string> to_remove;
+
+  // Find all staged entries that are children of dir
+  // Keys are (job_id, path), so we look for paths starting with dir + "/"
+  auto low = g_staged_files.lower_bound(std::make_pair(job_id, dir + "/"));
+  auto high = g_staged_files.lower_bound(std::make_pair(job_id, dir + "0"));  // '0' = '/' + 1
+
+  for (auto it = low; it != high; ++it) {
+    const std::string &old_path = it->first.second;
+    std::string new_path = dest + old_path.substr(dir.size());
+    StagedFile sf = it->second;
+    sf.dest_path = new_path;
+    to_add.push_back(std::make_pair(new_path, sf));
+    to_remove.push_back(old_path);
+  }
+
+  // Remove old entries
+  for (const auto &path : to_remove) {
+    g_staged_files.erase(std::make_pair(job_id, path));
+  }
+
+  // Add new entries
+  for (const auto &entry : to_add) {
+    g_staged_files[std::make_pair(job_id, entry.first)] = entry.second;
+  }
+}
+
 static int wakefuse_rename(const char *from, const char *to) {
   if (is_special(to)) return -EACCES;
 
@@ -1039,7 +1090,7 @@ static int wakefuse_rename(const char *from, const char *to) {
 
   if (it->second.is_visible(keyt.second)) return -EACCES;
 
-  // Handle staged file rename
+  // Handle staged file/directory rename
   auto staged_key_from = std::make_pair(keyf.first, keyf.second);
   auto staged_it = g_staged_files.find(staged_key_from);
   if (staged_it != g_staged_files.end()) {
@@ -1053,11 +1104,24 @@ static int wakefuse_rename(const char *from, const char *to) {
       unlink(existing_to->second.staging_path.c_str());
     }
     g_staged_files[staged_key_to] = sf;
+
+    // Update the renamed item itself
     it->second.staged_paths.erase(keyf.second);
     it->second.staged_paths.insert(keyt.second);
     it->second.files_wrote.erase(keyf.second);
     it->second.files_read.erase(keyf.second);
     it->second.files_wrote.insert(keyt.second);
+
+    // If this is a directory, also move all children in g_staged_files, staged_paths,
+    // files_wrote, and files_read. This ensures that files inside a renamed directory
+    // are still accessible under the new path.
+    if (sf.type == "directory") {
+      move_staged_children(keyf.first, keyf.second, keyt.second);
+      move_members(it->second.staged_paths, it->second.staged_paths, keyf.second, keyt.second);
+      move_members(it->second.files_wrote, it->second.files_wrote, keyf.second, keyt.second);
+      move_members(it->second.files_read, it->second.files_read, keyf.second, keyt.second);
+    }
+
     return 0;
   }
 
