@@ -1262,6 +1262,18 @@ static struct fuse *fh;
 static struct fuse_chan *fc;
 static sigset_t saved;
 
+// Print to stderr, and optionally to a debug log.
+struct DebugLogger {
+  template <typename... Args>
+  void operator()(const char *fmt, Args... args) {
+    fprintf(stderr, fmt, args...);
+    if (debug && fd != -1) dprintf(fd, fmt, args...);
+  }
+
+  bool debug = false;
+  int fd = -1;
+};
+
 static struct fuse_operations wakefuse_ops;
 
 static void *wakefuse_init(struct fuse_conn_info *conn) {
@@ -1408,6 +1420,7 @@ int main(int argc, char *argv[]) {
   int log, null;
   bool madedir;
   struct rlimit rlim;
+  DebugLogger debug_log{debug, -1};
 
   if (argc != 3) {
     fprintf(stderr, "Syntax: fuse-waked <mount-point> <min-timeout-seconds>\n");
@@ -1437,6 +1450,8 @@ int main(int argc, char *argv[]) {
     close(log);
     log = STDOUT_FILENO;
   }
+
+  debug_log.fd = log;
 
   umask(0);
 
@@ -1502,12 +1517,12 @@ int main(int argc, char *argv[]) {
   if (fcntl(log, F_SETLK, &fl) != 0) {
     if (errno == EAGAIN || errno == EACCES) {
       if (debug) {
-        fprintf(stderr, "fcntl(%s.log): %s -- assuming another daemon exists\n", path.c_str(),
-                strerror(errno));
+        debug_log("fcntl(%s.log): %s -- assuming another daemon exists\n", path.c_str(),
+                  strerror(errno));
       }
       status = 0;  // another daemon is already running
     } else {
-      fprintf(stderr, "fcntl(%s.log): %s\n", path.c_str(), strerror(errno));
+      debug_log("fcntl(%s.log): %s\n", path.c_str(), strerror(errno));
     }
     goto term;
   }
@@ -1548,24 +1563,24 @@ int main(int argc, char *argv[]) {
 #else
   if (fuse_opt_add_arg(&args, "wake") != 0) {
 #endif
-    fprintf(stderr, "fuse_opt_add_arg failed\n");
+    debug_log("fuse_opt_add_arg failed\n");
     goto rmroot;
   }
 
   if (debug && fuse_opt_add_arg(&args, "-odebug") != 0) {
-    fprintf(stderr, "fuse_opt_add_arg debug failed\n");
+    debug_log("fuse_opt_add_arg debug failed\n");
     goto rmroot;
   }
 
   fc = fuse_mount(path.c_str(), &args);
   if (!fc) {
-    fprintf(stderr, "fuse_mount failed\n");
+    debug_log("fuse_mount failed\n");
     goto freeargs;
   }
 
   fh = fuse_new(fc, &args, &wakefuse_ops, sizeof(wakefuse_ops), 0);
   if (!fh) {
-    fprintf(stderr, "fuse_new failed\n");
+    debug_log("fuse_new failed\n");
     goto unmount;
   }
 
