@@ -62,6 +62,11 @@ static std::string g_staging_dir;
 
 // Structure to track a staged item (file, symlink, directory, or hardlink)
 // All output types use the same structure with a type discriminator
+// TODO: Consider adding uid/gid tracking if needed. Currently we don't track ownership
+// because most build systems don't preserve it - outputs are owned by the build user.
+// If a tool requires chown() followed by stat() to return consistent values, we would
+// need to add uid_t uid and gid_t gid fields here, update wakefuse_chown() to set them,
+// update wakefuse_getattr() to return them, and initialize them in create/mkdir/symlink/link.
 struct StagedFile {
   std::string type;          // "file", "symlink", "directory", or "hardlink"
   std::string staging_path;  // Path in staging directory (for files only)
@@ -495,6 +500,18 @@ static int wakefuse_access(const char *path, int mask) {
   auto staged_key = std::make_pair(key.first, key.second);
   auto staged_it = g_staged_files.find(staged_key);
   if (staged_it != g_staged_files.end()) {
+    // Staged directories are purely virtual - they don't have a staging_path on disk.
+    // They are always readable and writable since they were created by this job.
+    if (staged_it->second.type == "directory") {
+      // Check execute permission for directories (needed to traverse)
+      if (mask & X_OK) {
+        if (!(staged_it->second.mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
+          return -EACCES;
+        }
+      }
+      // R_OK and W_OK are always granted for staged directories
+      return 0;
+    }
     // Check execute permission using tracked metadata (may differ from staging file on disk)
     if (mask & X_OK) {
       if (!(staged_it->second.mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
@@ -1180,6 +1197,9 @@ static int wakefuse_link(const char *from, const char *to) {
   auto staged_key_from = std::make_pair(keyf.first, keyf.second);
   auto staged_it = g_staged_files.find(staged_key_from);
   if (staged_it != g_staged_files.end()) {
+    // Hardlinks to directories are forbidden in POSIX
+    if (staged_it->second.type == "directory") return -EPERM;
+
     // For staged files, create a hardlink entry with the same staging_path
     // The client uses staging_path as the deduplication key for one-pass processing
     StagedFile sf;
@@ -1274,6 +1294,14 @@ static int wakefuse_chown(const char *path, uid_t uid, gid_t gid) {
 
   if (!it->second.is_writeable(key.second)) return -EACCES;
 
+  // For staged files/directories, chown is a no-op (we don't track uid/gid)
+  // but we should succeed rather than fail. See TODO in StagedFile struct.
+  auto staged_key = std::make_pair(key.first, key.second);
+  auto staged_it = g_staged_files.find(staged_key);
+  if (staged_it != g_staged_files.end()) {
+    return 0;
+  }
+
   int res = fchownat(context.rootfd, key.second.c_str(), uid, gid, AT_SYMLINK_NOFOLLOW);
   if (res == -1) return -errno;
 
@@ -1317,6 +1345,10 @@ static int wakefuse_truncate(const char *path, off_t size) {
   auto staged_key = std::make_pair(key.first, key.second);
   auto staged_it = g_staged_files.find(staged_key);
   if (staged_it != g_staged_files.end()) {
+    // Truncate is not valid for directories or symlinks
+    if (staged_it->second.type == "directory") return -EISDIR;
+    if (staged_it->second.type == "symlink") return -EINVAL;
+
     int fd = open(staged_it->second.staging_path.c_str(), O_WRONLY);
     if (fd == -1) return -errno;
 
@@ -1439,6 +1471,9 @@ static int wakefuse_open(const char *path, struct fuse_file_info *fi) {
   auto staged_it = g_staged_files.find(staged_key);
   if (staged_it != g_staged_files.end()) {
     StagedFile *sf = &staged_it->second;
+
+    // open() is not valid for directories
+    if (sf->type == "directory") return -EISDIR;
 
     // For hardlinks, resolve to the source file's staging path
     if (sf->type == "hardlink") {
@@ -1722,6 +1757,27 @@ static int wakefuse_fallocate(const char *path, int mode, off_t offset, off_t le
   if (!it->second.is_readable(key.second)) return -ENOENT;
 
   if (!it->second.is_writeable(key.second)) return -EACCES;
+
+  // Check if file is staged
+  auto staged_key = std::make_pair(key.first, key.second);
+  auto staged_it = g_staged_files.find(staged_key);
+  if (staged_it != g_staged_files.end()) {
+    // fallocate is not valid for directories or symlinks
+    if (staged_it->second.type == "directory") return -EISDIR;
+    if (staged_it->second.type == "symlink") return -EINVAL;
+
+    // For staged files, do fallocate on the staging file
+    int fd = open(staged_it->second.staging_path.c_str(), O_WRONLY);
+    if (fd == -1) return -errno;
+
+    int res = posix_fallocate(fd, offset, length);
+    if (res != 0) {
+      (void)close(fd);
+      return -res;
+    }
+    (void)close(fd);
+    return 0;
+  }
 
   int fd = openat(context.rootfd, key.second.c_str(), O_WRONLY | O_NOFOLLOW);
   if (fd == -1) return -errno;

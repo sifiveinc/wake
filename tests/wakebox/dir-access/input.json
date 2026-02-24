@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/bin/sh",
+    "-c",
+    "set -e\nmkdir -p testdir\n# Test that the directory passes access() checks for read/write\n# The 'test -r' and 'test -w' commands call access() with R_OK and W_OK\ntest -r testdir && echo 'READ_OK'\ntest -w testdir && echo 'WRITE_OK'\ntest -x testdir && echo 'EXEC_OK'\ntest -d testdir && echo 'IS_DIR'\n# Now actually use the directory\necho 'test content' > testdir/file.txt\ncat testdir/file.txt\nrm testdir/file.txt\nrmdir testdir\necho 'ACCESS_TEST_PASSED'"
+  ],
+  "environment": [
+    "USER=root",
+    "HOME=/root",
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  ],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "mount-ops": [
+    {
+      "type": "workspace",
+      "destination": "."
+    }
+  ],
+  "visible": []
+}
+
