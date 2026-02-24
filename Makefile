@@ -28,7 +28,7 @@ COMMON_CPP  := $(foreach dir,$(COMMON_DIRS),$(wildcard $(dir)/*.cpp))
 COMMON_OBJS := src/json/jlexer.o \
                $(patsubst %.cpp,%.o,$(COMMON_CPP)) $(patsubst %.c,%.o,$(COMMON_C))
 
-WAKE_DIRS := $(COMMON_DIRS) src/dst src/optimizer src/parser src/runtime src/types src/wcl tools/wake
+WAKE_DIRS := $(COMMON_DIRS) src/dst src/optimizer src/parser src/runtime src/types src/wakefs src/wcl tools/wake
 WAKE_C    := $(foreach dir,$(WAKE_DIRS),$(wildcard $(dir)/*.c)) \
              vendor/blake2/blake2b-ref.c vendor/utf8proc/utf8proc.c \
              vendor/siphash/siphash.c vendor/whereami/whereami.c \
