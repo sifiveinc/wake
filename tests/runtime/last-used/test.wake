@@ -1,0 +1,21 @@
+# Test jobs for --last-used regression test
+
+export def testJob1 Unit =
+    makeExecPlan ("sh", "-c", "echo test1 > output.txt", Nil) Nil
+    | setPlanLabel "last-used: test1"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutput
+
+export def testJob2 Unit =
+    makeExecPlan ("sh", "-c", "echo test2 > output2.txt", Nil) Nil
+    | setPlanLabel "last-used: test2"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutput
+
+# Reuse job1 from cache and create job2
+export def testBoth Unit =
+    def _ = testJob1 Unit
+    testJob2 Unit
+
