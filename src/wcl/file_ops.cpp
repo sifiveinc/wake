@@ -45,8 +45,15 @@ namespace fs = std::filesystem;
 
 namespace wcl {
 
+// Cache reflink support
+static bool reflink_supported = true;
+
 result<bool, posix_error_t> try_reflink(const std::string& src, const std::string& dst,
                                         mode_t mode) {
+  if (!reflink_supported) {
+    return make_error<bool, posix_error_t>(EOPNOTSUPP);
+  }
+
 #ifdef HAS_FICLONE
   auto src_fd = unique_fd::open(src.c_str(), O_RDONLY);
   if (!src_fd) {
@@ -63,6 +70,9 @@ result<bool, posix_error_t> try_reflink(const std::string& src, const std::strin
     dst_fd->close();
     std::error_code ec;
     fs::remove(dst, ec);  // Ignore error
+    if (saved_errno == EOPNOTSUPP) {
+      reflink_supported = false;
+    }
     return make_error<bool, posix_error_t>(saved_errno);
   }
 
