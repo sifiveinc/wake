@@ -199,17 +199,11 @@ struct Database {
   // bool=true if error present, false if NULL
   std::pair<bool, std::string> get_runner_status(long job_id);
 
-  // Build locking for non-inspection commands
-  bool try_acquire_build_lock(bool wait, bool tty);
-  void release_build_lock();
-
  private:
   void begin_ro_txn() const;
   void begin_rw_txn() const;
   void end_txn() const;
 
-  bool is_lock_valid(const char *lock_file);
-  bool build_lock_acquired = false;
   int checkpoint_interval;
 };
 
