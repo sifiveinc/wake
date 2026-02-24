@@ -116,10 +116,13 @@ wcl::result<ContentHash, CASError> Cas::store_blob_from_file(const std::string& 
   std::string temp = (fs::path(staging_dir_) /
                       (fs::path(path).filename().string() + "." + std::to_string(getpid())))
                          .string();
-  auto copy_result = wcl::reflink_or_copy_file(path, temp, mode);
+  auto copy_result = wcl::reflink_or_copy_file(path, temp, mode, reflink_supported_);
   if (!copy_result) {
     fs::remove(temp, ec);
     return wcl::make_error<ContentHash, CASError>(CASError::IOError);
+  }
+  if (copy_result->strategy_used == wcl::CopyStrategy::Copy) {
+    reflink_supported_ = false;
   }
 
   // Hash what we actually stored
@@ -233,10 +236,13 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
 
   // Copy to temp file first, then atomically rename to destination.
   std::string temp_path = dest_path + "." + std::to_string(getpid());
-  auto copy_result = wcl::reflink_or_copy_file(src_path, temp_path, mode);
+  auto copy_result = wcl::reflink_or_copy_file(src_path, temp_path, mode, reflink_supported_);
   if (!copy_result) {
     fs::remove(temp_path, ec);
     return wcl::make_error<bool, CASError>(CASError::IOError);
+  }
+  if (copy_result->strategy_used == wcl::CopyStrategy::Copy) {
+    reflink_supported_ = false;
   }
 
   // Apply timestamp to temp file before rename

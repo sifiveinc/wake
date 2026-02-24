@@ -36,8 +36,10 @@ struct CopyResult {
 
 // Tries reflink first, then falls back to std::filesystem::copy_file
 // Returns the strategy that was used
+// If attempt_reflink is false, skips reflink attempt and goes straight to copy
 result<CopyResult, posix_error_t> reflink_or_copy_file(const std::string& src,
-                                                       const std::string& dst, mode_t mode);
+                                                       const std::string& dst, mode_t mode,
+                                                       bool attempt_reflink = true);
 
 // Try to reflink a file (copy-on-write clone)
 result<bool, posix_error_t> try_reflink(const std::string& src, const std::string& dst,

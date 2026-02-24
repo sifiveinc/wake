@@ -45,15 +45,8 @@ namespace fs = std::filesystem;
 
 namespace wcl {
 
-// Cache reflink support
-static bool reflink_supported = true;
-
 result<bool, posix_error_t> try_reflink(const std::string& src, const std::string& dst,
                                         mode_t mode) {
-  if (!reflink_supported) {
-    return make_error<bool, posix_error_t>(EOPNOTSUPP);
-  }
-
 #ifdef HAS_FICLONE
   auto src_fd = unique_fd::open(src.c_str(), O_RDONLY);
   if (!src_fd) {
@@ -70,9 +63,6 @@ result<bool, posix_error_t> try_reflink(const std::string& src, const std::strin
     dst_fd->close();
     std::error_code ec;
     fs::remove(dst, ec);  // Ignore error
-    if (saved_errno == EOPNOTSUPP) {
-      reflink_supported = false;
-    }
     return make_error<bool, posix_error_t>(saved_errno);
   }
 
@@ -81,22 +71,26 @@ result<bool, posix_error_t> try_reflink(const std::string& src, const std::strin
   (void)src;
   (void)dst;
   (void)mode;
-  return make_errno<bool>(EOPNOTSUPP);
+  return make_error<bool, posix_error_t>(EOPNOTSUPP);
 #endif
 }
 
 result<CopyResult, posix_error_t> reflink_or_copy_file(const std::string& src,
-                                                       const std::string& dst, mode_t mode) {
-  // Try reflink first
-  auto reflink_result = try_reflink(src, dst, mode);
-  if (reflink_result) {
-    return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Reflink, 0});
-  }
+                                                       const std::string& dst, mode_t mode,
+                                                       bool attempt_reflink) {
+  // Try reflink first (if requested)
+  if (attempt_reflink) {
+    auto reflink_result = try_reflink(src, dst, mode);
+    if (reflink_result) {
+      return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Reflink, 0});
+    }
 
-  // Only fall back if reflink is not supported
-  int reflink_err = reflink_result.error();
-  if (reflink_err != EOPNOTSUPP && reflink_err != EINVAL && reflink_err != EXDEV) {
-    return make_error<CopyResult, posix_error_t>(reflink_err);
+    // Only fall back if reflink is not supported
+    int reflink_err = reflink_result.error();
+    if (reflink_err != EOPNOTSUPP && reflink_err != ENOTTY && reflink_err != EINVAL &&
+        reflink_err != EXDEV) {
+      return make_error<CopyResult, posix_error_t>(reflink_err);
+    }
   }
 
   // Fall back to std::filesystem::copy_file

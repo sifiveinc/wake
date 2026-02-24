@@ -76,6 +76,7 @@ class Cas {
   std::string root_;
   std::string blobs_dir_;
   std::string staging_dir_;
+  mutable bool reflink_supported_ = true;  // Per-CAS reflink capability cache
 
   explicit Cas(const std::string& root, const std::string& blobs_dir,
                const std::string& staging_dir);
