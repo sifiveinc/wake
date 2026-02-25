@@ -498,7 +498,7 @@ where
     let hashes = JobHistoryHash::find_by_statement(Statement::from_sql_and_values(
         DbBackend::Postgres,
         r#"
-        DELETE FROM job 
+        DELETE FROM job
         WHERE created_at <= $1
         RETURNING hash
         "#,
@@ -670,6 +670,13 @@ pub struct DeletedBlob {
     pub key: String,
 }
 
+#[derive(Clone, Debug, FromQueryResult)]
+pub struct BlobCandidate {
+    pub id: Uuid,
+    pub store_id: Uuid,
+    pub key: String,
+}
+
 // Deletes blobs from the database that are unreferenced and have surpassed the allocated grace
 // period to be referenced.
 //
@@ -703,6 +710,74 @@ pub async fn delete_unreferenced_blobs<T: ConnectionTrait>(
     ))
     .all(db)
     .await
+}
+
+pub async fn get_unreferenced_blobs_for_eviction<T: ConnectionTrait>(
+    db: &T,
+    ttl: NaiveDateTime,
+    chunk: u32,
+) -> Result<Vec<BlobCandidate>, DbErr> {
+    BlobCandidate::find_by_statement(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        r#"
+            WITH
+            eligible_blob_ids as (
+                SELECT DISTINCT id FROM blob
+                WHERE updated_at <= $1
+                EXCEPT (
+                    SELECT blob_id FROM output_file
+                    UNION ALL SELECT stdout_blob_id FROM job
+                    UNION ALL SELECT stderr_blob_id FROM job
+                )
+                LIMIT $2
+            )
+            SELECT b.id, b.store_id, b.key
+            FROM blob b
+            WHERE b.id IN (SELECT id FROM eligible_blob_ids)
+            "#,
+        [ttl.into(), chunk.into()],
+    ))
+    .all(db)
+    .await
+}
+
+pub async fn delete_blobs_by_ids<T: ConnectionTrait>(
+    db: &T,
+    blob_ids: &[Uuid],
+) -> Result<u64, DbErr> {
+    if blob_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let chunked: Vec<Vec<Uuid>> = blob_ids
+        .iter()
+        .chunks(1000) // Batch in chunks of 1000 to avoid parameter limits
+        .into_iter()
+        .map(|chunk| chunk.cloned().collect())
+        .collect();
+
+    let mut total_deleted = 0;
+
+    for chunk in chunked {
+        let placeholders = chunk.iter().enumerate()
+            .map(|(i, _)| format!("${}", i + 1))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let sql = format!("DELETE FROM blob WHERE id IN ({})", placeholders);
+
+        let values: Vec<sea_orm::Value> = chunk.into_iter().map(|id| id.into()).collect();
+
+        let result = db.execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            &sql,
+            values,
+        )).await?;
+
+        total_deleted += result.rows_affected();
+    }
+
+    Ok(total_deleted)
 }
 
 // --------------------------------------------------
