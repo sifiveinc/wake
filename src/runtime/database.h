@@ -63,11 +63,10 @@ struct Time {
 
 struct RunReflection {
   int id;
-  Time time;
+  Time start_time;
+  std::optional<int64_t> end_time;  // nullopt=running, >0=completed, -1=reaped
   std::string cmdline;
   RunReflection() = default;
-  RunReflection(int id_, int64_t time_, std::string cmdline_)
-      : id(id_), time(time_), cmdline(cmdline_) {}
 };
 
 struct JobReflection {
