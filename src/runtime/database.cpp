@@ -425,7 +425,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_tag_job = "insert into tags(job_id, uri, content) values(?, ?, ?)";
   const char *sql_get_tags = "select job_id, uri, content from tags where job_id=?";
   const char *sql_get_all_tags = "select job_id, uri, content from tags";
-  const char *sql_get_all_runs = "select run_id, time, cmdline from runs order by time ASC";
+  const char *sql_get_all_runs =
+      "select run_id, time, end_time, cmdline from runs order by time ASC";
   const char *sql_get_edges =
       "select distinct user.job_id as user, used.job_id as used"
       "  from filetree user, filetree used"
@@ -2000,8 +2001,13 @@ std::vector<RunReflection> Database::get_runs() const {
   while (sqlite3_step(imp->get_all_runs) == SQLITE_ROW) {
     RunReflection run;
     run.id = sqlite3_column_int(imp->get_all_runs, 0);
-    run.time = Time(sqlite3_column_int64(imp->get_all_runs, 1));
-    run.cmdline = rip_column(imp->get_all_runs, 2);
+    run.start_time = Time(sqlite3_column_int64(imp->get_all_runs, 1));
+    if (sqlite3_column_type(imp->get_all_runs, 2) == SQLITE_NULL) {
+      run.end_time = std::nullopt;
+    } else {
+      run.end_time = sqlite3_column_int64(imp->get_all_runs, 2);
+    }
+    run.cmdline = rip_column(imp->get_all_runs, 3);
     out.emplace_back(run);
   }
   finish_stmt("Could not retrieve runs", imp->get_all_runs, imp->debugdb);
