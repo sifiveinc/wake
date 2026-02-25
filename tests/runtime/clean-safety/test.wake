@@ -1,0 +1,21 @@
+# Test jobs for --clean safety test
+
+# Job 1: signals that wake is running
+def signalStarted Unit =
+    makeExecPlan ("touch", ".started", Nil) Nil
+    | setPlanLabel "signal-started"
+    | runJobWith defaultRunner
+    | getJobOutput
+
+# Job 2: sleeps forever (keeps build alive)
+def sleepForever Unit =
+    makeExecPlan ("sleep", "3600", Nil) Nil
+    | setPlanLabel "sleep-forever"
+    | runJobWith defaultRunner
+    | getJobOutput
+
+# Run both: signal first (dependency), then sleep
+export def longRunningBuild Unit =
+    def _ = signalStarted Unit
+    sleepForever Unit
+
