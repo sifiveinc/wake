@@ -71,7 +71,6 @@ wcl::result<Cas, CASError> Cas::open(const std::string& root, const std::string&
   std::string staging_dir = (fs::path(root) / staging_subdir).string();
   Cas store(root, blobs_dir, staging_dir);
 
-  // Create directory structure
   std::error_code ec;
   fs::create_directories(store.blobs_dir_, ec);
   if (ec) {
@@ -114,7 +113,7 @@ wcl::result<ContentHash, CASError> Cas::store_blob_from_file(const std::string& 
 
   // Copy to staging area first.
   std::string temp = (fs::path(staging_dir_) /
-                      (fs::path(path).filename().string() + "." + std::to_string(getpid())))
+                      (fs::path(path).filename().string() + "-" + std::to_string(getpid())))
                          .string();
   auto copy_result = wcl::reflink_or_copy_file(path, temp, mode, reflink_supported_);
   if (!copy_result) {
@@ -174,7 +173,7 @@ wcl::result<ContentHash, CASError> Cas::store_blob(const std::string& data) {
 
   // Write data to file
   std::string temp =
-      (fs::path(staging_dir_) / (hash.to_hex() + "." + std::to_string(getpid()))).string();
+      (fs::path(staging_dir_) / (hash.to_hex() + "-" + std::to_string(getpid()))).string();
   std::error_code ec;
   {
     std::ofstream ofs(temp, std::ios::binary);
