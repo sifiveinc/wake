@@ -43,7 +43,7 @@
 #endif
 
 #include "cas/cas.h"
-#include "cas/cas_store.h"
+#include "cas/content_hash.h"
 #include "compat/rusage.h"
 #include "json/json5.h"
 #include "namespace.h"
@@ -138,7 +138,7 @@ int execve_wrapper(const std::vector<std::string> &command,
 // Process staging items from FUSE daemon: hash files, pass through symlinks/directories
 // Wake will handle CAS storage and materialization for all types
 static bool process_staging_files(const JAST &staging_files, JAST &staging_files_with_hash,
-                                  cas::CASStore *cas_store) {
+                                  cas::Cas *cas_store) {
   // Debug: log to a file since stderr might be redirected to /dev/null
   FILE *debug_log = fopen(".cas/staging_debug.log", "a");
   if (debug_log) {
@@ -264,7 +264,7 @@ static bool process_staging_files(const JAST &staging_files, JAST &staging_files
 static bool collect_result_metadata(const std::string daemon_output, const struct timeval &start,
                                     const struct timeval &stop, const pid_t pid, const int status,
                                     const RUsage &rusage, bool timed_out,
-                                    cas::CASStore *cas_store, std::string &result_json) {
+                                    cas::Cas *cas_store, std::string &result_json) {
   JAST from_daemon;
   std::stringstream ss;
   if (!JAST::parse(daemon_output, ss, from_daemon)) {
@@ -318,12 +318,12 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     cas_root = ".cas";  // fallback
   }
 
-  auto cas_store_result = cas::CASStore::open(cas_root);
+  auto cas_store_result = cas::Cas::open(cas_root);
   if (!cas_store_result) {
     std::cerr << "Failed to open CAS store at " << cas_root << std::endl;
     return false;
   }
-  cas::CASStore cas_store = std::move(*cas_store_result);
+  cas::Cas cas_store = std::move(*cas_store_result);
 
   if (!args.daemon.connect(args.visible, args.cas_blobs_dir, args.isolate_pids)) return false;
 

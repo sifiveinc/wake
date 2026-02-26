@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "cas.h"
-#include "cas_store.h"
+#include "content_hash.h"
 #include "wcl/result.h"
 
 namespace cas {
@@ -51,23 +51,23 @@ struct CASJobOutputs {
 
 // Store a single file in CAS and return its content hash
 // This is useful for storing individual output files
-wcl::result<ContentHash, CASJobCacheError> store_output_file(CASStore& store,
+wcl::result<ContentHash, CASJobCacheError> store_output_file(Cas& store,
                                                              const std::string& source_path);
 
 // Store multiple output files in CAS
 // Returns a combined hash representing all the files
 wcl::result<CASJobOutputs, CASJobCacheError> store_output_files(
-    CASStore& store,
+    Cas& store,
     const std::vector<std::pair<std::string, std::string>>& files,  // (source_path, relative_path)
     const std::vector<std::pair<std::string, mode_t>>& modes);      // (relative_path, mode)
 
 // Materialize a file from CAS to a destination path
 // Uses reflinks when possible for efficiency
-wcl::result<bool, CASJobCacheError> materialize_file(CASStore& store, const ContentHash& hash,
+wcl::result<bool, CASJobCacheError> materialize_file(Cas& store, const ContentHash& hash,
                                                      const std::string& dest_path, mode_t mode);
 
 // Check if a blob exists in CAS (useful for cache hit detection)
-bool has_blob(CASStore& store, const ContentHash& hash);
+bool has_blob(Cas& store, const ContentHash& hash);
 
 // Get the CAS store path for a given cache directory
 std::string get_cas_store_path(const std::string& cache_dir);

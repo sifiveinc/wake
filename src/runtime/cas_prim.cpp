@@ -22,13 +22,15 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <filesystem>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <iostream>
 
-#include "cas/cas_store.h"
+#include "cas/cas.h"
+#include "cas/content_hash.h"
 #include "prim.h"
 #include "types/data.h"
 #include "types/primfn.h"
@@ -40,15 +42,15 @@
 // CASContext implementation
 // ============================================================================
 
-cas::CASStore* CASContext::get_store(const std::string& workspace) {
+cas::Cas* CASContext::get_store(const std::string& workspace) {
   if (store_ && workspace_ == workspace) {
     return store_.get();
   }
 
   std::string cas_root = workspace + "/.cas";
-  auto store_result = cas::CASStore::open(cas_root);
+  auto store_result = cas::Cas::open(cas_root);
   if (store_result) {
-    store_ = std::make_unique<cas::CASStore>(std::move(*store_result));
+    store_ = std::make_unique<cas::Cas>(std::move(*store_result));
     workspace_ = workspace;
     return store_.get();
   }
@@ -75,7 +77,7 @@ static PRIMFN(prim_cas_store_file) {
   EXPECT(1);
   STRING(path, 0);
 
-  cas::CASStore* store = ctx->get_store(".");
+  cas::Cas* store = ctx->get_store(".");
   if (!store) {
     runtime.heap.reserve(reserve_result() + String::reserve(28));
     auto err = String::claim(runtime.heap, "CAS store not initialized");
@@ -106,14 +108,18 @@ static PRIMFN(prim_cas_has_blob) {
   EXPECT(1);
   STRING(hash_str, 0);
 
-  cas::CASStore* store = ctx->get_store(".");
+  cas::Cas* store = ctx->get_store(".");
   if (!store) {
     runtime.heap.reserve(reserve_bool());
     RETURN(claim_bool(runtime.heap, false));
   }
 
-  cas::ContentHash hash = cas::ContentHash::from_hex(hash_str->c_str());
-  bool exists = store->has_blob(hash);
+  auto hash_result = cas::ContentHash::from_hex(hash_str->c_str());
+  if (!hash_result) {
+    runtime.heap.reserve(reserve_bool());
+    RETURN(claim_bool(runtime.heap, false));
+  }
+  bool exists = store->has_blob(*hash_result);
 
   runtime.heap.reserve(reserve_bool());
   RETURN(claim_bool(runtime.heap, exists));
@@ -138,17 +144,23 @@ static PRIMFN(prim_cas_materialize_file) {
   STRING(dest_path, 1);
   INTEGER_MPZ(mode_mpz, 2);
 
-  cas::CASStore* store = ctx->get_store(".");
+  cas::Cas* store = ctx->get_store(".");
   if (!store) {
     runtime.heap.reserve(reserve_result() + String::reserve(28));
     auto err = String::claim(runtime.heap, "CAS store not initialized");
     RETURN(claim_result(runtime.heap, false, err));
   }
 
-  cas::ContentHash hash = cas::ContentHash::from_hex(hash_str->c_str());
+  auto hash_result = cas::ContentHash::from_hex(hash_str->c_str());
+  if (!hash_result) {
+    runtime.heap.reserve(reserve_result() + String::reserve(25));
+    auto err = String::claim(runtime.heap, "Invalid content hash hex");
+    RETURN(claim_result(runtime.heap, false, err));
+  }
   mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
 
-  auto result = store->materialize_blob(hash, dest_path->c_str(), mode);
+  // Use 0 for mtime to let the system use current time
+  auto result = store->materialize_blob(*hash_result, dest_path->c_str(), mode, 0, 0);
   if (!result) {
     runtime.heap.reserve(reserve_result() + String::reserve(35));
     auto err = String::claim(runtime.heap, "Failed to materialize file from CAS");
@@ -192,9 +204,9 @@ static PRIMFN(prim_cas_materialize_item) {
   std::string dest_str = dest_path->c_str();
 
   // Create parent directories for all types
-  auto parent = wcl::parent_and_base(dest_str);
-  if ((bool)parent && !parent->first.empty()) {
-    if (mkdir_with_parents(parent->first, 0755) != 0) {
+  std::filesystem::path parent_dir = std::filesystem::path(dest_str).parent_path();
+  if (!parent_dir.empty()) {
+    if (mkdir_with_parents(parent_dir.string(), 0755) != 0) {
       std::string msg = "Failed to create parent directories for " + dest_str;
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
@@ -204,7 +216,7 @@ static PRIMFN(prim_cas_materialize_item) {
 
   if (type == "file") {
     // Handle regular file: materialize from CAS (already stored by wakebox), apply timestamps
-    cas::CASStore* store = ctx->get_store(".");
+    cas::Cas* store = ctx->get_store(".");
     if (!store) {
       runtime.heap.reserve(reserve_result() + String::reserve(28));
       auto err = String::claim(runtime.heap, "CAS store not initialized");
@@ -212,27 +224,24 @@ static PRIMFN(prim_cas_materialize_item) {
     }
 
     std::string hash_str_val = hash_or_target->c_str();
-    cas::ContentHash hash = cas::ContentHash::from_hex(hash_str_val.c_str());
+    auto hash_result = cas::ContentHash::from_hex(hash_str_val.c_str());
+    if (!hash_result) {
+      std::string msg = "Invalid content hash: " + hash_str_val;
+      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+      auto err = String::claim(runtime.heap, msg);
+      RETURN(claim_result(runtime.heap, false, err));
+    }
     mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
+    time_t mtime_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
+    long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
 
-    // Materialize from CAS to workspace
-    auto mat_result = store->materialize_blob(hash, dest_str.c_str(), mode);
+    // Materialize from CAS to workspace with timestamps
+    auto mat_result = store->materialize_blob(*hash_result, dest_str.c_str(), mode, mtime_sec, mtime_nsec);
     if (!mat_result) {
       std::string msg = "Failed to materialize blob " + hash_str_val + " to " + dest_str;
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));
-    }
-
-    // Apply timestamps
-    struct timespec times[2];
-    times[0].tv_sec = 0;
-    times[0].tv_nsec = UTIME_OMIT;  // Don't change atime
-    times[1].tv_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
-    times[1].tv_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
-
-    if (utimensat(AT_FDCWD, dest_str.c_str(), times, 0) != 0) {
-      std::cerr << "Warning: Failed to set timestamps on " << dest_str << std::endl;
     }
 
   } else if (type == "symlink") {
@@ -327,9 +336,9 @@ static PRIMFN(prim_cas_ingest_staging_file) {
   std::string dest_str = dest_path->c_str();
 
   // Create parent directories for all types
-  auto parent = wcl::parent_and_base(dest_str);
-  if ((bool)parent && !parent->first.empty()) {
-    if (mkdir_with_parents(parent->first, 0755) != 0) {
+  std::filesystem::path parent_dir = std::filesystem::path(dest_str).parent_path();
+  if (!parent_dir.empty()) {
+    if (mkdir_with_parents(parent_dir.string(), 0755) != 0) {
       std::string msg = "Failed to create parent directories for " + dest_str;
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
@@ -339,7 +348,7 @@ static PRIMFN(prim_cas_ingest_staging_file) {
 
   if (type == "file") {
     // Handle regular file: store in CAS, materialize, apply timestamps, cleanup
-    cas::CASStore* store = ctx->get_store(".");
+    cas::Cas* store = ctx->get_store(".");
     if (!store) {
       runtime.heap.reserve(reserve_result() + String::reserve(28));
       auto err = String::claim(runtime.heap, "CAS store not initialized");
@@ -358,10 +367,16 @@ static PRIMFN(prim_cas_ingest_staging_file) {
     }
 
     // Verify the stored hash matches the expected hash
-    cas::ContentHash expected_hash = cas::ContentHash::from_hex(hash_str->c_str());
+    auto expected_hash_result = cas::ContentHash::from_hex(hash_str->c_str());
+    if (!expected_hash_result) {
+      std::string msg = "Invalid expected hash: " + std::string(hash_str->c_str());
+      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+      auto err = String::claim(runtime.heap, msg);
+      RETURN(claim_result(runtime.heap, false, err));
+    }
     cas::ContentHash stored_hash = *store_result;
 
-    if (expected_hash.to_hex() != stored_hash.to_hex()) {
+    if (expected_hash_result->to_hex() != stored_hash.to_hex()) {
       std::string msg = "Hash mismatch: expected " + std::string(hash_str->c_str()) +
                         " but got " + stored_hash.to_hex();
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
@@ -369,10 +384,12 @@ static PRIMFN(prim_cas_ingest_staging_file) {
       RETURN(claim_result(runtime.heap, false, err));
     }
 
-    // 2. Materialize to workspace
+    // 2. Materialize to workspace with timestamps
     mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
+    time_t mtime_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
+    long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
 
-    auto mat_result = store->materialize_blob(stored_hash, dest_str.c_str(), mode);
+    auto mat_result = store->materialize_blob(stored_hash, dest_str.c_str(), mode, mtime_sec, mtime_nsec);
     if (!mat_result) {
       std::string msg = "Failed to materialize blob " + stored_hash.to_hex() + " to " + dest_str;
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
@@ -380,18 +397,7 @@ static PRIMFN(prim_cas_ingest_staging_file) {
       RETURN(claim_result(runtime.heap, false, err));
     }
 
-    // 3. Apply timestamps
-    struct timespec times[2];
-    times[0].tv_sec = 0;
-    times[0].tv_nsec = UTIME_OMIT;  // Don't change atime
-    times[1].tv_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
-    times[1].tv_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
-
-    if (utimensat(AT_FDCWD, dest_str.c_str(), times, 0) != 0) {
-      std::cerr << "Warning: Failed to set timestamps on " << dest_str << std::endl;
-    }
-
-    // 4. Delete staging file
+    // 3. Delete staging file
     if (unlink(staging_path.c_str()) != 0) {
       std::cerr << "Warning: Failed to delete staging file " << staging_path << std::endl;
     }

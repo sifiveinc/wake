@@ -17,10 +17,11 @@
 
 #include "cas_job_cache.h"
 
+#include <filesystem>
 #include <sstream>
 
 #include "util/mkdir_parents.h"
-#include "wcl/file_copy.h"
+#include "wcl/file_ops.h"
 #include "wcl/filepath.h"
 
 namespace cas {
@@ -29,7 +30,7 @@ std::string get_cas_store_path(const std::string& cache_dir) {
   return wcl::join_paths(cache_dir, "cas");
 }
 
-wcl::result<ContentHash, CASJobCacheError> store_output_file(CASStore& store,
+wcl::result<ContentHash, CASJobCacheError> store_output_file(Cas& store,
                                                              const std::string& source_path) {
   auto result = store.store_blob_from_file(source_path);
   if (!result) {
@@ -39,7 +40,7 @@ wcl::result<ContentHash, CASJobCacheError> store_output_file(CASStore& store,
 }
 
 wcl::result<CASJobOutputs, CASJobCacheError> store_output_files(
-    CASStore& store, const std::vector<std::pair<std::string, std::string>>& files,
+    Cas& store, const std::vector<std::pair<std::string, std::string>>& files,
     const std::vector<std::pair<std::string, mode_t>>& /* modes */) {
   CASJobOutputs outputs;
 
@@ -69,15 +70,15 @@ wcl::result<CASJobOutputs, CASJobCacheError> store_output_files(
   return wcl::make_result<CASJobOutputs, CASJobCacheError>(std::move(outputs));
 }
 
-wcl::result<bool, CASJobCacheError> materialize_file(CASStore& store, const ContentHash& hash,
+wcl::result<bool, CASJobCacheError> materialize_file(Cas& store, const ContentHash& hash,
                                                      const std::string& dest_path, mode_t mode) {
   // Get the blob path in CAS
   std::string blob_path = store.blob_path(hash);
 
   // Create parent directories
-  auto parent_base = wcl::parent_and_base(dest_path);
-  if ((bool)parent_base && !parent_base->first.empty()) {
-    if (mkdir_with_parents(parent_base->first, 0755) != 0) {
+  std::filesystem::path parent_dir = std::filesystem::path(dest_path).parent_path();
+  if (!parent_dir.empty()) {
+    if (mkdir_with_parents(parent_dir.string(), 0755) != 0) {
       return wcl::make_error<bool, CASJobCacheError>(CASJobCacheError::IOError);
     }
   }
@@ -91,6 +92,6 @@ wcl::result<bool, CASJobCacheError> materialize_file(CASStore& store, const Cont
   return wcl::make_result<bool, CASJobCacheError>(true);
 }
 
-bool has_blob(CASStore& store, const ContentHash& hash) { return store.has_blob(hash); }
+bool has_blob(Cas& store, const ContentHash& hash) { return store.has_blob(hash); }
 
 }  // namespace cas

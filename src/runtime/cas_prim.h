@@ -21,14 +21,14 @@
 #include <memory>
 #include <string>
 
-#include "cas/cas_store.h"
+#include "cas/cas.h"
 #include "types/primfn.h"
 
 namespace cas {
-class CASStore;
+class Cas;
 }
 
-// Context for CAS operations, manages the CASStore lifecycle
+// Context for CAS operations, manages the Cas lifecycle
 class CASContext {
  public:
   CASContext() = default;
@@ -36,13 +36,13 @@ class CASContext {
 
   // Get or create the CAS store for a workspace
   // Returns nullptr if CAS initialization fails
-  cas::CASStore* get_store(const std::string& workspace);
+  cas::Cas* get_store(const std::string& workspace);
 
   // Check if CAS is available
   bool has_store() const { return store_ != nullptr; }
 
  private:
-  std::unique_ptr<cas::CASStore> store_;
+  std::unique_ptr<cas::Cas> store_;
   std::string workspace_;
 };
 
