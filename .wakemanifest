@@ -35,6 +35,7 @@ share/wake/lib/system/runner.wake
 share/wake/lib/system/remote_cache_api.wake
 share/wake/lib/system/remote_cache_runner.wake
 share/wake/lib/system/sources.wake
+src/cas/cas.wake
 src/compat/compat.wake
 src/dst/dst.wake
 src/json/json.wake
