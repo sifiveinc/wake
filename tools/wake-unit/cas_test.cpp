@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 SiFive, Inc.
+ * Copyright 2026 SiFive, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,81 +17,115 @@
 
 // Tests for the CAS (Content-Addressable Storage) module
 
-#include "unit.h"
+#include "cas/cas.h"
 
-#include <cstdio>
-#include <fstream>
 #include <sys/stat.h>
 
-#include "cas/cas.h"
-#include "cas/cas_store.h"
-#include "cas/file_ops.h"
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 
+#include "cas/content_hash.h"
+#include "unit.h"
+#include "wcl/file_ops.h"
+
+namespace fs = std::filesystem;
 using namespace cas;
 
 // ============================================================================
 // ContentHash tests
 // ============================================================================
 
-TEST(content_hash_from_string, "cas") {
+TEST(content_hash_from_string_same_content, "cas") {
   auto hash1 = ContentHash::from_string("hello world");
   auto hash2 = ContentHash::from_string("hello world");
-  auto hash3 = ContentHash::from_string("hello world!");
 
-  // Same content should produce same hash
+  EXPECT_EQUAL(hash1, hash2);
   EXPECT_EQUAL(hash1.to_hex(), hash2.to_hex());
+}
 
-  // Different content should produce different hash
-  EXPECT_FALSE(hash1.to_hex() == hash3.to_hex());
+TEST(content_hash_from_string_different_content, "cas") {
+  auto hash1 = ContentHash::from_string("hello world");
+  auto hash2 = ContentHash::from_string("hello world!");
+
+  EXPECT_FALSE(hash1.to_hex() == hash2.to_hex());
+}
+
+TEST(content_hash_from_string_empty, "cas") {
+  auto hash = ContentHash::from_string("");
+
+  // Empty string should still produce a valid hash
+  EXPECT_EQUAL(hash.to_hex().length(), 64u);
 }
 
 TEST(content_hash_hex_roundtrip, "cas") {
   auto original = ContentHash::from_string("test data");
   std::string hex = original.to_hex();
   auto restored = ContentHash::from_hex(hex);
+  ASSERT_TRUE((bool)restored);
 
-  EXPECT_EQUAL(original.to_hex(), restored.to_hex());
+  EXPECT_EQUAL(original.to_hex(), restored->to_hex());
 }
 
-TEST(content_hash_prefix_suffix, "cas") {
+TEST(content_hash_to_hex_length, "cas") {
   auto hash = ContentHash::from_string("test");
   std::string hex = hash.to_hex();
-  std::string prefix = hash.prefix();
-  std::string suffix = hash.suffix();
 
-  // Prefix should be first 2 chars
-  EXPECT_EQUAL(prefix.length(), 2u);
-  EXPECT_EQUAL(prefix, hex.substr(0, 2));
+  // BLAKE2b-256 produces 64 hex characters
+  EXPECT_EQUAL(hex.length(), 64u);
+}
 
-  // Suffix should be remaining chars
-  EXPECT_EQUAL(suffix, hex.substr(2));
+TEST(content_hash_to_hex_valid_chars, "cas") {
+  auto hash = ContentHash::from_string("test");
+  std::string hex = hash.to_hex();
+
+  for (char c : hex) {
+    bool valid = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    EXPECT_TRUE(valid);
+  }
+}
+
+TEST(content_hash_from_file, "cas") {
+  std::string test_file = "cas_test_hash_file.txt";
+  std::string content = "file content for hashing";
+
+  // Create test file
+  {
+    std::ofstream ofs(test_file);
+    ofs << content;
+  }
+
+  auto file_hash = ContentHash::from_file(test_file);
+  ASSERT_TRUE((bool)file_hash);
+
+  auto string_hash = ContentHash::from_string(content);
+  EXPECT_EQUAL(file_hash->to_hex(), string_hash.to_hex());
+
+  fs::remove(test_file);
+}
+
+TEST(content_hash_from_file_not_found, "cas") {
+  auto result = ContentHash::from_file("nonexistent_file_12345.txt");
+  EXPECT_FALSE((bool)result);
+}
+
+TEST(content_hash_equality, "cas") {
+  auto hash1 = ContentHash::from_string("test");
+  auto hash2 = ContentHash::from_string("test");
+  auto hash3 = ContentHash::from_string("different");
+
+  EXPECT_TRUE(hash1 == hash2);
+  EXPECT_FALSE(hash1 != hash2);
+  EXPECT_FALSE(hash1 == hash3);
+  EXPECT_TRUE(hash1 != hash3);
 }
 
 // ============================================================================
-// File operations tests
+// wcl::reflink_or_copy_file tests
 // ============================================================================
 
-TEST(mkdir_parents_basic, "cas") {
-  std::string test_dir = "cas_test_dir/sub1/sub2";
-
-  // Clean up first
-  rmdir("cas_test_dir/sub1/sub2");
-  rmdir("cas_test_dir/sub1");
-  rmdir("cas_test_dir");
-
-  auto result = mkdir_parents(test_dir);
-  ASSERT_TRUE((bool)result);
-
-  EXPECT_TRUE(path_exists(test_dir));
-  EXPECT_TRUE(is_directory(test_dir));
-
-  // Clean up
-  rmdir("cas_test_dir/sub1/sub2");
-  rmdir("cas_test_dir/sub1");
-  rmdir("cas_test_dir");
-}
-
-TEST(copy_file_basic, "cas") {
+TEST(reflink_or_copy_file_basic, "cas") {
   std::string src = "cas_test_src.txt";
   std::string dst = "cas_test_dst.txt";
 
@@ -101,194 +135,167 @@ TEST(copy_file_basic, "cas") {
     ofs << "test content for copy";
   }
 
-  auto result = copy_file(src, dst, 0644, true);
+  auto result = wcl::reflink_or_copy_file(src, dst, 0644);
   ASSERT_TRUE((bool)result);
 
-  // Verify destination exists
-  EXPECT_TRUE(path_exists(dst));
-
-  // Verify content
+  // Verify destination exists and has correct content
+  EXPECT_TRUE(fs::exists(dst));
   {
     std::ifstream ifs(dst);
-    std::string content((std::istreambuf_iterator<char>(ifs)),
-                         std::istreambuf_iterator<char>());
+    std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     EXPECT_EQUAL(content, std::string("test content for copy"));
   }
 
-  // Clean up
-  unlink(src.c_str());
-  unlink(dst.c_str());
+  fs::remove(src);
+  fs::remove(dst);
+}
+
+TEST(reflink_or_copy_file_src_not_found, "cas") {
+  auto result = wcl::reflink_or_copy_file("nonexistent_src.txt", "dst.txt", 0644);
+  EXPECT_FALSE((bool)result);
 }
 
 // ============================================================================
-// CASStore tests
+// Cas tests
 // ============================================================================
 
 TEST(cas_store_open, "cas") {
   std::string store_path = "cas_test_store";
+  fs::remove_all(store_path);
 
-  // Clean up first
-  system("rm -rf cas_test_store");
-
-  auto store_result = CASStore::open(store_path);
+  auto store_result = Cas::open(store_path);
   ASSERT_TRUE((bool)store_result);
 
-  // Check directories were created
-  EXPECT_TRUE(path_exists(store_path));
-  EXPECT_TRUE(is_directory(store_path));
+  EXPECT_TRUE(fs::exists(store_path));
+  EXPECT_TRUE(fs::is_directory(store_path));
 
-  // Clean up
-  system("rm -rf cas_test_store");
+  fs::remove_all(store_path);
 }
 
 TEST(cas_store_blob_roundtrip, "cas") {
   std::string store_path = "cas_test_store2";
-  system("rm -rf cas_test_store2");
+  fs::remove_all(store_path);
 
-  auto store_result = CASStore::open(store_path);
+  auto store_result = Cas::open(store_path);
   ASSERT_TRUE((bool)store_result);
   auto& store = *store_result;
 
-  // Store a blob
   std::string content = "This is test blob content";
   auto hash_result = store.store_blob(content);
   ASSERT_TRUE((bool)hash_result);
   auto hash = *hash_result;
 
-  // Verify it exists
   EXPECT_TRUE(store.has_blob(hash));
 
-  // Read it back
   auto read_result = store.read_blob(hash);
   ASSERT_TRUE((bool)read_result);
   EXPECT_EQUAL(*read_result, content);
 
-  // Clean up
-  system("rm -rf cas_test_store2");
+  fs::remove_all(store_path);
 }
 
-// ============================================================================
-// CAS Job Cache Integration tests
-// ============================================================================
+TEST(cas_store_blob_from_file, "cas") {
+  std::string store_path = "cas_test_store3";
+  std::string test_file = "cas_test_input.txt";
+  fs::remove_all(store_path);
 
-#include "cas/cas_job_cache.h"
-
-TEST(cas_job_cache_store_file, "cas") {
-  std::string store_path = "cas_test_job_cache1";
-  std::string test_file = "cas_test_job_cache_file.txt";
-
-  // Clean up from previous runs
-  system("rm -rf cas_test_job_cache1 cas_test_job_cache_file.txt");
-
-  // Create a test file
+  // Create test file
+  std::string content = "File content to store in CAS";
   {
     std::ofstream ofs(test_file);
-    ofs << "Test content for job cache";
+    ofs << content;
   }
 
-  // Create store
-  auto store_result = CASStore::open(store_path);
+  auto store_result = Cas::open(store_path);
   ASSERT_TRUE((bool)store_result);
   auto& store = *store_result;
 
-  // Store the file
-  auto hash_result = store_output_file(store, test_file);
+  auto hash_result = store.store_blob_from_file(test_file);
   ASSERT_TRUE((bool)hash_result);
   auto hash = *hash_result;
 
-  // Verify the blob exists
-  EXPECT_TRUE(has_blob(store, hash));
+  EXPECT_TRUE(store.has_blob(hash));
 
-  // Clean up
-  system("rm -rf cas_test_job_cache1 cas_test_job_cache_file.txt");
+  auto read_result = store.read_blob(hash);
+  ASSERT_TRUE((bool)read_result);
+  EXPECT_EQUAL(*read_result, content);
+
+  fs::remove(test_file);
+  fs::remove_all(store_path);
 }
 
-TEST(cas_job_cache_store_multiple_files, "cas") {
-  std::string store_path = "cas_test_job_cache2";
-  std::string src_dir = "cas_test_job_cache_src";
+TEST(cas_store_has_blob_not_found, "cas") {
+  std::string store_path = "cas_test_store4";
+  fs::remove_all(store_path);
 
-  // Clean up from previous runs
-  system("rm -rf cas_test_job_cache2 cas_test_job_cache_src");
-
-  // Create source directory with files
-  mkdir(src_dir.c_str(), 0755);
-  {
-    std::ofstream ofs(src_dir + "/output1.txt");
-    ofs << "Output file 1";
-  }
-  {
-    std::ofstream ofs(src_dir + "/output2.txt");
-    ofs << "Output file 2";
-  }
-
-  // Create store
-  auto store_result = CASStore::open(store_path);
+  auto store_result = Cas::open(store_path);
   ASSERT_TRUE((bool)store_result);
   auto& store = *store_result;
 
-  // Store multiple files
-  std::vector<std::pair<std::string, std::string>> files = {
-    {src_dir + "/output1.txt", "output1.txt"},
-    {src_dir + "/output2.txt", "output2.txt"}
-  };
-  std::vector<std::pair<std::string, mode_t>> modes = {
-    {"output1.txt", 0644},
-    {"output2.txt", 0644}
-  };
+  auto hash = ContentHash::from_string("nonexistent content");
+  EXPECT_FALSE(store.has_blob(hash));
 
-  auto result = store_output_files(store, files, modes);
-  ASSERT_TRUE((bool)result);
-  auto outputs = *result;
-
-  // Verify combined hash is set (not empty/zero)
-  EXPECT_FALSE(outputs.tree_hash.is_empty());
-
-  // Verify individual file hashes
-  EXPECT_EQUAL(outputs.file_hashes.size(), (size_t)2);
-
-  // Clean up
-  system("rm -rf cas_test_job_cache2 cas_test_job_cache_src");
+  fs::remove_all(store_path);
 }
 
-TEST(cas_job_cache_materialize, "cas") {
-  std::string store_path = "cas_test_job_cache3";
-  std::string src_file = "cas_test_job_cache_src_file.txt";
-  std::string dst_file = "cas_test_job_cache_dst_file.txt";
+TEST(cas_store_materialize_blob, "cas") {
+  std::string store_path = "cas_test_store5";
+  std::string output_file = "cas_test_output.txt";
+  fs::remove_all(store_path);
+  fs::remove(output_file);
 
-  // Clean up from previous runs
-  system("rm -rf cas_test_job_cache3 cas_test_job_cache_src_file.txt cas_test_job_cache_dst_file.txt");
-
-  // Create a test file
-  {
-    std::ofstream ofs(src_file);
-    ofs << "Content to materialize";
-  }
-
-  // Create store and store the file
-  auto store_result = CASStore::open(store_path);
+  auto store_result = Cas::open(store_path);
   ASSERT_TRUE((bool)store_result);
   auto& store = *store_result;
 
-  auto hash_result = store_output_file(store, src_file);
+  std::string content = "Content to materialize";
+  auto hash_result = store.store_blob(content);
   ASSERT_TRUE((bool)hash_result);
   auto hash = *hash_result;
+  mode_t mode = 0644;
+  time_t mtime_sec = 1234567890;
+  long mtime_nsec = 123456789;
+  auto materialize_result = store.materialize_blob(hash, output_file, mode, mtime_sec, mtime_nsec);
+  ASSERT_TRUE((bool)materialize_result);
 
-  // Materialize to a new location
-  auto mat_result = materialize_file(store, hash, dst_file, 0644);
-  ASSERT_TRUE((bool)mat_result);
-
-  // Verify the file was created
-  EXPECT_TRUE(path_exists(dst_file));
-
-  // Verify content
+  EXPECT_TRUE(fs::exists(output_file));
   {
-    std::ifstream ifs(dst_file);
-    std::string content((std::istreambuf_iterator<char>(ifs)),
-                         std::istreambuf_iterator<char>());
-    EXPECT_EQUAL(content, std::string("Content to materialize"));
+    std::ifstream ifs(output_file);
+    std::string read_content((std::istreambuf_iterator<char>(ifs)),
+                             std::istreambuf_iterator<char>());
+    EXPECT_EQUAL(read_content, content);
+
+    // Check mode and mtime using stat
+    struct stat file_stat;
+    int stat_result = ::stat(output_file.c_str(), &file_stat);
+    ASSERT_TRUE(stat_result == 0);
+    EXPECT_EQUAL(static_cast<mode_t>(file_stat.st_mode & 07777), mode);
+    EXPECT_EQUAL(file_stat.st_mtim.tv_sec, mtime_sec);
+    EXPECT_EQUAL(file_stat.st_mtim.tv_nsec, mtime_nsec);
   }
 
-  // Clean up
-  system("rm -rf cas_test_job_cache3 cas_test_job_cache_src_file.txt cas_test_job_cache_dst_file.txt");
+  fs::remove(output_file);
+  fs::remove_all(store_path);
 }
 
+TEST(cas_store_deduplication, "cas") {
+  std::string store_path = "cas_test_store6";
+  fs::remove_all(store_path);
+
+  auto store_result = Cas::open(store_path);
+  ASSERT_TRUE((bool)store_result);
+  auto& store = *store_result;
+
+  std::string content = "Duplicate content";
+
+  auto hash1_result = store.store_blob(content);
+  ASSERT_TRUE((bool)hash1_result);
+
+  auto hash2_result = store.store_blob(content);
+  ASSERT_TRUE((bool)hash2_result);
+
+  // Same content should produce same hash
+  EXPECT_EQUAL(hash1_result->to_hex(), hash2_result->to_hex());
+
+  fs::remove_all(store_path);
+}

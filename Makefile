@@ -4,7 +4,7 @@ VERSION	:= $(shell if test -f manifest.wake; then sed -n "/publish releaseAs/ s/
 
 CC	:= cc -std=c11
 CXX	:= c++
-CXX_VERSION := -std=c++14
+CXX_VERSION := -std=c++17
 CFLAGS	:= -Wall -Wno-format-security -O2 -DVERSION=$(VERSION)
 LDFLAGS	:= -lpthread
 DESTDIR ?= /usr/local
@@ -16,10 +16,16 @@ CORE_CFLAGS  := $(shell pkg-config --silence-errors --cflags sqlite3)	\
 		$(shell pkg-config --silence-errors --cflags re2)	\
 		$(shell pkg-config --silence-errors --cflags-only-I ncurses)
 FUSE_LDFLAGS := $(shell pkg-config --silence-errors --libs fuse    || echo -lfuse)
+
+# Detect if -lstdc++fs is needed (GCC < 9)
+# On Linux, both GCC and Clang use libstdc++, so check GCC version
+FILESYSTEM_LIB := $(shell test "$$(g++ -dumpversion 2>/dev/null | cut -d. -f1)" -lt 9 2>/dev/null && echo -lstdc++fs)
+
 CORE_LDFLAGS :=	$(shell pkg-config --silence-errors --libs sqlite3 || echo -lsqlite3)	\
 		$(shell pkg-config --silence-errors --libs gmp || echo -lgmp)	\
 		$(shell pkg-config --silence-errors --libs re2 || echo -lre2)	\
-		$(shell pkg-config --silence-errors --libs ncurses tinfo || pkg-config --silence-errors --libs ncurses || echo -lncurses)
+		$(shell pkg-config --silence-errors --libs ncurses tinfo || pkg-config --silence-errors --libs ncurses || echo -lncurses)	\
+		$(FILESYSTEM_LIB)
 
 COMMON_DIRS := src/compat src/util src/json src/wcl
 COMMON_C    := $(foreach dir,$(COMMON_DIRS),$(wildcard $(dir)/*.c)) \
@@ -60,7 +66,7 @@ install:	all
 # It assumes clang is available on the PATH and will fail otherwise
 formatAll:
 	@clang-format -i --style=file $(shell ./scripts/which_clang_files all)
-	@bin/wake-format.native-cpp14-release --auto --in-place
+	@bin/wake-format.native-cpp17-release --auto --in-place
 
 
 # Formats all changed or staged .h or .cpp files
@@ -74,7 +80,7 @@ format:
 	fi || true  && \
 	FILES=$$(./scripts/which_wake_files changed) && \
 	if [ "$$FILES" ]; then \
-		bin/wake-format.native-cpp14-release -i $$FILES; \
+		bin/wake-format.native-cpp17-release -i $$FILES; \
 	fi || true
 
 test:		wake.db

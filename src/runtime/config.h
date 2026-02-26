@@ -21,41 +21,42 @@
 
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 
 #include "json/json5.h"
 
 struct WakeConfigOverrides {
-  wcl::optional<std::string> log_header;
-  wcl::optional<int64_t> log_header_source_width;
+  std::optional<std::string> log_header;
+  std::optional<int64_t> log_header_source_width;
 
   // if label_filter == {} then we don't override
   // if label_filter == {{}} then we do override but the filter accepts everything
   // if label_filter == {{filter}} then only jobs matching the filter are accepted
   // these semantics fall out of the normal way overrides work, this comment
   // is just to make this unusual type's meaning clear.
-  wcl::optional<wcl::optional<std::string>> label_filter;
+  std::optional<std::optional<std::string>> label_filter;
 
   // Determines the maximum size of the cache
-  wcl::optional<uint64_t> max_cache_size;
+  std::optional<uint64_t> max_cache_size;
 
   // Determines the size of the cache that collection
   // tries to get us back to.
-  wcl::optional<uint64_t> low_cache_size;
+  std::optional<uint64_t> low_cache_size;
 
   // Determines if log headers should be aligned
-  wcl::optional<bool> log_header_align;
+  std::optional<bool> log_header_align;
 
   // Determines if job cache should terminate on error or return a cache miss
-  wcl::optional<bool> cache_miss_on_failure;
+  std::optional<bool> cache_miss_on_failure;
 
   // Lets you specify an alternative user config
-  wcl::optional<std::string> user_config;
+  std::optional<std::string> user_config;
 };
 
 template <class T>
-using Override = wcl::optional<T> WakeConfigOverrides::*;
+using Override = std::optional<T> WakeConfigOverrides::*;
 
 /********************************************************************
  * Policies
@@ -137,7 +138,7 @@ struct LogHeaderSourceWidthPolicy {
 
 struct LabelFilterPolicy {
   using type = std::unique_ptr<re2::RE2>;
-  using input_type = wcl::optional<std::string>;
+  using input_type = std::optional<std::string>;
   static constexpr const char* key = "label_filter";
   static constexpr bool allowed_in_wakeroot = false;
   static constexpr bool allowed_in_userconfig = false;

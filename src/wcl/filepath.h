@@ -22,7 +22,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <climits>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -46,7 +46,7 @@ class directory_iterator {
  private:
   std::string dir_path;
   DIR* dir = nullptr;
-  optional<result<directory_entry, posix_error_t>> value;
+  std::optional<result<directory_entry, posix_error_t>> value;
 
   // This steps the current entry by one
   void step();
@@ -325,24 +325,6 @@ inline std::vector<std::string> split_path(const std::string& path) {
   }
 
   return path_vec;
-}
-
-// Returns the end of the parent directory in the path.
-inline wcl::optional<std::pair<std::string, std::string>> parent_and_base(const std::string& str) {
-  // traverse backwards but using a normal iterator instead of a reverse
-  // iterator.
-  auto rbegin = str.end() - 1;
-  auto rend = str.begin();
-  for (; rbegin >= rend; --rbegin) {
-    if (*rbegin == '/') {
-      // Advance to the character past the slash
-      rbegin++;
-      // Now return the two strings
-      return {wcl::in_place_t{}, std::string(rend, rbegin), std::string(rbegin, str.end())};
-    }
-  }
-
-  return {};
 }
 
 inline std::string relative_to(std::string relative, std::string path) {

@@ -19,7 +19,7 @@ from wake import _
 from gcc_wake import _
 
 def re2 = match _
-    Pair "wasm-cpp14-release" _ -> buildRE2WASM Unit
+    Pair "wasm-cpp17-release" _ -> buildRE2WASM Unit
     _ ->
         pkgConfig "re2"
         | getOrElseFn (\Unit pkg "re2")
@@ -44,7 +44,7 @@ def buildRE2WASM Unit =
         tar xvzf %{version}.tar.gz
         cd re2-%{version}
         patch -p0 < ../../%{relative @here patch.getPathName}
-        emmake make -j4 RE2_CXXFLAGS="-std=c++14 -I. -Wall -DNO_THREADS" CXXFLAGS="-O2" obj/libre2.a
+        emmake make -j4 RE2_CXXFLAGS="-std=c++17 -I. -Wall -DNO_THREADS" CXXFLAGS="-O2" obj/libre2.a
         """
         | makePlan "compiling re2" (buildDir, patch, Nil)
         | editPlanEnvironment (addEnvironmentPath emsdk)

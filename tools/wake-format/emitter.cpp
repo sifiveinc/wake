@@ -309,7 +309,7 @@ static bool is_require_vertically_flat(size_t newline_count, const CSTElement& n
 }
 
 // Assumes that at least one of the choices is viable. Will assert otherwise
-static wcl::doc select_best_choice(std::vector<wcl::optional<wcl::doc>> choices) {
+static wcl::doc select_best_choice(std::vector<std::optional<wcl::doc>> choices) {
   std::vector<wcl::doc> lte_fmt = {};
   std::vector<wcl::doc> gt_fmt = {};
 
@@ -1111,7 +1111,7 @@ wcl::doc Emitter::walk_token(ctx_t ctx, CSTElement node) {
   MEMO_RET(std::move(builder).build());
 }
 
-wcl::optional<wcl::doc> Emitter::combine_apply_flat(ctx_t ctx,
+std::optional<wcl::doc> Emitter::combine_apply_flat(ctx_t ctx,
                                                     const std::vector<CSTElement>& parts) {
   wcl::doc_builder builder;
   for (size_t i = 0; i < parts.size() - 1; i++) {
@@ -1125,7 +1125,7 @@ wcl::optional<wcl::doc> Emitter::combine_apply_flat(ctx_t ctx,
   if (!is_vertically_flat(doc, parts, token_traits)) {
     return {};
   }
-  return {wcl::in_place_t{}, std::move(doc)};
+  return std::make_optional(std::move(doc));
 }
 
 // Attempt to format the apply as if it was a constructor.
@@ -1137,7 +1137,7 @@ wcl::optional<wcl::doc> Emitter::combine_apply_flat(ctx_t ctx,
 //   Json (
 //     ...lots of stuff...
 //   )
-wcl::optional<wcl::doc> Emitter::combine_apply_constructor(ctx_t ctx,
+std::optional<wcl::doc> Emitter::combine_apply_constructor(ctx_t ctx,
                                                            const std::vector<CSTElement>& parts) {
   if (parts.size() != 2) {
     return {};
@@ -1183,10 +1183,10 @@ wcl::optional<wcl::doc> Emitter::combine_apply_constructor(ctx_t ctx,
   builder.append(fmt().walk(WALK_NODE).space().compose(ctx.sub(builder), lhs, token_traits));
   builder.append(walk_node(ctx.sub(builder).prefer_explode(), rhs));
 
-  return {wcl::in_place_t{}, std::move(builder).build()};
+  return std::make_optional(std::move(builder).build());
 }
 
-wcl::optional<wcl::doc> Emitter::combine_apply_explode_all(ctx_t ctx,
+std::optional<wcl::doc> Emitter::combine_apply_explode_all(ctx_t ctx,
                                                            const std::vector<CSTElement>& parts) {
   wcl::doc_builder builder;
   for (size_t i = 0; i < parts.size() - 1; i++) {
@@ -1197,10 +1197,10 @@ wcl::optional<wcl::doc> Emitter::combine_apply_explode_all(ctx_t ctx,
 
   builder.append(walk_node(ctx.sub(builder).prefer_explode(), parts.back()));
 
-  return {wcl::in_place_t{}, std::move(builder).build()};
+  return std::make_optional(std::move(builder).build());
 }
 
-wcl::optional<wcl::doc> Emitter::combine_apply_pattern(ctx_t ctx,
+std::optional<wcl::doc> Emitter::combine_apply_pattern(ctx_t ctx,
                                                        const std::vector<CSTElement>& parts) {
   ctx = ctx.allow_explode();
   wcl::doc_builder builder;
@@ -1211,7 +1211,7 @@ wcl::optional<wcl::doc> Emitter::combine_apply_pattern(ctx_t ctx,
 
   builder.append(walk_node(ctx.sub(builder), parts.back()));
 
-  return {wcl::in_place_t{}, std::move(builder).build()};
+  return std::make_optional(std::move(builder).build());
 }
 
 wcl::doc Emitter::walk_apply(ctx_t ctx, CSTElement node) {
@@ -1220,7 +1220,7 @@ wcl::doc Emitter::walk_apply(ctx_t ctx, CSTElement node) {
 
   auto parts = collect_apply_parts(node);
 
-  std::vector<wcl::optional<wcl::doc>> choices = {
+  std::vector<std::optional<wcl::doc>> choices = {
       combine_apply_flat(ctx, parts),
       combine_apply_constructor(ctx, parts),
   };
@@ -1258,7 +1258,7 @@ wcl::doc Emitter::walk_ascribe(ctx_t ctx, CSTElement node) {
                .format(ctx, node.firstChildElement(), token_traits));
 }
 
-wcl::optional<wcl::doc> Emitter::combine_flat(ctx_t ctx, const std::vector<CSTElement>& parts) {
+std::optional<wcl::doc> Emitter::combine_flat(ctx_t ctx, const std::vector<CSTElement>& parts) {
   wcl::doc_builder builder;
   for (size_t i = 0; i < parts.size() - 1; i += 2) {
     CSTElement part = parts[i];
@@ -1273,10 +1273,10 @@ wcl::optional<wcl::doc> Emitter::combine_flat(ctx_t ctx, const std::vector<CSTEl
   if (!is_vertically_flat(doc, parts, token_traits)) {
     return {};
   }
-  return {wcl::in_place_t{}, std::move(doc)};
+  return std::make_optional(std::move(doc));
 }
 
-wcl::optional<wcl::doc> Emitter::combine_explode_first(ctx_t ctx,
+std::optional<wcl::doc> Emitter::combine_explode_first(ctx_t ctx,
                                                        const std::vector<CSTElement>& parts) {
   wcl::doc_builder builder;
 
@@ -1293,10 +1293,10 @@ wcl::optional<wcl::doc> Emitter::combine_explode_first(ctx_t ctx,
   }
 
   builder.append(walk_node(ctx.sub(builder), parts.back()));
-  return {wcl::in_place_t{}, std::move(builder).build()};
+  return std::make_optional(std::move(builder).build());
 }
 
-wcl::optional<wcl::doc> Emitter::combine_explode_last(ctx_t ctx,
+std::optional<wcl::doc> Emitter::combine_explode_last(ctx_t ctx,
                                                       const std::vector<CSTElement>& parts) {
   wcl::doc_builder builder;
 
@@ -1308,10 +1308,10 @@ wcl::optional<wcl::doc> Emitter::combine_explode_last(ctx_t ctx,
   }
 
   builder.append(walk_node(ctx.sub(builder).prefer_explode(), parts.back()));
-  return {wcl::in_place_t{}, std::move(builder).build()};
+  return std::make_optional(std::move(builder).build());
 }
 
-wcl::optional<wcl::doc> Emitter::combine_explode_all(ctx_t ctx,
+std::optional<wcl::doc> Emitter::combine_explode_all(ctx_t ctx,
                                                      const std::vector<CSTElement>& parts) {
   wcl::doc_builder builder;
 
@@ -1323,10 +1323,10 @@ wcl::optional<wcl::doc> Emitter::combine_explode_all(ctx_t ctx,
   }
 
   builder.append(walk_node(ctx.sub(builder).prefer_explode(), parts.back()));
-  return {wcl::in_place_t{}, std::move(builder).build()};
+  return std::make_optional(std::move(builder).build());
 }
 
-wcl::optional<wcl::doc> Emitter::combine_explode_first_compress(
+std::optional<wcl::doc> Emitter::combine_explode_first_compress(
     ctx_t ctx, const std::vector<CSTElement>& parts) {
   wcl::doc_builder builder;
 
@@ -1348,10 +1348,10 @@ wcl::optional<wcl::doc> Emitter::combine_explode_first_compress(
   if (!is_vertically_flat(doc, parts, token_traits)) {
     return {};
   }
-  return {wcl::in_place_t{}, std::move(doc)};
+  return std::make_optional(std::move(doc));
 }
 
-wcl::optional<wcl::doc> Emitter::combine_explode_last_compress(
+std::optional<wcl::doc> Emitter::combine_explode_last_compress(
     ctx_t ctx, const std::vector<CSTElement>& parts) {
   wcl::doc_builder builder;
 
@@ -1368,7 +1368,7 @@ wcl::optional<wcl::doc> Emitter::combine_explode_last_compress(
   if (!is_vertically_flat(doc, parts, token_traits)) {
     return {};
   }
-  return {wcl::in_place_t{}, std::move(doc)};
+  return std::make_optional(std::move(doc));
 }
 
 wcl::doc Emitter::walk_binary(ctx_t ctx, CSTElement node) {

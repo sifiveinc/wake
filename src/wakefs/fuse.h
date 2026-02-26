@@ -19,8 +19,7 @@
 #ifndef FUSE_H
 #define FUSE_H
 
-#include <wcl/optional.h>
-
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -62,7 +61,7 @@ struct daemon_client {
 
 struct json_args {
   std::vector<std::string> command;
-  wcl::optional<int> command_timeout;  // timeout in seconds.
+  std::optional<int> command_timeout;  // timeout in seconds.
   std::vector<std::string> environment;
   std::vector<visible_file> visible;  // Visible files with path and hash for CAS-based reads
   std::string directory;

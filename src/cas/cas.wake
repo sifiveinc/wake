@@ -1,4 +1,4 @@
-# Copyright 2024 SiFive, Inc.
+# Copyright 2026 SiFive, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ package build_wake
 from wake import _
 from gcc_wake import _
 
-# CAS (Content-Addressable Storage) library with Merkle tree support
 export target casLib variant =
     src @here variant (blake2, wcl, Nil) Nil Nil
 

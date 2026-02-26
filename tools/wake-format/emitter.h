@@ -19,10 +19,10 @@
 
 #include <wcl/doc.h>
 #include <wcl/hash.h>
-#include <wcl/optional.h>
 
 #include <cassert>
 #include <iostream>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -123,23 +123,23 @@ class Emitter {
   //     if LTE has any elements choose the element with the smallest height
   //     otherwise choose the element with the smallest width from GT
   //
-  wcl::optional<wcl::doc> combine_flat(ctx_t ctx, const std::vector<CSTElement>& parts);
-  wcl::optional<wcl::doc> combine_explode_first(ctx_t ctx, const std::vector<CSTElement>& parts);
-  wcl::optional<wcl::doc> combine_explode_last(ctx_t ctx, const std::vector<CSTElement>& parts);
-  wcl::optional<wcl::doc> combine_explode_all(ctx_t ctx, const std::vector<CSTElement>& parts);
-  wcl::optional<wcl::doc> combine_explode_first_compress(ctx_t ctx,
+  std::optional<wcl::doc> combine_flat(ctx_t ctx, const std::vector<CSTElement>& parts);
+  std::optional<wcl::doc> combine_explode_first(ctx_t ctx, const std::vector<CSTElement>& parts);
+  std::optional<wcl::doc> combine_explode_last(ctx_t ctx, const std::vector<CSTElement>& parts);
+  std::optional<wcl::doc> combine_explode_all(ctx_t ctx, const std::vector<CSTElement>& parts);
+  std::optional<wcl::doc> combine_explode_first_compress(ctx_t ctx,
                                                          const std::vector<CSTElement>& parts);
-  wcl::optional<wcl::doc> combine_explode_last_compress(ctx_t ctx,
+  std::optional<wcl::doc> combine_explode_last_compress(ctx_t ctx,
                                                         const std::vector<CSTElement>& parts);
 
   // Functions to combine apply using various 'full choice' options
   //
-  wcl::optional<wcl::doc> combine_apply_flat(ctx_t ctx, const std::vector<CSTElement>& parts);
-  wcl::optional<wcl::doc> combine_apply_constructor(ctx_t ctx,
+  std::optional<wcl::doc> combine_apply_flat(ctx_t ctx, const std::vector<CSTElement>& parts);
+  std::optional<wcl::doc> combine_apply_constructor(ctx_t ctx,
                                                     const std::vector<CSTElement>& parts);
-  wcl::optional<wcl::doc> combine_apply_explode_all(ctx_t ctx,
+  std::optional<wcl::doc> combine_apply_explode_all(ctx_t ctx,
                                                     const std::vector<CSTElement>& parts);
-  wcl::optional<wcl::doc> combine_apply_pattern(ctx_t ctx, const std::vector<CSTElement>& parts);
+  std::optional<wcl::doc> combine_apply_pattern(ctx_t ctx, const std::vector<CSTElement>& parts);
 
   // Returns a formatter that inserts the next node
   // on the current line if it fits, or on a new nested line

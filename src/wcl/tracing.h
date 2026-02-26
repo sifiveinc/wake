@@ -28,11 +28,10 @@
 #include <cstdarg>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <unordered_map>
-
-#include "optional.h"
 
 namespace wcl {
 namespace log {

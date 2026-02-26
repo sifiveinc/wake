@@ -48,7 +48,7 @@ def wakeUnitToTest Unit =
     require buildWakeUnit, Nil = subscribe wakeUnitTestBinary
     else failWithError "wake-unit binary not found"
 
-    require Pass wakeUnitLst = buildWakeUnit (Pair "native-cpp14-release" "native-c11-release")
+    require Pass wakeUnitLst = buildWakeUnit (Pair "native-cpp17-release" "native-c11-release")
 
     require Some result = head wakeUnitLst
     else failWithError "wake-unit binary not found"

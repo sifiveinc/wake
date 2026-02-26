@@ -245,7 +245,7 @@ int StatusBuf::overflow(int c) {
   return 0;
 }
 
-StatusBuf::StatusBuf(std::string name, wcl::optional<std::string> extra, int color,
+StatusBuf::StatusBuf(std::string name, std::optional<std::string> extra, int color,
                      TermInfoBuf &buf)
     : name(name), extra(extra), color(color), buf(buf) {
   log_header = WakeConfig::get()->log_header;
@@ -532,7 +532,7 @@ void status_set_fd(const char *name, int fd) {
   stream.colour = stream_color(name);
   stream.fd_buf = std::make_unique<FdBuf>(fd);
   stream.term_buf = std::make_unique<TermInfoBuf>(stream.fd_buf.get());
-  stream.log_buf = std::make_unique<StatusBuf>(name, wcl::optional<std::string>{}, stream.colour,
+  stream.log_buf = std::make_unique<StatusBuf>(name, std::optional<std::string>{}, stream.colour,
                                                *stream.term_buf.get());
   stream.generic_stream = std::make_unique<std::ostream>(stream.log_buf.get());
 }

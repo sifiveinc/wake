@@ -19,7 +19,7 @@ from wake import _
 from gcc_wake import _
 
 def ncurses = match _
-    Pair "wasm-cpp14-release" _ -> Pass (makeSysLib "ncurses")
+    Pair "wasm-cpp17-release" _ -> Pass (makeSysLib "ncurses")
     _ ->
         pkgConfig "ncurses tinfo"
         | getOrElseFn (\Unit pkg "ncurses")

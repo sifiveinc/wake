@@ -35,7 +35,6 @@
 #include "json/json5.h"
 #include "util/diagnostic.h"
 #include "wcl/filepath.h"
-#include "wcl/optional.h"
 #include "wcl/result.h"
 
 // Expands a string as echo would.
