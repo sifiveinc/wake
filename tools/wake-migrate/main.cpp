@@ -305,10 +305,10 @@ static std::vector<Migration> get_migrations() {
                        "CREATE TABLE IF NOT EXISTS run_jobs("
                        "  run_id integer not null references runs(run_id) on delete cascade,"
                        "  job_id integer not null references jobs(job_id) on delete cascade,"
-                       "  primary key(run_id, job_id));"))
+                       "  primary key(job_id, run_id));"))
            return false;
          if (!exec_sql(db,
-                       "CREATE INDEX IF NOT EXISTS run_jobs_by_job ON run_jobs(job_id, run_id);"))
+                       "CREATE INDEX IF NOT EXISTS run_jobs_by_run ON run_jobs(run_id, job_id);"))
            return false;
 
          // Step 6: Add end_time column to runs for GC watermark
