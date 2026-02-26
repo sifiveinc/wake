@@ -207,8 +207,8 @@ void query_jobs(const CommandLineOptions &clo, Database &db) {
   // --last-use
   if (clo.last_use) {
     collect_ands.push_back(
-        {"job_id IN (SELECT job_id FROM run_jobs WHERE run_id = "
-         "(SELECT max(run_id) FROM runs WHERE end_time IS NOT NULL))"});
+        {"job_id in (select job_id from run_jobs where run_id = "
+         "(select max(run_id) from runs where end_time is not null))"});
   }
 
   // --failed
