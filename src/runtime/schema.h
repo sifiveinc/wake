@@ -96,8 +96,8 @@ inline const char* getWakeSchemaSQL() {
          "create table if not exists run_jobs("
          "  run_id integer not null references runs(run_id) on delete cascade,"
          "  job_id integer not null references jobs(job_id) on delete cascade,"
-         "  primary key(run_id, job_id));"
-         "create index if not exists run_jobs_by_job on run_jobs(job_id, run_id);";
+         "  primary key(job_id, run_id));"
+         "create index if not exists run_jobs_by_run on run_jobs(run_id, job_id);";
 }
 
 #define WAKE_SCHEMA_SQL getWakeSchemaSQL()
