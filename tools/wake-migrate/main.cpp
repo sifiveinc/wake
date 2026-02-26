@@ -190,6 +190,84 @@ static std::vector<Migration> get_migrations() {
        },
        "Convert runner_status from INTEGER to TEXT"},
 
+      // Version 9 -> 10: run_jobs table + end_time for multi-wake safety
+      // run_jobs tracks all runs using each job (not just most recent).
+      // end_time on runs enables watermark-based GC.
+      {9, 10,
+       [](sqlite3* db) -> bool {
+         // Step 1: Create new jobs table without use_id
+         const char* create_new_table = R"(
+           CREATE TABLE jobs_new(
+             job_id      integer primary key autoincrement,
+             run_id      integer not null references runs(run_id),
+             label       text    not null,
+             directory   text    not null,
+             commandline blob    not null,
+             environment blob    not null,
+             stdin       text    not null,
+             signature   integer not null,
+             stack       blob    not null,
+             stat_id     integer references stats(stat_id),
+             starttime   integer not null default 0,
+             endtime     integer not null default 0,
+             keep        integer not null default 0,
+             stale       integer not null default 0,
+             is_atty     integer not null default 0,
+             runner_status text
+           );
+         )";
+
+         if (!exec_sql(db, create_new_table)) return false;
+
+         // Step 2: Copy data, excluding use_id
+         const char* copy_data = R"(
+           INSERT INTO jobs_new SELECT
+             job_id, run_id, label, directory, commandline, environment,
+             stdin, signature, stack, stat_id, starttime, endtime, keep, stale, is_atty,
+             runner_status
+           FROM jobs;
+         )";
+
+         if (!exec_sql(db, copy_data)) return false;
+
+         // Step 3: Drop old table and rename new one
+         if (!exec_sql(db, "DROP TABLE jobs;")) return false;
+         if (!exec_sql(db, "ALTER TABLE jobs_new RENAME TO jobs;")) return false;
+
+         // Step 4: Recreate indexes
+         if (!exec_sql(db,
+                       "CREATE INDEX job on jobs(directory, commandline, environment, stdin, "
+                       "signature, keep, job_id, stat_id);"))
+           return false;
+         if (!exec_sql(db,
+                       "CREATE INDEX runner_status_idx on jobs(runner_status) WHERE runner_status "
+                       "IS NOT NULL;"))
+           return false;
+         if (!exec_sql(db, "CREATE INDEX jobstats on jobs(stat_id);")) return false;
+
+         // Step 5: Create run_jobs table and index
+         if (!exec_sql(db,
+                       "CREATE TABLE IF NOT EXISTS run_jobs("
+                       "  run_id integer not null references runs(run_id) on delete cascade,"
+                       "  job_id integer not null references jobs(job_id) on delete cascade,"
+                       "  primary key(job_id, run_id));"))
+           return false;
+         if (!exec_sql(db,
+                       "CREATE INDEX IF NOT EXISTS run_jobs_by_run ON run_jobs(run_id, job_id);"))
+           return false;
+
+         // Step 6: Add end_time column to runs for GC watermark
+         if (!has_column(db, "runs", "end_time")) {
+           if (!exec_sql(db, "ALTER TABLE runs ADD COLUMN end_time INTEGER;")) return false;
+           // Mark existing runs complete so GC works immediately
+           if (!exec_sql(db, "UPDATE runs SET end_time = time WHERE end_time IS NULL;"))
+             return false;
+         }
+
+         return true;
+       },
+       "Replace use_id with run_jobs, add end_time for GC watermark"},
+
   };
 }
 

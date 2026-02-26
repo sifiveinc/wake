@@ -1,7 +1,7 @@
 #ifndef WAKE_SCHEMA_H
 #define WAKE_SCHEMA_H
 
-#define SCHEMA_VERSION "9"
+#define SCHEMA_VERSION "10"
 
 // Connection-level pragmas that must be set on EVERY database connection.
 // These do not persist in the database file and must be reapplied each time.
@@ -26,9 +26,10 @@ inline const char* getWakeSchemaSQL() {
          "create table if not exists schema("
          "  version integer primary key);"
          "create table if not exists runs("
-         "  run_id  integer primary key autoincrement,"
-         "  time    integer not null,"
-         "  cmdline text    not null);"
+         "  run_id   integer primary key autoincrement,"
+         "  time     integer not null,"
+         "  cmdline  text    not null,"
+         "  end_time integer);"
          "create table if not exists files("
          "  file_id  integer primary key,"
          "  path     text    not null,"
@@ -49,7 +50,6 @@ inline const char* getWakeSchemaSQL() {
          "create table if not exists jobs("
          "  job_id      integer primary key autoincrement,"
          "  run_id      integer not null references runs(run_id),"
-         "  use_id      integer not null references runs(run_id),"
          "  label       text    not null,"
          "  directory   text    not null,"
          "  commandline blob    not null,"
@@ -92,7 +92,12 @@ inline const char* getWakeSchemaSQL() {
          "  unhashed_file_id integer primary key autoincrement,"
          "  job_id integer not null references jobs(job_id) on delete cascade,"
          "  path             text not null);"
-         "create index if not exists unhashed_outputs on unhashed_files(job_id);";
+         "create index if not exists unhashed_outputs on unhashed_files(job_id);"
+         "create table if not exists run_jobs("
+         "  run_id integer not null references runs(run_id) on delete cascade,"
+         "  job_id integer not null references jobs(job_id) on delete cascade,"
+         "  primary key(job_id, run_id));"
+         "create index if not exists run_jobs_by_run on run_jobs(run_id, job_id);";
 }
 
 #define WAKE_SCHEMA_SQL getWakeSchemaSQL()
