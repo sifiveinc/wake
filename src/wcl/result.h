@@ -278,4 +278,11 @@ result<T, posix_error_t> make_errno() {
   return result<T, posix_error_t>{in_place_error_t{}, errno};
 }
 
+// Overload that takes an explicit error value instead of capturing
+// global errno. Useful when you have the error code directly.
+template <class T>
+result<T, posix_error_t> make_errno(int err) {
+  return result<T, posix_error_t>{in_place_error_t{}, err};
+}
+
 }  // namespace wcl

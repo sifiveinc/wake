@@ -325,25 +325,6 @@ inline std::vector<std::string> split_path(const std::string& path) {
   return path_vec;
 }
 
-// Returns the end of the parent directory in the path.
-inline std::optional<std::pair<std::string, std::string>> parent_and_base(const std::string& str) {
-  // traverse backwards but using a normal iterator instead of a reverse
-  // iterator.
-  auto rbegin = str.end() - 1;
-  auto rend = str.begin();
-  for (; rbegin >= rend; --rbegin) {
-    if (*rbegin == '/') {
-      // Advance to the character past the slash
-      rbegin++;
-      // Now return the two strings
-      return std::make_optional(
-          std::make_pair(std::string(rend, rbegin), std::string(rbegin, str.end())));
-    }
-  }
-
-  return {};
-}
-
 inline std::string relative_to(std::string relative, std::string path) {
   // TODO: Assert that relative is absolute
   // First make the path canonical.

@@ -52,11 +52,16 @@ class unique_fd {
   unique_fd(unique_fd&& f) : fd(f.fd) { f.fd = -1; }
 
   ~unique_fd() {
+    // We can't actully handle the error here because
+    // destructors and constructors assume exceptions
+    // will be used :(
+    close();
+  }
+
+  void close() {
     if (fd > 0) {
-      // We can't actully handle the error here because
-      // destructors and constructors assume exceptions
-      // will be used :(
-      close(fd);
+      ::close(fd);
+      fd = -1;
     }
   }
 
