@@ -380,9 +380,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_delete_overlap =
       "delete from jobs where job_id in ("
       "  select t2.job_id from filetree t1, filetree t2"
-      "  where t1.job_id=?1 and t1.access=2 and t2.file_id=t1.file_id and t2.access=2"
-      "  and t2.job_id<>?1"
-      "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=t2.job_id) <= ?2"
+      "  where t1.job_id=?2 and t1.access=2 and t2.file_id=t1.file_id and t2.access=2"
+      "  and t2.job_id<>?2"
+      "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=t2.job_id) <= ?1"
       ")";
   const char *sql_find_prior =
       "select job_id, stat_id, label from jobs where "
@@ -1167,15 +1167,13 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   }
 
   // Eagerly delete duplicate jobs (same command signature) from completed runs
-  // ?1 = gc_watermark, ?2 = job_id
   bind_integer(why, imp->delete_prior, 1, imp->gc_watermark);
   bind_integer(why, imp->delete_prior, 2, job);
   single_step(why, imp->delete_prior, imp->debugdb);
 
   // Eagerly delete jobs with overlapping outputs from completed runs
-  // ?1 = job_id, ?2 = gc_watermark
-  bind_integer(why, imp->delete_overlap, 1, job);
-  bind_integer(why, imp->delete_overlap, 2, imp->gc_watermark);
+  bind_integer(why, imp->delete_overlap, 1, imp->gc_watermark);
+  bind_integer(why, imp->delete_overlap, 2, job);
   single_step(why, imp->delete_overlap, imp->debugdb);
 
   // Detect if multiple jobs in this run output the same file (an error condition).
