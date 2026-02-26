@@ -830,7 +830,7 @@ void Database::prepare(const std::string &cmdline) {
   if (sqlite3_step(imp->get_gc_watermark) == SQLITE_ROW) {
     imp->gc_watermark = sqlite3_column_int64(imp->get_gc_watermark, 0);
   } else {
-    // shouldn't happen: we just inserted a run with end_time = NULL
+    std::cerr << "warning: unable to compute GC watermark" << std::endl;
     imp->gc_watermark = 0;
   }
   finish_stmt(why, imp->get_gc_watermark, imp->debugdb);
