@@ -18,7 +18,9 @@
 #ifndef DATABASE_H
 #define DATABASE_H
 
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -126,6 +128,10 @@ struct Database {
   void finish_run();                         // mark run as complete (sets end_time)
   void clean();                              // finished execution; sweep stale jobs
 
+  // Reap dead runs: probe lock files and mark crashed runs as reaped.
+  // Automatically excludes our own run_id if prepare() was called.
+  void reap_dead_runs();
+
   // Force SQLite WAL checkpoint to sync changes to main database file
   // Needed to prevent WAL from growing unbounded during long builds
   // and ensure data is persisted to the main database file
@@ -173,6 +179,12 @@ struct Database {
   //    of the removed files
   std::vector<std::string> clear_jobs();
 
+  // Like clear_jobs(), but first checks for active builds atomically.
+  // Returns false if there are incomplete runs (active builds).
+  // The check, DB clear, and file deletion (via callback) all happen
+  // within the same transaction to prevent races with new builds.
+  bool clear_jobs_if_safe(std::function<void(std::vector<std::string>)> delete_files);
+
   void add_hash(const std::string &file, const std::string &hash, long modified);
 
   std::string get_hash(const std::string &file, long modified);
@@ -199,17 +211,11 @@ struct Database {
   // bool=true if error present, false if NULL
   std::pair<bool, std::string> get_runner_status(long job_id);
 
-  // Build locking for non-inspection commands
-  bool try_acquire_build_lock(bool wait, bool tty);
-  void release_build_lock();
-
  private:
   void begin_ro_txn() const;
   void begin_rw_txn() const;
   void end_txn() const;
 
-  bool is_lock_valid(const char *lock_file);
-  bool build_lock_acquired = false;
   int checkpoint_interval;
 };
 
