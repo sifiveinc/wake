@@ -29,6 +29,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <set>
@@ -181,6 +182,12 @@ class WaitingIndicator {
 
   ~WaitingIndicator() { finish(); }
 };
+
+static int64_t gettime_ns() {
+  using namespace std::chrono;
+  auto now = system_clock::now();
+  return duration_cast<nanoseconds>(now.time_since_epoch()).count();
+}
 
 static void close_db(Database *db) {
   if (!db || !db->imp || !db->imp->db) {
@@ -873,9 +880,7 @@ static bool write_pid_fd(int fd) {
 }
 
 void Database::prepare(const std::string &cmdline) {
-  struct timespec now;
-  clock_gettime(CLOCK_REALTIME, &now);
-  int64_t ts = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+  auto ts = gettime_ns();
 
   const char *why = "Could not insert run";
   begin_rw_txn();
@@ -978,9 +983,7 @@ void Database::prepare(const std::string &cmdline) {
 }
 
 void Database::finish_run() {
-  struct timespec now;
-  clock_gettime(CLOCK_REALTIME, &now);
-  int64_t ts = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+  auto ts = gettime_ns();
 
   const char *why = "Could not set run end_time";
   begin_rw_txn();
