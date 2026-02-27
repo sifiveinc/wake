@@ -582,60 +582,69 @@ int main(int argc, char **argv) {
 
   // If the user asked us to clean the local build, do so.
   if (clo.clean) {
-    // Clean up the database of unwanted info. Jobs must
-    // be cleared before outputs are removed to avoid foreign key
-    // constraint issues.
-    auto paths = db.clear_jobs();
+    // First reap any dead runs so we don't block on crashed builds.
+    db.reap_dead_runs();
 
-    // Sort them so that child directories come before parent directories
-    std::sort(paths.begin(), paths.end(), [&](const std::string &a, const std::string &b) -> bool {
-      return a.size() > b.size();
+    // Track if file deletion had errors.
+    bool delete_error = false;
+
+    // Atomically check for active builds and clear if safe.
+    // File deletion happens inside the transaction to hold the write lock,
+    // preventing new builds from starting until cleanup completes.
+    bool cleaned = db.clear_jobs_if_safe([&](std::vector<std::string> paths) {
+      // Sort so child directories come before parent directories
+      std::sort(paths.begin(), paths.end(),
+                [](const std::string &a, const std::string &b) { return a.size() > b.size(); });
+
+      // Delete all the files
+      for (const auto &path : paths) {
+        // Don't delete the root directory
+        if (path == ".") continue;
+
+        // First we try to unlink the file
+        if (unlink(path.c_str()) == -1) {
+#if defined(__linux__)
+          bool is_dir = (errno == EISDIR);
+#else
+          bool is_dir = (errno == EPERM || errno == EACCES);
+#endif
+          // If it was actually a directory we remove it instead
+          if (is_dir) {
+            if (rmdir(path.c_str()) == -1 && errno != ENOTEMPTY) {
+              std::cerr << "error: rmdir(" << path << "): " << strerror(errno) << std::endl;
+              delete_error = true;
+            }
+            continue;
+          }
+
+          // If the entry doesn't exist then nothing to delete
+          if (errno == ENOENT) continue;
+
+          // If it wasn't a directory then we fail
+          std::cerr << "error: unlink(" << path << "): " << strerror(errno) << std::endl;
+          delete_error = true;
+        }
+      }
+
+      // Since the log is append only, we should clean it up from time to time.
+      // TODO: this is just "unlink_no_fail". Those functions should be moved to
+      // a more generic library
+      if (unlink("wake.log") < 0 && errno != ENOENT) {
+        wcl::log::error("unlink(wake.log): %s", strerror(errno)).urgent()();
+        delete_error = true;
+      }
+
+      // Clean up lock directory (only succeeds if empty, which is safe)
+      (void)rmdir(".wake/locks");
     });
 
-    // Delete all the files
-    for (const auto &path : paths) {
-      // Don't delete the root directory
-      // - Certain writes will create the parent dir "." which shouldn't be deleted
-      if (path == ".") {
-        continue;
-      }
-
-      // First we try to unlink the file
-      if (unlink(path.c_str()) == -1) {
-#if defined(__linux__)
-        bool is_dir = (errno == EISDIR);
-#else
-        bool is_dir = (errno == EPERM || errno == EACCES);
-#endif
-
-        // If it was actually a directory we remove it instead
-        if (is_dir) {
-          if (rmdir(path.c_str()) == -1) {
-            if (errno == ENOTEMPTY) continue;
-            std::cerr << "error: rmdir(" << path << "): " << strerror(errno) << std::endl;
-            return 1;
-          }
-          continue;
-        }
-
-        // If the entry doesn't exist then nothing to delete
-        if (errno == ENOENT) continue;
-
-        // If it wasn't a directory then we fail
-        std::cerr << "error: unlink(" << path << "): " << strerror(errno) << std::endl;
-        return 1;
-      }
-    }
-
-    // Since the log is append only, we should clean it up from time to time.
-    // TODO: this is just "unlink_no_fail". Those functions should be moved to
-    // a more generic library
-    if (unlink("wake.log") < 0 && errno != ENOENT) {
-      wcl::log::error("unlink(wake.log): %s", strerror(errno)).urgent()();
+    if (!cleaned) {
+      std::cerr << "error: cannot clean while builds are in progress" << std::endl;
+      std::cerr << "hint: use 'wake --history' to see active runs" << std::endl;
       return 1;
     }
 
-    return 0;
+    return delete_error ? 1 : 0;
   }
 
   // seed the keyed hash function

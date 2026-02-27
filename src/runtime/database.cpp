@@ -829,8 +829,47 @@ void Database::prepare(const std::string &cmdline) {
   }
   end_txn();
 
-  // Query incomplete runs (separate txn; snapshot doesn't need to match above).
-  why = "Could not query incomplete runs";
+  // Reap any dead runs (our run_id is automatically excluded).
+  reap_dead_runs();
+
+  begin_ro_txn();
+  why = "Could not compute GC watermark";
+  if (sqlite3_step(imp->get_gc_watermark) == SQLITE_ROW) {
+    imp->gc_watermark = sqlite3_column_int64(imp->get_gc_watermark, 0);
+  } else {
+    std::cerr << "warning: unable to compute GC watermark" << std::endl;
+    imp->gc_watermark = 0;
+  }
+  finish_stmt(why, imp->get_gc_watermark, imp->debugdb);
+
+  end_txn();
+}
+
+void Database::finish_run() {
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  int64_t ts = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+
+  const char *why = "Could not set run end_time";
+  begin_rw_txn();
+  bind_integer(why, imp->set_run_end_time, 1, ts);
+  bind_integer(why, imp->set_run_end_time, 2, imp->run_id);
+  single_step(why, imp->set_run_end_time, imp->debugdb);
+  end_txn();
+
+  // Remove our own lock file - we're done with this run
+  if (imp->run_lock_fd >= 0) {
+    unlink(run_lock_path(imp->run_id).c_str());
+  }
+}
+
+void Database::reap_dead_runs() {
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  int64_t ts = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+
+  // Query incomplete runs, excluding our own (imp->run_id is 0 if no run).
+  const char *why = "Could not query incomplete runs";
   std::vector<std::pair<long, int64_t>> incomplete_runs;  // (run_id, start_time)
   begin_ro_txn();
   while (sqlite3_step(imp->get_incomplete_runs) == SQLITE_ROW) {
@@ -875,43 +914,15 @@ void Database::prepare(const std::string &cmdline) {
   }
 
   // Mark dead runs as reaped (end_time := -1).
-  begin_rw_txn();
-  why = "Could not reap dead run";
-  for (long dead_run : dead_runs) {
-    bind_integer(why, imp->set_run_end_time, 1, static_cast<int64_t>(-1));
-    bind_integer(why, imp->set_run_end_time, 2, dead_run);
-    single_step(why, imp->set_run_end_time, imp->debugdb);
-  }
-  end_txn();
-
-  begin_ro_txn();
-  why = "Could not compute GC watermark";
-  if (sqlite3_step(imp->get_gc_watermark) == SQLITE_ROW) {
-    imp->gc_watermark = sqlite3_column_int64(imp->get_gc_watermark, 0);
-  } else {
-    std::cerr << "warning: unable to compute GC watermark" << std::endl;
-    imp->gc_watermark = 0;
-  }
-  finish_stmt(why, imp->get_gc_watermark, imp->debugdb);
-
-  end_txn();
-}
-
-void Database::finish_run() {
-  struct timespec now;
-  clock_gettime(CLOCK_REALTIME, &now);
-  int64_t ts = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
-
-  const char *why = "Could not set run end_time";
-  begin_rw_txn();
-  bind_integer(why, imp->set_run_end_time, 1, ts);
-  bind_integer(why, imp->set_run_end_time, 2, imp->run_id);
-  single_step(why, imp->set_run_end_time, imp->debugdb);
-  end_txn();
-
-  // Remove our own lock file - we're done with this run
-  if (imp->run_lock_fd >= 0) {
-    unlink(run_lock_path(imp->run_id).c_str());
+  if (!dead_runs.empty()) {
+    begin_rw_txn();
+    why = "Could not reap dead run";
+    for (long dead_run : dead_runs) {
+      bind_integer(why, imp->set_run_end_time, 1, static_cast<int64_t>(-1));
+      bind_integer(why, imp->set_run_end_time, 2, dead_run);
+      single_step(why, imp->set_run_end_time, imp->debugdb);
+    }
+    end_txn();
   }
 }
 
@@ -1272,6 +1283,42 @@ std::vector<std::string> Database::clear_jobs() {
   end_txn();
 
   return out;
+}
+
+bool Database::clear_jobs_if_safe(std::function<void(std::vector<std::string>)> delete_files) {
+  const char *why = "Could not clear jobs";
+  std::vector<std::string> out;
+
+  // BEGIN IMMEDIATE acquires write lock, blocking other writers.
+  // This ensures no new runs can be inserted between our check and delete.
+  begin_rw_txn();
+
+  if (sqlite3_step(imp->get_incomplete_runs) == SQLITE_ROW) {
+    finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
+    end_txn();
+    return false;
+  }
+  finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
+  while (sqlite3_step(imp->get_output_files) == SQLITE_ROW) {
+    out.emplace_back(rip_column(imp->get_output_files, 0));
+  }
+  finish_stmt(why, imp->get_output_files, imp->debugdb);
+
+  while (sqlite3_step(imp->get_unhashed_file_paths) == SQLITE_ROW) {
+    out.emplace_back(rip_column(imp->get_unhashed_file_paths, 0));
+  }
+  finish_stmt(why, imp->get_unhashed_file_paths, imp->debugdb);
+
+  single_step(why, imp->remove_all_jobs, imp->debugdb);
+  single_step(why, imp->remove_output_files, imp->debugdb);
+
+  // Delete files while still holding write lock. This prevents new
+  // builds from starting until cleanup is complete.
+  delete_files(std::move(out));
+
+  end_txn();
+
+  return true;
 }
 
 void Database::tag_job(long job, const std::string &uri, const std::string &content) {
