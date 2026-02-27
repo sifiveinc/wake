@@ -181,6 +181,12 @@ class WaitingIndicator {
   ~WaitingIndicator() { finish(); }
 };
 
+int64_t gettime_ns() {
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  return static_cast<int64_t>(now.tv_sec) * 1000000000LL + now.tv_nsec;
+}
+
 static void close_db(Database *db) {
   if (!db || !db->imp || !db->imp->db) {
     return;
@@ -801,9 +807,7 @@ static void release_lock(int fd) {
 }
 
 void Database::prepare(const std::string &cmdline) {
-  struct timespec now;
-  clock_gettime(CLOCK_REALTIME, &now);
-  int64_t ts = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+  auto ts = gettime_ns();
 
   const char *why = "Could not insert run";
   begin_rw_txn();
@@ -846,9 +850,7 @@ void Database::prepare(const std::string &cmdline) {
 }
 
 void Database::finish_run() {
-  struct timespec now;
-  clock_gettime(CLOCK_REALTIME, &now);
-  int64_t ts = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+  auto ts = gettime_ns();
 
   const char *why = "Could not set run end_time";
   begin_rw_txn();
@@ -864,9 +866,7 @@ void Database::finish_run() {
 }
 
 void Database::reap_dead_runs() {
-  struct timespec now;
-  clock_gettime(CLOCK_REALTIME, &now);
-  int64_t ts = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+  auto ts = gettime_ns();
 
   // Query incomplete runs, excluding our own (imp->run_id is 0 if no run).
   const char *why = "Could not query incomplete runs";
