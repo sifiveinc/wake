@@ -18,6 +18,7 @@
 #ifndef DATABASE_H
 #define DATABASE_H
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -192,6 +193,12 @@ struct Database {
   // 4) finishes the transaction and returns the paths
   //    of the removed files
   std::vector<std::string> clear_jobs();
+
+  // Like clear_jobs(), but first checks for active builds atomically.
+  // Returns false if there are incomplete runs (active builds).
+  // The check, DB clear, and file deletion (via callback) all happen
+  // within the same transaction to prevent races with new builds.
+  bool clear_jobs_if_safe(std::function<void(std::vector<std::string>)> delete_files);
 
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode, long modified);
