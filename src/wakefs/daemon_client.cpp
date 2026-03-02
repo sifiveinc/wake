@@ -76,7 +76,13 @@ bool daemon_client::connect(std::vector<visible_file> &visible, const std::strin
       std::string delayStr = std::to_string(exit_delay);
       const char *env[3] = {"PATH=/usr/bin:/bin:/usr/sbin:/sbin", 0, 0};
       if (getenv("DEBUG_FUSE_WAKE")) env[1] = "DEBUG_FUSE_WAKE=1";
-      execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), nullptr, env);
+      // Pass --use-cas to enable CAS-first staging when WAKE_CAS env var is set
+      if (getenv("WAKE_CAS")) {
+        execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), "--use-cas",
+               nullptr, env);
+      } else {
+        execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), nullptr, env);
+      }
       std::cerr << "execl " << executable << ": " << strerror(errno) << std::endl;
       exit(1);
     }

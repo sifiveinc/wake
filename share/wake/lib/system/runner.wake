@@ -183,6 +183,7 @@ export def fuseRunner: Runner =
 
     makeJSONRunnerPlan fuse
     | editJSONRunnerPlanExtraEnv (editEnvironment "DEBUG_FUSE_WAKE" (\_ getenv "DEBUG_FUSE_WAKE"))
+    | editJSONRunnerPlanExtraEnv (editEnvironment "WAKE_CAS" (\_ getenv "WAKE_CAS"))
     | makeJSONRunner
 
 export def defaultRunner: Runner =
