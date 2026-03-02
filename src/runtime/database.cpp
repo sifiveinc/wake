@@ -947,25 +947,22 @@ void Database::end_txn() const {
 //   checked the job this run.
 // We have a reuse candidate and we need to claim it to keep it alive.
 // * (RW) re-verify job exists, claim it used by this run (run_jobs).
-// * (no txn) Validate inputs visible, outputs exist.
+// * (no txn) On-disk validation outside of any transaction.
 // * (RW, on failure only): Release claim
 //
 // There's a TOCTTOU after faccessat that will go away if we query CAS instead.
 //
 // This is safe because any side effects (the run_jobs INSERT) are cleaned up on
-// failure, and the operation is idempotent -- it can be called multiple times for
-// the same job and will return consistent results.
+// failure, and the operation is idempotent.
 //
-// Idempotency is required because wake's heap GC may re-run prim_job_cache to
-// rebuild heap allocations. The run_jobs table tracks jobs already validated in
-// this run, allowing us to skip I/O validation on re-execution (the "fast path").
+// We presently do not distinguish in the run_jobs table that the use is optimistic,
+// which may be visible to inspection queries.
 Usage Database::reuse_job(const std::string &directory, const std::string &environment,
                           const std::string &commandline, const std::string &stdin_file,
                           uint64_t signature, bool is_atty, const std::string &visible, bool check,
                           long &job, std::vector<FileReflection> &files, double *pathtime) {
   Usage out;
   long stat_id;
-  std::vector<std::string> input_paths;
   const char *why = "Could not check for a cached job";
   // (RO) Lookup reuse candidate, return early if not found.
   // If we've already used this job, return early as well.
@@ -1008,27 +1005,8 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
       return out;
     }
 
-    // Check if we've already validated this job in this run.
-    bind_integer(why, imp->check_run_job, 1, imp->run_id);
-    bind_integer(why, imp->check_run_job, 2, job);
-    bool already_validated = sqlite3_step(imp->check_run_job) == SQLITE_ROW;
-    finish_stmt(why, imp->check_run_job, imp->debugdb);
-
-    if (already_validated) {
-      // Fast path: already validated this run - just populate files list from DB.
-      bind_integer(why, imp->get_tree, 1, job);
-      bind_integer(why, imp->get_tree, 2, OUTPUT);
-      while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
-        files.emplace_back(rip_column(imp->get_tree, 0), rip_column(imp->get_tree, 1));
-      }
-      finish_stmt(why, imp->get_tree, imp->debugdb);
-
-      end_txn();
-      return out;
-    }
-
-    // Validation needed (common case if reuse candidate is found):
-    // Gather file lists from DB while we still have the RO transaction.
+    // Gather file lists
+    std::vector<std::string> input_paths;
     bind_integer(why, imp->get_tree, 1, job);
     bind_integer(why, imp->get_tree, 2, INPUT);
     while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
@@ -1043,7 +1021,35 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     }
     finish_stmt(why, imp->get_tree, imp->debugdb);
 
+    // Lookup part 2: check recorded inputs are part of this query's
+    // visible set.
+    std::unordered_set<std::string> vis;
+    const char *tok = visible.c_str();
+    const char *end = tok + visible.size();
+    for (const char *scan = tok; scan != end; ++scan) {
+      if (*scan == 0 && scan != tok) {
+        vis.emplace(tok, scan - tok);
+        tok = scan + 1;
+      }
+    }
+
+    // Confirm all inputs are still visible.
+    for (const auto &path : input_paths) {
+      if (vis.find(path) == vis.end()) {
+        out.found = false;
+        break;
+      }
+    }
+
+    // Check if we've already validated this job in this run.
+    bind_integer(why, imp->check_run_job, 1, imp->run_id);
+    bind_integer(why, imp->check_run_job, 2, job);
+    bool already_validated = sqlite3_step(imp->check_run_job) == SQLITE_ROW;
+    finish_stmt(why, imp->check_run_job, imp->debugdb);
+
     end_txn();
+
+    if (already_validated) return out;
   }
 
   // We have a reuse candidate and we need to claim it to keep it alive.
@@ -1067,27 +1073,8 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     end_txn();
   }
 
-  // (no txn) I/O validation outside of any transaction.
-  // Create a hash table of visible files
+  // (no txn) On-disk validation outside of any transaction.
   {
-    std::unordered_set<std::string> vis;
-    const char *tok = visible.c_str();
-    const char *end = tok + visible.size();
-    for (const char *scan = tok; scan != end; ++scan) {
-      if (*scan == 0 && scan != tok) {
-        vis.emplace(tok, scan - tok);
-        tok = scan + 1;
-      }
-    }
-
-    // Confirm all inputs are still visible
-    for (const auto &path : input_paths) {
-      if (vis.find(path) == vis.end()) {
-        out.found = false;
-        break;
-      }
-    }
-
     // Confirm all outputs still exist
     if (out.found) {
       for (const auto &file : files) {
