@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/bin/sh",
+    "-c",
+    "echo 'version 1' > overwrite.txt\ncat overwrite.txt\necho 'version 2' > overwrite.txt\ncat overwrite.txt\necho 'version 3' > overwrite.txt\ncat overwrite.txt"
+  ],
+  "environment": [
+    "USER=root",
+    "HOME=/root",
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  ],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "mount-ops": [
+    {
+      "type": "workspace",
+      "destination": "."
+    }
+  ],
+  "visible": []
+}
+
