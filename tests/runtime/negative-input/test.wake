@@ -1,0 +1,26 @@
+# bug: Wake doesn't track negative file lookups (ENOENT).
+#
+# fail.sh runs this test twice:
+# 1. Without bar visible, job returns "no"
+# 2. With bar visible, job should return "yes"
+#
+# If wake reuses the cached job, run 2 returns "no".
+
+from wake import _
+
+def testjob vis =
+        makeExecPlan ("sh", "-c", "test -f bar && echo yes || echo no", Nil) vis
+        | setPlanLabel "test -f bar"
+        | runJobWith defaultRunner
+        | getJobStdout
+        | getWhenFail "ERROR"
+
+export def test_nobar _ =
+    def result = testjob (Nil)
+    Pass "bar exists: {result}"
+
+export def test_bar _ =
+    require Pass bar = claim "bar"
+    def result = testjob (bar, Nil)
+    Pass "bar exists: {result}"
+

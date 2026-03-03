@@ -1,0 +1,4 @@
+=== Run 1: bar doesn't exist ===
+Pass "bar exists: no\n"
+=== Run 2: bar exists ===
+Pass "bar exists: no\n"
