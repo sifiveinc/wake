@@ -1,0 +1,23 @@
+# bug: Wake reuses jobs when symlink is replaced with file (same hash).
+#
+# fail.sh runs this test twice:
+# 1. With symlink "input -> target": readlink returns "target"
+# 2. With file "input" containing "target": readlink should FAIL
+#
+# If wake reuses the cached job, run 2 incorrectly returns "target".
+
+from wake import _
+
+export def test _ =
+    # First, get wake to track the input file by hashing it
+    require Pass input = claim "input"
+
+    # Run readlink on input
+    def result =
+        makeExecPlan ("readlink", "input", Nil) (input, Nil)
+        | setPlanLabel "readlink input"
+        | runJobWith defaultRunner
+        | getJobStdout
+        | getWhenFail "FAILED"
+
+    Pass "readlink={result} hash={getPathHash input}"
