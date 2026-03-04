@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -33,6 +34,10 @@
 namespace fs = std::filesystem;
 
 namespace cas {
+
+// Global counter for unique temp file names during materialization
+// Used to avoid collisions when multiple processes materialize files concurrently
+static std::atomic<uint64_t> g_materialize_counter{0};
 
 // Helper functions for hash-based directory sharding
 static std::string hash_prefix(const ContentHash& hash) {
@@ -224,9 +229,32 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
     return wcl::make_error<bool, CASError>(CASError::NotFound);
   }
 
+  // Check if destination already exists with correct content
+  // This prevents race conditions when multiple Wake processes materialize the same file
+  std::error_code ec;
+  if (fs::exists(dest_path, ec)) {
+    auto existing_hash_result = ContentHash::from_file(dest_path);
+    if (existing_hash_result) {
+      // Successfully hashed the existing file
+      if ((*existing_hash_result).to_hex() == hash.to_hex()) {
+        // File already exists with correct content - just update metadata if needed
+        if (mtime_sec != 0 || mtime_nsec != 0) {
+          struct timespec times[2];
+          times[0].tv_sec = 0;
+          times[0].tv_nsec = UTIME_OMIT;  // Don't change atime
+          times[1].tv_sec = mtime_sec;
+          times[1].tv_nsec = mtime_nsec;
+          (void)utimensat(AT_FDCWD, dest_path.c_str(), times, 0);  // Ignore errors
+        }
+        return wcl::make_result<bool, CASError>(true);
+      }
+      // File exists but has wrong content - will overwrite below
+    }
+    // File exists but couldn't hash it (maybe being written) - proceed with materialization
+  }
+
   // Create parent directories if needed
   fs::path dest_fs_path(dest_path);
-  std::error_code ec;
   if (dest_fs_path.has_parent_path()) {
     fs::create_directories(dest_fs_path.parent_path(), ec);
     if (ec) {
@@ -234,8 +262,9 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
     }
   }
 
-  // Copy to temp file first, then atomically rename to destination.
-  std::string temp_path = dest_path + "." + std::to_string(getpid());
+  // Use PID + counter for unique temp file name to avoid collisions
+  std::string temp_path = dest_path + "." + std::to_string(getpid()) + "." + std::to_string(g_materialize_counter.fetch_add(1));
+
   auto copy_result = wcl::reflink_or_copy_file(src_path, temp_path, mode, reflink_supported_);
   if (!copy_result) {
     fs::remove(temp_path, ec);
@@ -257,9 +286,19 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
     return wcl::make_error<bool, CASError>(CASError::IOError);
   }
 
-  // Atomically rename over destination - last one wins
+  // Atomically rename over destination
+  // If another process wins the race, that's OK - they have the same content (same hash)
   fs::rename(temp_path, dest_path, ec);
   if (ec) {
+    // Check if destination now exists with correct hash (another process may have won)
+    if (fs::exists(dest_path)) {
+      auto existing_hash_result = ContentHash::from_file(dest_path);
+      if (existing_hash_result && (*existing_hash_result).to_hex() == hash.to_hex()) {
+        // Another process materialized the same file - that's fine
+        fs::remove(temp_path, ec);  // Clean up our temp file
+        return wcl::make_result<bool, CASError>(true);
+      }
+    }
     fs::remove(temp_path, ec);
     return wcl::make_error<bool, CASError>(CASError::IOError);
   }

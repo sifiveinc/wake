@@ -260,7 +260,8 @@ static std::string g_cas_blobs_dir;
 
 // Global flag to enable/disable CAS-first staging
 // When false, files are written directly to workspace (legacy behavior)
-static bool g_use_cas = false;
+// For prototype branch: default to CAS mode for safety across concurrent Wake invocations
+static bool g_use_cas = true;
 
 // How to retry umount while quitting
 // (2^8-1)*100ms = 25.5s worst-case quit time
