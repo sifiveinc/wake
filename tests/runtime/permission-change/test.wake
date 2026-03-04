@@ -1,0 +1,24 @@
+# bug: Wake reuses jobs after chmod (permissions not in hash).
+#
+# fail.sh runs this test twice:
+# 1. With non-executable script: "test -x" returns "no"
+# 2. After chmod +x: "test -x" should return "yes"
+#
+# If wake reuses the cached job, run 2 incorrectly returns "no".
+
+from wake import _
+
+export def test _ =
+    # Get wake to track the script file
+    require Pass script = claim "script"
+
+    # Run test -x
+    def result =
+        makeExecPlan ("sh", "-c", "test -x script && echo yes || echo no", Nil) (script, Nil)
+        | setPlanLabel "test -x script"
+        | runJobWith defaultRunner
+        | getJobStdout
+        | getWhenFail "ERROR"
+
+    Pass "test-x={result} hash={getPathHash script}"
+
