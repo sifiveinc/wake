@@ -183,6 +183,7 @@ export def fuseRunner: Runner =
 
     makeJSONRunnerPlan fuse
     | editJSONRunnerPlanExtraEnv (editEnvironment "DEBUG_FUSE_WAKE" (\_ getenv "DEBUG_FUSE_WAKE"))
+    | editJSONRunnerPlanExtraEnv (editEnvironment "WAKE_CAS" (\_ getenv "WAKE_CAS"))
     | makeJSONRunner
 
 export def defaultRunner: Runner =
@@ -339,14 +340,92 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             | field "inbytes" (jsonUsage // `inbytes` | getJInteger)
             | field "outbytes" (jsonUsage // `outbytes` | getJInteger)
 
+        # Process CAS items: materialize each item from CAS to workspace
+        # Files are already stored in CAS by wakebox, so we just materialize from hash
+        # Symlinks and directories are created directly
+
+        # Helper for processing file type staging items (files already in CAS)
+        def processCasFile destPath itemInfo =
+            require Some hash = itemInfo // `hash` | getJString
+            else failWithError "Missing hash for file {destPath}"
+
+            require Some mode = itemInfo // `mode` | getJInteger
+            else failWithError "Missing mode for file {destPath}"
+
+            require Some mtimeSec = itemInfo // `mtime_sec` | getJInteger
+            else failWithError "Missing mtime_sec for file {destPath}"
+
+            require Some mtimeNsec = itemInfo // `mtime_nsec` | getJInteger
+            else failWithError "Missing mtime_nsec for file {destPath}"
+
+            casMaterializeItem destPath "file" hash mode mtimeSec mtimeNsec
+            | addErrorContext "Materializing file from CAS {hash} -> {destPath}"
+
+        # Helper for processing symlink type staging items
+        def processCasSymlink destPath itemInfo =
+            require Some linkTarget = itemInfo // `target` | getJString
+            else failWithError "Missing target for symlink {destPath}"
+
+            casMaterializeItem destPath "symlink" linkTarget 0 0 0
+            | addErrorContext "Creating symlink {destPath} -> {linkTarget}"
+
+        # Helper for processing directory type
+        def processCasDirectory destPath itemInfo =
+            def mode = itemInfo // `mode` | getJInteger | getOrElse 493  # 0755 octal
+            casMaterializeItem destPath "directory" "" mode 0 0
+            | addErrorContext "Creating directory {destPath}"
+
+        def processCasItem (destPath: String) (itemInfo: JValue): Result Unit Error =
+            require Some itemType = itemInfo // `type` | getJString
+            else failWithError "Missing type for {destPath}"
+
+            if itemType ==* "file" then processCasFile destPath itemInfo
+            else if itemType ==* "symlink" then processCasSymlink destPath itemInfo
+            else if itemType ==* "directory" then processCasDirectory destPath itemInfo
+            else failWithError "Unknown cas item type '{itemType}' for {destPath}"
+
+        def stagingFilesResult =
+            match (content // `hashed_files` | getJObject)
+                None -> Pass Unit
+                Some entries ->
+                    def ingestEntry (Pair destPath itemInfo) = processCasItem destPath itemInfo
+                    entries
+                    | map ingestEntry
+                    | findFail
+                    | rmap (\_ Unit)
+
+        require Pass _ = stagingFilesResult
+        else
+            stagingFilesResult.getFail
+            | RunnerOutput Nil Nil (specFile, Nil) runnerUsage
+
+        # Extract string from either a plain string or an object with "path" field
+        # This handles both old format (strings) and new format (objects with path/hash)
+        def extractPath (jval: JValue): Option String =
+            match jval
+                JString s -> Some s
+                JObject fields ->
+                    # find returns Option (Pair (Pair String JValue) Integer)
+                    match (find (\(Pair k _) k ==* "path") fields)
+                        Some (Pair (Pair _ pathVal) _) -> getJString pathVal
+                        None -> None
+                _ -> None
+
         def getK exp =
             content // exp
             | getJArray
             | getOrElse Nil
             | mapPartial getJString
 
+        # Get outputs with support for both old (string) and new (object) formats
+        def getOutputPaths =
+            content // `outputs`
+            | getJArray
+            | getOrElse Nil
+            | mapPartial extractPath
+
         def jsonInputs = getK `inputs`
-        def jsonOutputs = getK `outputs`
+        def jsonOutputs = getOutputPaths
         def filteredInputs = fnInputs jsonInputs
         def filteredOutputs = fnOutputs jsonOutputs
         def cleanableOutputs = specFile, resultFile, jsonOutputs

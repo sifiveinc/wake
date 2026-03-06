@@ -52,6 +52,7 @@
 #include "runtime/config.h"
 #include "runtime/database.h"
 #include "runtime/job.h"
+#include "runtime/cas_prim.h"
 #include "runtime/prim.h"
 #include "runtime/profile.h"
 #include "runtime/runtime.h"
@@ -257,7 +258,6 @@ void print_help(const char *argv0) {
     << "    --debug    -d      Report stack frame information for exceptions and closures" << std::endl
     << "    --quiet    -q      Surpress report of launched jobs and final expressions"     << std::endl
     << "    --no-tty           Surpress interactive build progress interface"              << std::endl
-    << "    --batch            Batch job output (print when job completes, not streaming)" << std::endl
     << "    --no-wait          Do not wait to obtain database lock; fail immediately"      << std::endl
     << "    --no-workspace     Do not open a database or scan for sources files"           << std::endl
     << "    --fatal-warnings   Do not execute if there are any warnings"                   << std::endl
@@ -877,10 +877,15 @@ int main(int argc, char **argv) {
 
   /* Primitives */
   JobTable jobtable(&db, memory_budget, cpu_budget, clo.debug, clo.verbose, clo.quiet, clo.check,
-                    clo.batch);
+                    !clo.tty);
   StringInfo info(clo.verbose, clo.debug, clo.quiet, VERSION_STR, wcl::make_canonical(wake_cwd),
                   cmdline);
-  PrimMap pmap = prim_register_all(&info, &jobtable);
+
+  // Initialize CAS context for workspace (current directory after chdir_workspace)
+  CASContext cas_ctx;
+  cas_ctx.get_store(".");
+
+  PrimMap pmap = prim_register_all(&info, &jobtable, &cas_ctx);
 
   bool isTreeBuilt = true;
   std::unique_ptr<Expr> root = bind_refs(std::move(top), pmap, isTreeBuilt);
