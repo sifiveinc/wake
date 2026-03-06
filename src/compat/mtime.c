@@ -34,5 +34,5 @@ int64_t getmtime_ns(const char *file) {
   struct stat sbuf;
   int ret = lstat(file, &sbuf);
   if (ret == -1) return -1;
-  return sbuf.st_mtim.tv_nsec * INT64_C(1000000000) + sbuf.st_mtim.tv_sec;
+  return sbuf.st_mtim.tv_nsec + sbuf.st_mtim.tv_sec * INT64_C(1000000000);
 }
