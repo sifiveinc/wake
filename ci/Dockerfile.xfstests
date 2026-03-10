@@ -48,8 +48,9 @@ WORKDIR /workspace/wake
 # Copy the wake source tree into the image
 COPY . .
 
-# Build wake, wakebox, fuse-waked, etc. (Makefile's default target)
-RUN make -j"$(nproc)"
+# Build wake binaries and initialize wake.db without invoking the self-hosted
+# wake build (which would require FUSE inside the build environment).
+RUN make -j"$(nproc)" wake.db
 
 # Clone and build xfstests-dev inside the wake workspace
 RUN mkdir -p tmp && \
