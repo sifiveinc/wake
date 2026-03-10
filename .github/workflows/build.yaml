@@ -93,6 +93,21 @@ jobs:
             path: scripts/sphinx/build/html
             retention-days: 1
 
+    xfstests:
+      runs-on: ubuntu-22.04
+      name: xfstests (xfstests-dev under fuseRunner)
+      steps:
+        - name: Clone wake
+          uses: actions/checkout@v4
+          with:
+            fetch-depth: 0
+
+        - name: Build xfstests Docker image
+          run: docker build -t wake-xfstests -f ci/Dockerfile.xfstests .
+
+        - name: Run xfstests under fuseRunner
+          run: docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined wake-xfstests
+
     docker_builds:
       runs-on: ubuntu-22.04
       needs: tarball

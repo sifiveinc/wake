@@ -1,0 +1,66 @@
+# Docker image for running xfstests against Wake's CAS-backed FUSE filesystem via runXfstests.
+#
+# Usage (from repo root):
+#   docker build -t wake-xfstests -f ci/Dockerfile.xfstests .
+#   docker run --rm \
+#     --device /dev/fuse \
+#     --cap-add SYS_ADMIN \
+#     --security-opt apparmor:unconfined \
+#     wake-xfstests
+#
+# The container runs: WAKE_CAS=1 ./bin/wake --in test_wake runXfstests tmp/xfstests-dev -g quick
+
+FROM ubuntu:22.04
+
+# Core build tools and dependencies for wake and xfstests
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      git \
+      gcc \
+      g++ \
+      make \
+      autoconf \
+      automake \
+      libtool \
+      pkg-config \
+      # wake build dependencies (mirroring debian/control)
+      libsqlite3-dev \
+      libgmp-dev \
+      libre2-dev \
+      libncurses5-dev \
+      libfuse-dev \
+      # xfstests dependencies (approximate for Ubuntu)
+      xfsprogs \
+      uuid-dev \
+      libattr1-dev \
+      libacl1-dev \
+      libaio-dev \
+      libinih-dev \
+      gdbm-l10n \
+      perl-modules \
+      # common tools
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Put the wake repo under /workspace/wake (conventional CI workspace)
+WORKDIR /workspace/wake
+
+# Copy the wake source tree into the image
+COPY . .
+
+# Build wake, wakebox, fuse-waked, etc. (Makefile's default target)
+RUN make -j"$(nproc)"
+
+# Clone and build xfstests-dev inside the wake workspace
+RUN mkdir -p tmp && \
+    cd tmp && \
+    git clone https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git xfstests-dev && \
+    cd xfstests-dev && \
+    make -j"$(nproc)"
+
+# Ensure fuseRunner is used
+ENV WAKE_CAS=1
+
+# Default command: run a quick xfstests group under runXfstests
+CMD ["bash", "-lc", "./bin/wake --in test_wake runXfstests tmp/xfstests-dev -g quick"]
+
