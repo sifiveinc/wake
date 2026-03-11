@@ -2,7 +2,12 @@ name: "FUSE Tests"
 
 on:
   workflow_dispatch:
-
+  pull_request:
+    paths:
+      - .github/workflows/fuse-tests.yaml
+      - docker/**
+      - test-suite/**
+      - tools/fuse-waked/**
 jobs:
   xfstests:
     runs-on: ubuntu-22.04
