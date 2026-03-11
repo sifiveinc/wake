@@ -46,6 +46,7 @@ src/types/types.wake
 src/util/util.wake
 src/wakefs/wakefs.wake
 src/wcl/wcl.wake
+test-suite/fuse-tests.wake
 tests/tests.wake
 tools/bsp-wake/bsp.wake
 tools/fuse-waked/fuse-waked.wake
