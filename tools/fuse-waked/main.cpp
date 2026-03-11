@@ -1409,8 +1409,8 @@ int main(int argc, char *argv[]) {
   bool madedir;
   struct rlimit rlim;
 
-  if (argc != 3) {
-    fprintf(stderr, "Syntax: fuse-waked <mount-point> <min-timeout-seconds>\n");
+  if (argc < 3) {
+    fprintf(stderr, "Syntax: fuse-waked <mount-point> <min-timeout-seconds> [fuse-options...]\n");
     goto term;
   }
   path = argv[1];
@@ -1550,6 +1550,13 @@ int main(int argc, char *argv[]) {
 #endif
     fprintf(stderr, "fuse_opt_add_arg failed\n");
     goto rmroot;
+  }
+
+  for (int i = 3; i < argc; ++i) {
+    if (fuse_opt_add_arg(&args, argv[i]) != 0) {
+      fprintf(stderr, "fuse_opt_add_arg(%s) failed\n", argv[i]);
+      goto rmroot;
+    }
   }
 
   if (debug && fuse_opt_add_arg(&args, "-odebug") != 0) {
