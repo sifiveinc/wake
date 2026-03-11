@@ -107,7 +107,15 @@ static PRIMFN(prim_format_time_tz) {
   }
 
   // Set the requested timezone
-  setenv("TZ", timezone->c_str(), 1);
+  // If timezone is empty, unset TZ to use system default
+  // Otherwise, set TZ to the requested timezone
+  if (timezone->c_str()[0] == '\0') {
+    // Empty string means use system default - unset TZ
+    unsetenv("TZ");
+  } else {
+    // Non-empty string - set TZ to the requested timezone
+    setenv("TZ", timezone->c_str(), 1);
+  }
   tzset();
 
   // Use localtime_r with the new timezone
