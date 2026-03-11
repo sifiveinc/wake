@@ -26,6 +26,8 @@
 #include <string.h>
 
 #include <algorithm>
+#include <chrono>
+#include <iomanip>
 #include <sstream>
 
 #include "optimizer/ssa.h"
@@ -275,6 +277,51 @@ std::string Double::str(int format, int precision) const {
       return out;
     }
   }
+  return s.str();
+}
+
+Time *Time::claim(Heap &h, int64_t nanos) {
+  Time *out = new (h.claim(reserve())) Time(nanos);
+  HeapAgeTracker::setAge(out, 0);
+  return out;
+}
+
+Time *Time::alloc(Heap &h, int64_t nanos) {
+  Time *out = new (h.alloc(reserve())) Time(nanos);
+  HeapAgeTracker::setAge(out, 0);
+  return out;
+}
+
+RootPointer<Time> Time::literal(Heap &h, int64_t nanos) {
+  h.guarantee(reserve());
+  Time *out = claim(h, nanos);
+  return h.root(out);
+}
+
+void Time::format(std::ostream &os, FormatState &state) const { os << str(); }
+
+Hash Time::shallow_hash() const { return Hash(&nanoseconds, sizeof(nanoseconds)) ^ TYPE_TIME; }
+
+std::string Time::str() const {
+  std::stringstream s;
+  s << nanoseconds;
+  return s.str();
+}
+
+std::string Time::str(const char *format) const {
+  std::chrono::nanoseconds nanos_duration(nanoseconds);
+  std::chrono::system_clock::time_point tp(
+      std::chrono::duration_cast<std::chrono::system_clock::duration>(nanos_duration));
+
+  // Convert to time_t for formatting
+  std::time_t time = std::chrono::system_clock::to_time_t(tp);
+
+  // Format using std::put_time (C++11)
+  std::tm tm_buf;
+  std::tm *tm_ptr = gmtime_r(&time, &tm_buf);
+
+  std::stringstream s;
+  s << std::put_time(tm_ptr, format);
   return s.str();
 }
 

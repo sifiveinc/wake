@@ -45,6 +45,7 @@ class StringPiece;
 #define TYPE_RECORD 7
 #define TYPE_SCOPE 8
 #define TYPE_TARGET 9
+#define TYPE_TIME 10
 
 /* Values */
 
@@ -209,6 +210,24 @@ struct Double final : public GCObject<Double, Value> {
 
   // Never call this during runtime! It can invalidate the heap.
   static RootPointer<Double> literal(Heap &h, const char *str);
+};
+
+struct Time final : public GCObject<Time, Value> {
+  typedef GCObject<Time, Value> Parent;
+  int64_t nanoseconds;
+
+  Time(int64_t nanos_ = 0) : nanoseconds(nanos_) {}
+
+  std::string str() const;
+  std::string str(const char *format) const;
+  void format(std::ostream &os, FormatState &state) const override;
+  Hash shallow_hash() const override;
+
+  static Time *claim(Heap &h, int64_t nanos);
+  static Time *alloc(Heap &h, int64_t nanos);
+
+  // Never call this during runtime! It can invalidate the heap.
+  static RootPointer<Time> literal(Heap &h, int64_t nanos);
 };
 
 struct RegExp final : public GCObject<RegExp, DestroyableObject> {

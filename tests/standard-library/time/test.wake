@@ -1,0 +1,100 @@
+# Test basic time library functionality
+export def testTimeLibrary _ =
+    # Test parsing and formatting a specific date/time
+    def testTime = parseTime '%Y-%m-%d %H:%M:%S' '2020-06-15 14:30:00'
+    def testFormatted = formatTime '%Y-%m-%d %H:%M:%S' testTime
+    require '2020-06-15 14:30:00' = testFormatted
+    else False
+
+    # Test time subtraction (2020-01-02 - 2020-01-01 = 86400 seconds)
+    def t1 = parseTime '%Y-%m-%d' '2020-01-01'
+    def t2 = parseTime '%Y-%m-%d' '2020-01-02'
+    def diff = tsub t2 t1
+    require 86400000000000 = diff  # 86400 seconds in nanoseconds
+    else False
+
+    # Test time addition (add 1 hour = 3600 seconds)
+    def t3 = parseTime '%Y-%m-%d %H:%M:%S' '2020-01-01 12:00:00'
+    def oneHour = 3600000000000  # 3600 seconds in nanoseconds
+    def t4 = tadd t3 oneHour
+    def t4Formatted = formatTime '%Y-%m-%d %H:%M:%S' t4
+    require '2020-01-01 13:00:00' = t4Formatted
+    else False
+
+    # Test invalid date normalization (Feb 30 → Mar 1)
+    def invalidDate = parseTime '%Y-%m-%d' '2020-02-30'
+    def invalidFormatted = formatTime '%Y-%m-%d' invalidDate
+    require '2020-03-01' = invalidFormatted
+    else False
+
+    # Test negative time difference (earlier - later = negative)
+    def t1 = parseTime '%Y-%m-%d' '2020-01-01'
+    def t2 = parseTime '%Y-%m-%d' '2020-01-02'
+    def negDiff = tsub t1 t2
+    def expectedNeg = 0 - 86400000000000
+    require True = (negDiff == expectedNeg)
+    else False
+
+    # Use a fixed time for testing: 2020-06-15 12:00:00 UTC (during PDT, not PST)
+    def testTime = parseTime '%Y-%m-%d %H:%M:%S' '2020-06-15 12:00:00'
+
+    # Format in UTC
+    def utcFormatted = formatTimeTZ '%Y-%m-%d %H:%M:%S' 'UTC' testTime
+    require '2020-06-15 12:00:00' = utcFormatted
+    else False
+
+    # Format in America/Los_Angeles (PDT in summer, UTC-7)
+    # 12:00 UTC = 05:00 PDT (UTC-7)
+    def pstFormatted = formatTimeTZ '%Y-%m-%d %H:%M:%S' 'America/Los_Angeles' testTime
+    require '2020-06-15 05:00:00' = pstFormatted
+    else False
+
+    True
+
+# Test comparison operators
+export def testTimeComparison _ =
+    def t1 = parseTime '%Y-%m-%d' '2020-01-01'
+    def t2 = parseTime '%Y-%m-%d' '2020-01-02'
+    def t3 = parseTime '%Y-%m-%d' '2020-01-01'  # Same as t1
+
+    # Test tcmp function returns LT when t1 < t2
+    require True = isLT (tcmp t1 t2)
+    else False
+
+    # Test tcmp function returns GT when t2 > t1
+    require True = isGT (tcmp t2 t1)
+    else False
+
+    # Test tcmp function returns EQ when t1 == t3
+    require True = isEQ (tcmp t1 t3)
+    else False
+
+    # Test <$ operator (less than)
+    require True = (t1 <$ t2)
+    else False
+
+    # Test >$ operator (greater than)
+    require True = (t2 >$ t1)
+    else False
+
+    # Test <=$ operator (less than or equal)
+    require True = (t1 <=$ t3)
+    else False
+
+    # Test >=$ operator (greater than or equal)
+    require True = (t2 >=$ t1)
+    else False
+
+    # Test ==$ operator (equality)
+    require True = (t1 ==$ t3)
+    else False
+
+    # Test !=$ operator (inequality)
+    require True = (t1 !=$ t2)
+    else False
+
+    # Test !=$ operator returns False for equal times
+    require False = (t1 !=$ t3)
+    else False
+
+    True

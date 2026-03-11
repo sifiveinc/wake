@@ -1,0 +1,200 @@
+# Copyright 2026 SiFive, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You should have received a copy of LICENSE.Apache2 along with
+# this software. If not, you may obtain a copy at
+#
+#    https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+package wake
+
+# Time Library
+#
+# The Time type is a built-in type representing a point in time with nanosecond
+# precision. Internally, it stores nanoseconds since the Unix epoch (1970-01-01
+# 00:00:00 UTC).
+
+# getTime: Get the current system time.
+#
+# Returns a Time value representing the current time with nanosecond precision.
+# This function observes the system clock and is marked as ORDERED to ensure
+# proper sequencing in the build system.
+#
+# Example:
+#   def now = getTime Unit
+export def getTime (_: a): Time =
+    prim "get_time"
+
+# formatTime: Format a Time value as a string in UTC.
+#
+# Converts a Time value to a human-readable string using strftime format
+# specifiers. The output is always in UTC.
+#
+# Arguments:
+#   format - strftime format string
+#   time   - Time value to format
+#
+# Example:
+#   def now = getTime Unit
+#   formatTime "%Y-%m-%d" now                    # "2026-03-10"
+#   formatTime "%A, %B %d, %Y" now               # "Monday, March 10, 2026"
+#   formatTime "%Y-%m-%d %H:%M:%S" now           # "2026-03-10 08:15:07"
+export def formatTime (format: String) (time: Time): String =
+    (\f \t prim "format_time") format time
+
+# formatTimeTZ: Format a Time value as a string in a specific timezone.
+#
+# Converts a Time value to a human-readable string using strftime format
+# specifiers in the specified timezone.
+#
+# Arguments:
+#   format   - strftime format string
+#   timezone - IANA timezone name (e.g., "America/Los_Angeles", "UTC", "PST8PDT")
+#   time     - Time value to format
+#
+# Example:
+#   def now = getTime Unit
+#   formatTimeTZ "%Y-%m-%d %H:%M:%S" "UTC" now                    # "2026-03-10 08:15:07"
+#   formatTimeTZ "%Y-%m-%d %H:%M:%S" "America/Los_Angeles" now    # "2026-03-10 00:15:07"
+#   formatTimeTZ "%Y-%m-%d %H:%M:%S %Z" "America/New_York" now    # "2026-03-10 03:15:07 EST"
+export def formatTimeTZ (format: String) (timezone: String) (time: Time): String =
+    (\f \tz \t prim "format_time_tz") format timezone time
+
+# parseTime: Parse a time string into a Time value.
+#
+# Parses a time string according to a strptime format string and returns a
+# Time value. Parsing is done in UTC. If the format string doesn't specify
+# all fields, missing fields default to epoch values (1970-01-01 00:00:00).
+#
+# Arguments:
+#   format  - strptime format string
+#   timestr - String to parse
+#
+# Example:
+#   parseTime "%Y-%m-%d" "2020-01-01"                    # 2020-01-01 00:00:00 UTC
+#   parseTime "%Y-%m-%d %H:%M:%S" "2020-06-15 14:30:00"  # 2020-06-15 14:30:00 UTC
+export def parseTime (format: String) (timestr: String): Time =
+    (\f \t prim "parse_time") format timestr
+
+# formatDate: Format the current date/time in UTC.
+#
+# Convenience function that gets the current time and formats it in one step.
+# Equivalent to: formatTime format (getTime Unit)
+#
+# Arguments:
+#   format - strftime format string
+#
+# Example:
+#   formatDate "%Y-%m-%d"              # "2026-03-10"
+#   formatDate "%Y-%m-%d %H:%M:%S"     # "2026-03-10 08:15:07"
+export def formatDate (format: String): String =
+    formatTime format (getTime Unit)
+
+# formatDateTZ: Format the current date/time in a specific timezone.
+#
+# Convenience function that gets the current time and formats it in a specific
+# timezone in one step.
+# Equivalent to: formatTimeTZ format timezone (getTime Unit)
+#
+# Arguments:
+#   format   - strftime format string
+#   timezone - IANA timezone name (e.g., "America/Los_Angeles", "UTC", "PST8PDT")
+#
+# Example:
+#   formatDateTZ "%Y-%m-%d %H:%M:%S" "UTC"                    # "2026-03-10 08:15:07"
+#   formatDateTZ "%Y-%m-%d %H:%M:%S" "America/Los_Angeles"    # "2026-03-10 00:15:07"
+#   formatDateTZ "%Y-%m-%d %H:%M:%S %Z" "America/New_York"    # "2026-03-10 03:15:07 EST"
+export def formatDateTZ (format: String) (timezone: String): String =
+    formatTimeTZ format timezone (getTime Unit)
+
+# tsub: Subtract two Time values
+#
+# Computes the difference between two Time values using type-safe chrono
+# arithmetic. Returns an Integer representing the number of nanoseconds
+# between the two times (t1 - t2).
+#
+# Arguments:
+#   t1 - First time (minuend)
+#   t2 - Second time (subtrahend)
+#
+# Returns:
+#   Integer nanoseconds (positive if t1 > t2, negative if t1 < t2)
+#
+# Example:
+#   def start = getTime Unit
+#   # ... do work ...
+#   def end = getTime Unit
+#   def elapsedNanos = tsub end start
+#   def elapsedSeconds = elapsedNanos / 1000000000
+#   println "Elapsed: {str elapsedSeconds} seconds"
+export def tsub (t1: Time) (t2: Time): Integer =
+    (\a \b prim "time_sub") t1 t2
+
+# tadd: Add nanoseconds to a Time value, returning a new Time.
+#
+# Adds an Integer number of nanoseconds to a Time value using type-safe
+# chrono arithmetic. Returns a new Time value.
+#
+# Arguments:
+#   time  - Base time
+#   nanos - Nanoseconds to add (can be negative to subtract)
+#
+# Returns:
+#   New Time value
+#
+# Example:
+#   def now = getTime Unit
+#   def oneHourLater = tadd now 3600000000000  # Add 1 hour (3600 * 10^9 ns)
+#   def oneMinuteAgo = tadd now (-60000000000) # Subtract 1 minute
+export def tadd (time: Time) (nanos: Integer): Time =
+    (\t \n prim "time_add") time nanos
+
+# Compare two Time values for Order.
+# tcmp t1 t2 = LT  # if t1 < t2
+# tcmp t1 t2 = EQ  # if t1 == t2
+# tcmp t1 t2 = GT  # if t1 > t2
+export def tcmp (x: Time) (y: Time): Order =
+    (\a \b prim "time_cmp") x y
+
+# Binary three-way comparison operator for Time values.
+# Returns LT if x < y, EQ if x == y, GT if x > y.
+# t1 <=>$ t2 = LT  # if t1 < t2
+export def (x: Time) <=>$ (y: Time): Order =
+    tcmp x y
+
+# Binary Less-Than operator for Time values.
+# parseTime "%Y-%m-%d" "2020-01-01" <$ parseTime "%Y-%m-%d" "2020-01-02"  # True
+export def (x: Time) <$ (y: Time): Boolean =
+    isLT (x <=>$ y)
+
+# Binary Greater-Than operator for Time values.
+# parseTime "%Y-%m-%d" "2020-01-02" >$ parseTime "%Y-%m-%d" "2020-01-01"  # True
+export def (x: Time) >$ (y: Time): Boolean =
+    isGT (x <=>$ y)
+
+# Binary Greater-Or-Equal operator for Time values.
+# parseTime "%Y-%m-%d" "2020-01-02" >=$ parseTime "%Y-%m-%d" "2020-01-01"  # True
+export def (x: Time) >=$ (y: Time): Boolean =
+    isGE (x <=>$ y)
+
+# Binary Less-Or-Equal operator for Time values.
+# parseTime "%Y-%m-%d" "2020-01-01" <=$ parseTime "%Y-%m-%d" "2020-01-02"  # True
+export def (x: Time) <=$ (y: Time): Boolean =
+    isLE (x <=>$ y)
+
+# Binary Is-Equal operator for Time values.
+# parseTime "%Y-%m-%d" "2020-01-01" ==$ parseTime "%Y-%m-%d" "2020-01-01"  # True
+export def (x: Time) ==$ (y: Time): Boolean =
+    isEQ (x <=>$ y)
+
+# Binary Not-Equal operator for Time values.
+# parseTime "%Y-%m-%d" "2020-01-01" !=$ parseTime "%Y-%m-%d" "2020-01-02"  # True
+export def (x: Time) !=$ (y: Time): Boolean =
+    isNE (x <=>$ y)
