@@ -19,7 +19,7 @@ jobs:
           fetch-depth: 0
 
       - name: Build xfstests Docker image
-        run: docker build -t wake-xfstests -f ci/Dockerfile.xfstests .
+        run: docker build -t wake-xfstests -f docker/Dockerfile.xfstests .
 
       - name: Run xfstests
         run: docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined wake-xfstests
@@ -34,7 +34,7 @@ jobs:
           fetch-depth: 0
 
       - name: Build pjdfstest Docker image
-        run: docker build -t wake-pjdfstest -f ci/Dockerfile.pjdfstest .
+        run: docker build -t wake-pjdfstest -f docker/Dockerfile.pjdfstest .
 
       - name: Run pjdfstest
         run: docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined wake-pjdfstest
