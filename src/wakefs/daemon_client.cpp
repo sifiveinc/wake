@@ -35,6 +35,12 @@
 #include "util/execpath.h"
 #include "util/mkdir_parents.h"
 
+namespace {
+
+constexpr int maxClientConnectRetries = 14;
+constexpr int maxClientConnectWaitMs = 60 * 1000;
+}  // namespace
+
 // The user-id and group-id are used so that fuse daemons with different uid:gid pairs
 // running within the same build can co-exist without trying to share. The kernel
 // prevents cross-user sharing when the 'allow_other' fuse mount option is not used.
@@ -61,7 +67,8 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
 
   int ffd = -1;
   int wait_ms = 10;
-  for (int retry = 0; (ffd = open(is_running_path.c_str(), O_RDONLY)) == -1 && retry < 12;
+  int retry = 0;
+  for (; (ffd = open(is_running_path.c_str(), O_RDONLY)) == -1 && retry < maxClientConnectRetries;
        ++retry) {
     struct timespec delay;
     delay.tv_sec = wait_ms / 1000;
@@ -87,6 +94,7 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
     } while (ok == -1 && errno == EINTR);
 
     wait_ms <<= 1;
+    if (wait_ms > maxClientConnectWaitMs) wait_ms = maxClientConnectWaitMs;
 
     int status;
     do waitpid(pid, &status, 0);
@@ -94,7 +102,8 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
   }
 
   if (ffd == -1) {
-    std::cerr << "Could not contact FUSE daemon" << std::endl;
+    std::cerr << "Could not contact FUSE daemon\n"
+              << "retries=" << retry << " error=" << strerror(errno) << std::endl;
     return false;
   }
 
