@@ -3,22 +3,29 @@
 
 #define SCHEMA_VERSION "9"
 
-// Connection-level pragmas that must be set on EVERY database connection.
-// These do not persist in the database file and must be reapplied each time.
-inline const char* getConnectionPragmaSQL() {
-  return "pragma synchronous=0;"        // Faster writes
-         "pragma locking_mode=normal;"  // Allow other connections
-         "pragma busy_timeout=30000;"   // Wait up to 30s for locks
-         "pragma foreign_keys=on;";     // Enforce FK constraints
+// Per-connection settings to always apply.  Do this first!
+inline const char *getCommonPragmaSQL() {
+  // Busy timeout must be absolutely first.
+  return "pragma busy_timeout=30000;"  // Wait up to 30s for locks
+         "pragma foreign_keys=on;";    // Enforce FK constraints
+}
+
+// Writer-specific pragmas. After the above.
+// Database-level pragmas (auto_vacuum, journal_mode) persist.
+// Do not change those without changing version.
+inline const char *getWriterPragmaSQL() {
+  // Order matters here, WAL first especially.
+  return "pragma journal_mode=wal;"         // Multiple readers + one writer concurrently
+         "pragma auto_vacuum=incremental;"  // Enable incremental vacuuming
+         "pragma locking_mode=normal;"      // Allow other connections
+         "pragma synchronous=0;";           // Faster writes (durability)
 }
 
 // Database-level pragmas and schema DDL.
-// Database-level pragmas (auto_vacuum, journal_mode) persist in the database file.
 // Increment the SCHEMA_VERSION every time the below string changes.
 // Also add migrations to the wake-migration tool if needed.
-inline const char* getWakeSchemaSQL() {
-  return "pragma auto_vacuum=incremental;"
-         "pragma journal_mode=wal;"
+inline const char *getWakeSchemaSQLTxn() {
+  return "BEGIN IMMEDIATE;"
          "create table if not exists entropy("
          "  row_id integer primary key autoincrement,"
          "  seed   integer not null);"
@@ -92,9 +99,14 @@ inline const char* getWakeSchemaSQL() {
          "  unhashed_file_id integer primary key autoincrement,"
          "  job_id integer not null references jobs(job_id) on delete cascade,"
          "  path             text not null);"
-         "create index if not exists unhashed_outputs on unhashed_files(job_id);";
+         "create index if not exists unhashed_outputs on unhashed_files(job_id);"
+         // clang-format off
+         "insert or ignore into schema(version) values(" SCHEMA_VERSION ");"
+         "pragma user_version=" SCHEMA_VERSION ";"
+         // clang-format on
+         "COMMIT;";
 }
 
-#define WAKE_SCHEMA_SQL getWakeSchemaSQL()
+#define WAKE_SCHEMA_SQL getWakeSchemaSQLTxn()
 
 #endif

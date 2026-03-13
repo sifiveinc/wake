@@ -216,8 +216,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
     }
   }
 
-  // Increment the SCHEMA_VERSION every time the below string changes.
-  const char *schema_sql = WAKE_SCHEMA_SQL;
   int flags = readonly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE;
 
   WaitingIndicator indicator(tty);
@@ -238,17 +236,23 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
     }
 #endif
 
-    // Apply connection-level pragmas immediately after opening.
-    // These must be set on EVERY connection (they don't persist in the DB file).
-    // Critically, this sets busy_timeout BEFORE any queries that could BUSY.
-    {
+    auto apply_pragmas = [this](const char *pragmas,
+                                const char *label) -> std::optional<std::string> {
       char *pragma_fail = nullptr;
-      ret = sqlite3_exec(imp->db, getConnectionPragmaSQL(), 0, 0, &pragma_fail);
-      if (ret != SQLITE_OK) {
-        std::string out = pragma_fail ? pragma_fail : "unknown error";
-        if (pragma_fail) sqlite3_free(pragma_fail);
+      int ret = sqlite3_exec(imp->db, pragmas, 0, 0, &pragma_fail);
+      if (ret == SQLITE_OK) return std::nullopt;
+      std::string out = pragma_fail ? pragma_fail : "unknown error";
+      sqlite3_free(pragma_fail);
+      return std::string("Could not ") + label + ": " + out;
+    };
+    if (auto res = apply_pragmas(getCommonPragmaSQL(), "set common pragmas")) {
+      close_db(this);
+      return *res;
+    }
+    if (!readonly) {
+      if (auto res = apply_pragmas(getWriterPragmaSQL(), "set writer pragmas")) {
         close_db(this);
-        return "Could not set connection pragmas: " + out;
+        return *res;
       }
     }
 
@@ -297,14 +301,17 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
                    "'wake-migrate wake.db' to upgrade it.";
     }
 
-    char *fail = nullptr;
-
     if (readonly) {
+      // Note: Database may be entirely empty (db_ver == 0).
+      // We could observe database before schema created, either between another wake creating it
+      // and schema, OR due to how `wake --init .` works (truncates to zero bytes). Continue to
+      // consider this a "success" for now.
       indicator.finish();
       break;
     }
 
-    ret = sqlite3_exec(imp->db, schema_sql, 0, 0, &fail);
+    char *fail = nullptr;
+    ret = sqlite3_exec(imp->db, getWakeSchemaSQLTxn(), 0, 0, &fail);
     if (ret == SQLITE_OK) {
       indicator.finish();
 
