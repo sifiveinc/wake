@@ -186,26 +186,6 @@ Database::Database(bool debugdb, int _checkpoint_interval)
     : imp(new detail(debugdb)), checkpoint_interval(_checkpoint_interval) {}
 Database::~Database() { close(); }
 
-static int schema_cb(void *data, int columns, char **values, char **labels) {
-  // values[0] = 0 if a fresh DB
-  // values[1] = schema version
-
-  // Returning non-zero causes SQLITE_ABORT
-  if (columns != 2) return -1;
-
-  // New DB? Ok to use it
-  if (!strcmp(values[0], "0")) return 0;
-
-  // No version set? This must be a pre-0.19 database.
-  if (!values[1]) return -1;
-
-  // Matching version? Ok to use it
-  if (!strcmp(values[1], SCHEMA_VERSION)) return 0;
-
-  // Versions do not match
-  return -1;
-}
-
 std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   if (imp->db) return "";
 
@@ -293,9 +273,10 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
 
     int db_ver = header_ver ? header_ver : legacy_ver;
 
-    if (db_ver && db_ver != atoi(SCHEMA_VERSION)) {
+    auto schema_version = atoi(SCHEMA_VERSION);
+    if (db_ver && db_ver != schema_version) {
       close_db(this);
-      return db_ver > atoi(SCHEMA_VERSION)
+      return db_ver > schema_version
                  ? "wake.db was created by a newer version of Wake; please upgrade Wake."
                  : "wake.db was created by an older version of Wake; please remove it or run "
                    "'wake-migrate wake.db' to upgrade it.";
@@ -314,29 +295,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
     ret = sqlite3_exec(imp->db, getWakeSchemaSQLTxn(), 0, 0, &fail);
     if (ret == SQLITE_OK) {
       indicator.finish();
-
-      // stamp the PRAGMA user_version
-      {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "PRAGMA user_version=%d;", atoi(SCHEMA_VERSION));
-        sqlite3_exec(imp->db, buf, nullptr, nullptr, nullptr);
-      }
-
-      // Use an empty entropy table as a proxy for a new database (it gets filled automatically)
-      const char *get_version =
-          "select (select count(row_id) from entropy), (select max(version) from schema);";
-      const char *set_version = "insert or ignore into schema(version) values(" SCHEMA_VERSION ");";
-
-      // TODO: remove this older check once most wake.db instances have migrated to newer versions.
-      ret = sqlite3_exec(imp->db, get_version, &schema_cb, 0, 0);
-      if (ret == SQLITE_OK) {
-        sqlite3_exec(imp->db, set_version, 0, 0, 0);
-        break;
-      } else {
-        close_db(this);
-        return "produced by an incompatible version of wake; please remove it or run 'wake-migrate "
-               "wake.db' to upgrade it.";
-      }
+      break;
     }
 
     // We must close the DB so that we don't hold it shared, preventing an eventual exclusive
