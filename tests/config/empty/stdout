@@ -1,8 +1,5 @@
 Wake config:
-  user_config = '' (WakeRoot)
   version = '' (Default)
-  log_header = '' (WakeRoot)
-  log_header_source_width = '0' (WakeRoot)
   label_filter = '.*' (Default)
   cache_miss_on_failure = 'false' (Default)
   log_header_align = 'false' (Default)

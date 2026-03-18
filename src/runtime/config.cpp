@@ -306,20 +306,37 @@ bool WakeConfig::init(const std::string& wakeroot_path, const WakeConfigOverride
 
   JAST wakeroot_json(JSON_OBJECT);
 
-  // Parse .wakeroot
-  auto wakeroot_res = read_json_file(wakeroot_path);
-  if (!wakeroot_res) {
-    std::cerr << "Failed to load .wakeroot: " << wakeroot_res.error().second;
-
-    // A missing .wakeroot is allowed, but other errors such as invalid json are not.
-    if (wakeroot_res.error().first != ReadJsonFileError::BadFile) {
-      std::cerr << std::endl;
-      return false;
+  // Explicitly allow .wakeroot to be empty (including if it only contains a single newline)
+  // to allow initializing a workspace via `touch .wakeroot` or `echo > .wakeroot`.
+  bool is_empty_or_newline = false;
+  char buffer[3] = {'\0', '\0', '\0'};
+  std::ifstream file(wakeroot_path);
+  if (file) {
+    file.read(buffer, 3);
+    std::streamsize bytes_read = file.gcount();
+    if (bytes_read == 0
+      || (bytes_read == 1 && (buffer[0] == '\n' || buffer[0] == '\r'))
+      || (bytes_read == 2 && (buffer[0] == '\r' && buffer[1] == '\n'))) {
+      is_empty_or_newline = true;
     }
+  }
 
-    std::cerr << ". Using default values instead." << std::endl;
-  } else {
-    wakeroot_json = std::move(*wakeroot_res);
+  if (!is_empty_or_newline) {
+    // Parse .wakeroot
+    auto wakeroot_res = read_json_file(wakeroot_path);
+    if (!wakeroot_res) {
+      std::cerr << "Failed to load .wakeroot: " << wakeroot_res.error().second;
+
+      // A missing .wakeroot is allowed, but other errors such as invalid json are not.
+      if (wakeroot_res.error().first != ReadJsonFileError::BadFile) {
+        std::cerr << std::endl;
+        return false;
+      }
+
+      std::cerr << ". Using default values instead." << std::endl;
+    } else {
+      wakeroot_json = std::move(*wakeroot_res);
+    }
   }
 
   // Check for disallowed keys
