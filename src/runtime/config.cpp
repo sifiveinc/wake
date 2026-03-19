@@ -200,7 +200,7 @@ static std::vector<std::string> find_disallowed_keys(const JAST& json,
   constexpr const char* Policy::key;            \
   constexpr bool Policy::allowed_in_wakeroot;   \
   constexpr bool Policy::allowed_in_userconfig; \
-  constexpr typename Policy::type Policy::*Policy::value;
+  constexpr typename Policy::type Policy::* Policy::value;
 
 /********************************************************************
  * Definition boilerplate
@@ -314,9 +314,11 @@ bool WakeConfig::init(const std::string& wakeroot_path, const WakeConfigOverride
   if (file) {
     file.read(buffer, 3);
     std::streamsize bytes_read = file.gcount();
-    if (bytes_read == 0
-      || (bytes_read == 1 && (buffer[0] == '\n' || buffer[0] == '\r'))
-      || (bytes_read == 2 && (buffer[0] == '\r' && buffer[1] == '\n'))) {
+    // clang-format off
+    if (bytes_read == 0 ||
+        (bytes_read == 1 && (buffer[0] == '\n' || buffer[0] == '\r')) ||
+        (bytes_read == 2 && (buffer[0] == '\r' && buffer[1] == '\n'))) {
+      // clang-format on
       is_empty_or_newline = true;
     }
   }
