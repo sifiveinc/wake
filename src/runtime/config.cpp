@@ -200,7 +200,7 @@ static std::vector<std::string> find_disallowed_keys(const JAST& json,
   constexpr const char* Policy::key;            \
   constexpr bool Policy::allowed_in_wakeroot;   \
   constexpr bool Policy::allowed_in_userconfig; \
-  constexpr typename Policy::type Policy::* Policy::value;
+  constexpr typename Policy::type Policy::*Policy::value;
 
 /********************************************************************
  * Definition boilerplate
