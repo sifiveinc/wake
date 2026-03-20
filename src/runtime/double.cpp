@@ -23,7 +23,6 @@
 
 #include <cmath>
 #include <cstdlib>
-#include <ctgmath>
 
 #include "prim.h"
 #include "types/data.h"
