@@ -50,6 +50,7 @@
 #include "parser/syntax.h"
 #include "parser/wakefiles.h"
 #include "runtime/config.h"
+#include "runtime/cas_prim.h"
 #include "runtime/database.h"
 #include "runtime/job.h"
 #include "runtime/prim.h"
@@ -880,7 +881,9 @@ int main(int argc, char **argv) {
                     clo.batch);
   StringInfo info(clo.verbose, clo.debug, clo.quiet, VERSION_STR, wcl::make_canonical(wake_cwd),
                   cmdline);
-  PrimMap pmap = prim_register_all(&info, &jobtable);
+  CASContext cas_ctx;
+  cas_ctx.get_store(".");
+  PrimMap pmap = prim_register_all(&info, &jobtable, &cas_ctx);
 
   bool isTreeBuilt = true;
   std::unique_ptr<Expr> root = bind_refs(std::move(top), pmap, isTreeBuilt);
