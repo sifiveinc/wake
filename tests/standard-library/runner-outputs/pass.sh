@@ -11,4 +11,5 @@ rm -f wake.db wake.log
 "${WAKE:-wake}" --stdout=warning,report testRunnerOkSuccess
 "${WAKE:-wake}" --stdout=warning,report testWrapperRunnerStatus
 "${WAKE:-wake}" --stdout=warning,report testFdOutputs
+DEBUG_FUSE_WAKE=1 WAKE_CAS=1 "${WAKE:-wake}" --stdout=warning,report testVisibleExecutableModesInCas
 "${WAKE:-wake}" --stdout=warning,report testRunnerCustomOutput

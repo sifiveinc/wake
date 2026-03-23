@@ -79,12 +79,35 @@ export tuple RunnerInput =
     #     so that it can apply filtering after collecting the files written.
     export FnOutputs: (List String => List String)
 
+# The staged-output metadata returned by FUSE/CAS runners.
+export tuple StagedOutputs =
+    # The fnOutputs-filtered published output list.
+    export FilteredOutputPaths: List String
+    # The full staged output set returned by the runner.
+    export StagingItems: List StagingItem
+
+# The output description returned by a runner.
+export data OutputSet =
+    # Ordinary workspace outputs. The list is already filtered by fnOutputs and is both ingested
+    # and published as the job's output set.
+    OutputPaths (List String)
+    # FUSE/CAS output form. job.wake ingests and materializes all staged items, then uses
+    # FilteredOutputPaths to choose which resolved items are stored and finalized as the job's
+    # official outputs.
+    OutputStaged StagedOutputs
+
+# Returns the published output path list carried by an OutputSet.
+export def outputSetPathNames = match _
+    OutputPaths paths -> paths
+    OutputStaged (StagedOutputs paths _) -> paths
+
 # The result returned by a Runner after running a job
 export tuple RunnerOutput =
     # The filtered list of files actually read by the job. It can be used for more precise reruns
     export Inputs: List String
-    # The filtered list of files output by the job. These files are hashed and elevated to Path
-    export Outputs: List String
+    # The filtered list of files output by the job, either as raw output paths or as staged outputs
+    # that still need post-processing after the runner returns.
+    export Outputs: OutputSet
     # The list of files output by the job that should be deleted by wake --clean. May include files
     # listed in Outputs as they will be removed later. The files in the list that are not in
     # Outputs will not be hashed, published, or elevated to Path but will be deleted by wake --clean
@@ -142,7 +165,7 @@ export def localRunner: Runner =
             Pass reality -> Pair reality None
 
         # Wait for the job to complete
-        def return _ = RunnerOutput fileInputs fileOutputs cleanable usage runnerError
+        def return _ = RunnerOutput fileInputs (OutputPaths fileOutputs) cleanable usage runnerError
 
         waitJobMerged return job
 
@@ -171,7 +194,7 @@ export def virtualRunner: Runner =
             Pass reality -> Pair reality None
 
         # Wait for the job to complete
-        def return _ = RunnerOutput fileInputs fileOutputs cleanable usage runnerError
+        def return _ = RunnerOutput fileInputs (OutputPaths fileOutputs) cleanable usage runnerError
 
         waitJobMerged return job
 
@@ -183,6 +206,7 @@ export def fuseRunner: Runner =
 
     makeJSONRunnerPlan fuse
     | editJSONRunnerPlanExtraEnv (editEnvironment "DEBUG_FUSE_WAKE" (\_ getenv "DEBUG_FUSE_WAKE"))
+    | editJSONRunnerPlanExtraEnv (editEnvironment "WAKE_CAS" (\_ getenv "WAKE_CAS"))
     | makeJSONRunner
 
 export def defaultRunner: Runner =
@@ -233,7 +257,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             def runnerError = "Runner {script} is not executable".makeError
             def _ = markJobSetupFailure job runnerError
 
-            RunnerOutput Nil Nil Nil emptyUsage (Some runnerError)
+            RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage (Some runnerError)
 
         def Usage jobStatus runtime cputime membytes inbytes outbytes = record
 
@@ -242,7 +266,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                 "label" :-> JString label,
                 "command" :-> command | map JString | JArray,
                 "environment" :-> environment | map JString | JArray,
-                "visible" :-> visible | map (_.getPathName.JString) | JArray,
+                "visible" :-> visible | map getPathName | map JString | JArray,
                 "directory" :-> JString directory,
                 "stdin" :-> JString stdin,
                 "resources" :-> res | map JString | JArray,
@@ -272,7 +296,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             | rmapFail (markJobSetupFailure job)
 
         require Pass _ = writeResult
-        else RunnerOutput Nil Nil Nil emptyUsage writeResult.getFail
+        else RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage writeResult.getFail
 
         def cmd = script, "-I", "-p", specFile, "-o", resultFile, extraArgs
 
@@ -307,12 +331,12 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         require 0 = runnerStatusCode
         else
             Some "Non-zero exit status ({str runnerStatusCode}) for JSON runner on {specFile}".makeError
-            | RunnerOutput Nil Nil (specFile, Nil) runnerUsage
+            | RunnerOutput Nil (OutputPaths Nil) (specFile, Nil) runnerUsage
 
-        require Pass content = parseJSONFile (Path resultFile "BadHash")
+        require Pass content = parseJSONFile (mkPath resultFile PathTypeRegularFile "BadHash")
         else
             Some "Failed to parse output {resultFile} for JSON runner".makeError
-            | RunnerOutput Nil Nil (specFile, Nil) runnerUsage
+            | RunnerOutput Nil (OutputPaths Nil) (specFile, Nil) runnerUsage
 
         def field name = match _ _
             _ (Fail f) -> Fail f
@@ -330,24 +354,60 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             | field "inbytes" (jsonUsage // `inbytes` | getJInteger)
             | field "outbytes" (jsonUsage // `outbytes` | getJInteger)
 
+        # Extract string from either a plain string or an object with "path" field
+        # This handles both old format (strings) and new format (objects with path/hash)
+        def extractPath (jval: JValue): Option String = match jval
+            JString s -> Some s
+            JObject fields ->
+                # find returns Option (Pair (Pair String JValue) Integer)
+                match (find (\(Pair k _) k ==* "path") fields)
+                    Some (Pair (Pair _ pathVal) _) -> getJString pathVal
+                    None -> None
+            _ -> None
+
         def getK exp =
             content // exp
             | getJArray
             | getOrElse Nil
             | mapPartial getJString
 
-        def jsonInputs = getK `inputs`
-        def jsonOutputs = getK `outputs`
-        def filteredInputs = fnInputs jsonInputs
-        def filteredOutputs = fnOutputs jsonOutputs
-        def cleanableOutputs = specFile, resultFile, jsonOutputs
+        # Get outputs with support for both old (string) and new (object) formats
+        def getOutputPaths =
+            content // `outputs`
+            | getJArray
+            | getOrElse Nil
+            | mapPartial extractPath
 
-        match jobUsageResult
-            Pass jobUsage ->
+        def jsonInputs = getK `inputs`
+        def jsonOutputs = getOutputPaths
+        def filteredInputs = fnInputs jsonInputs
+        def filteredOutputPaths = fnOutputs jsonOutputs
+        def defaultCleanableOutputs = specFile, resultFile, jsonOutputs
+
+        def outputSetResult = match useCasHashes
+            True ->
+                match (parseStagingFiles content)
+                    Pass stagingItems ->
+                        def stagedOutputPaths =
+                            stagingItems
+                            | map getStagingItemDestPath
+
+                        require True = empty filteredOutputPaths || ! empty stagingItems
+                        else failWithError "Missing staging_files metadata for CAS outputs"
+
+                        Pass (Pair (OutputStaged (StagedOutputs filteredOutputPaths stagingItems)) (specFile, resultFile, stagedOutputPaths))
+                    Fail err -> Fail err
+            False -> Pass (Pair (OutputPaths filteredOutputPaths) defaultCleanableOutputs)
+
+        match (jobUsageResult; outputSetResult)
+            Pass jobUsage; Pass (Pair outputSet cleanableOutputs) ->
                 None
-                | RunnerOutput filteredInputs filteredOutputs cleanableOutputs jobUsage
-            Fail msg ->
+                | RunnerOutput filteredInputs outputSet cleanableOutputs jobUsage
+            Pass _; Fail err ->
+                Some err
+                | RunnerOutput filteredInputs (OutputPaths Nil) defaultCleanableOutputs runnerUsage
+            Fail msg; _ ->
                 Some msg.makeError
-                | RunnerOutput filteredInputs filteredOutputs cleanableOutputs runnerUsage
+                | RunnerOutput filteredInputs (OutputPaths Nil) defaultCleanableOutputs runnerUsage
 
     makeRunner "json-{script}" run

@@ -255,7 +255,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         #     by the same job. If so, upload the target as a "hidden" output file. On rehydration
         #     retore the file as normal but don't list it in the outputs.
         ## -------------------------------------------------------------------------------------- ##
-        Pass (RunnerOutput inputs outputs cleanableOutputs predict None)
+        Pass (RunnerOutput inputs (OutputPaths outputs) cleanableOutputs predict None)
 
     def run (job: Job) (input: RunnerInput): RunnerOutput =
         def label = input.getRunnerInputLabel
@@ -265,7 +265,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             | rmapFail (markJobSetupFailure job)
 
         require Pass hashKey = hashKeyResult
-        else RunnerOutput Nil Nil Nil emptyUsage hashKeyResult.getFail
+        else RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage hashKeyResult.getFail
 
         # If pulling from the cache is not enabled don't bother searching.
         require True = rscApi.getRemoteCacheApiCanPull
@@ -374,9 +374,15 @@ def thirdBy (acceptFn: a => ThirdByGroup): (list: List a) => Triple (one: List a
 
 # Posts a completed job to the remote cache
 def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: String) (input: RunnerInput) (output: RunnerOutput): Result Unit Error =
-    def filteredOutputs = output.getRunnerOutputOutputs
+    def outputSet = output.getRunnerOutputOutputs
+    def filteredOutputPaths =
+        outputSet
+        | outputSetPathNames
+
     def cleanableOutputs = output.getRunnerOutputCleanableOutputs
-    def hiddenOutputs = subtract scmp cleanableOutputs filteredOutputs
+    def hiddenOutputs = subtract scmp cleanableOutputs filteredOutputPaths
+    def isPublishedOutput (path: String): Boolean =
+        exists (_ ==* path) filteredOutputPaths
 
     def statToGroup (Stat t _ _) = match t
         PathTypeRegularFile -> ThirdByGroupFirst
@@ -391,7 +397,7 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
         | addErrorContext "rsc: Failed to stat files"
         |< thirdBy (_.getPairSecond.statToGroup)
 
-    def filteredOutputsStatThunk = makeStatTripleThunk filteredOutputs
+    def filteredOutputsStatThunk = makeStatTripleThunk filteredOutputPaths
     def hiddenOutputsStatThunk = makeStatTripleThunk hiddenOutputs
 
     def uploadAndMakeFile (Pair path (Stat _ mode _)) =
@@ -430,83 +436,166 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
     def makeDirectory hidden (Pair path (Stat _ mode _)) =
         CachePostRequestOutputDirectory path (mode | mode2bits) hidden
 
-    require Pass (Triple regFiles directories symlinks) = filteredOutputsStatThunk
+    def outputUploadsResult = match outputSet
+        OutputPaths _ ->
+            match filteredOutputsStatThunk
+                Fail err -> Fail err
+                Pass (Triple regFiles directories symlinks) ->
+                    def fileUploads =
+                        regFiles
+                        | map uploadAndMakeFile
 
-    def fileUploads =
-        regFiles
-        | map uploadAndMakeFile
+                    def symlinksUpload =
+                        symlinks
+                        | map makeSymlink
 
-    def symlinksUpload =
-        symlinks
-        | map makeSymlink
+                    def publishedDirectoriesUpload =
+                        directories
+                        | map (makeDirectory False)
 
-    def publishedDirectoriesUpload =
-        directories
-        | map (makeDirectory False)
+                    match hiddenOutputsStatThunk
+                        Fail err -> Fail err
+                        Pass (Triple _ hiddenDirs _) ->
+                            def hiddenDirectoriesUpload =
+                                hiddenDirs
+                                | map (makeDirectory True)
 
-    require Pass (Triple _ hiddenDirs _) = hiddenOutputsStatThunk
+                            Pass (Triple fileUploads (publishedDirectoriesUpload ++ hiddenDirectoriesUpload) symlinksUpload)
+        OutputStaged (StagedOutputs _ stagingItems) ->
+            def stagedOutputPaths =
+                stagingItems
+                | map getStagingItemDestPath
 
-    def hiddenDirectoriesUpload =
-        hiddenDirs
-        | map (makeDirectory True)
+            require True = subset scmp filteredOutputPaths stagedOutputPaths
+            else failWithError "rsc: Missing staging metadata for published outputs"
 
-    def directoriesUpload = publishedDirectoriesUpload ++ hiddenDirectoriesUpload
+            def uploadStagingFile (StagingFileOutput destPath stagingPath mode _ _) =
+                def doUpload =
+                    rscApi
+                    | rscApiPostFileBlob destPath stagingPath
 
-    require Pass stdout = job.getJobFailedStdoutRaw
-    require Pass stderr = job.getJobFailedStderrRaw
+                require Pass id = doUpload
 
-    def stdoutUpload =
-        rscApi
-        | rscApiPostStringBlob "stdout" stdout
+                CachePostRequestOutputFile destPath mode id
+                | Pass
 
-    def stderrUpload =
-        rscApi
-        | rscApiPostStringBlob "stderr" stderr
+            def publishedFileUpload (item: StagingItem): Option (Result CachePostRequestOutputFile Error) = match item
+                StagingFile file ->
+                    if isPublishedOutput file.getStagingFileOutputDestPath then
+                        Some (uploadStagingFile file)
+                    else
+                        None
+                StagingHardlink file ->
+                    if isPublishedOutput file.getStagingFileOutputDestPath then
+                        Some (uploadStagingFile file)
+                    else
+                        None
+                _ -> None
 
-    # Due to a side effect of filtering outputs its possible for a job to create both a file
-    # and a symlink to that file, but the only output said file. This will break the build
-    # and is explicitly disallowed. Panic if it occurs.
-    require True =
-        require False = symlinksUpload.len == 0
-        else True
+            def publishedSymlinkUpload (item: StagingItem): Option (Result CachePostRequestOutputSymlink Error) = match item
+                StagingSymlink (StagingSymlinkOutput destPath symlinkTarget) ->
+                    if isPublishedOutput destPath then
+                        Some (Pass (CachePostRequestOutputSymlink symlinkTarget destPath))
+                    else
+                        None
+                _ -> None
 
-        # Get the list of potential targets the job may have uploaded
-        require Pass symlinkTargets =
-            symlinksUpload
-            | findFail
-            |< map getCachePostRequestOutputSymlinkPath
-        else True
+            def publishedDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory = match item
+                StagingDirectory (StagingDirectoryOutput destPath mode) ->
+                    if isPublishedOutput destPath then
+                        Some (CachePostRequestOutputDirectory destPath mode False)
+                    else
+                        None
+                _ -> None
 
-        # Get the list of files created by this job that are also referenced by symlinks created by this job
-        def symlinkTargetsCreated =
-            def created = output.getRunnerOutputCleanableOutputs
+            def hiddenDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory = match item
+                StagingDirectory (StagingDirectoryOutput destPath mode) ->
+                    if isPublishedOutput destPath then
+                        None
+                    else
+                        Some (CachePostRequestOutputDirectory destPath mode True)
+                _ -> None
 
-            symlinkTargets
-            | intersect scmp created
+            def fileUploads =
+                stagingItems
+                | mapPartial publishedFileUpload
 
-        # symlinkTargetsCreated must be a subset of the list of published outputs otherwise the job
-        # is breaking the contract.
-        subset scmp symlinkTargetsCreated output.getRunnerOutputOutputs
-    else panic "Job may not create both a symlink and file, then output only the symlink"
+            def symlinksUpload =
+                stagingItems
+                | mapPartial publishedSymlinkUpload
 
-    require Pass stdoutId = stdoutUpload
-    require Pass stderrId = stderrUpload
+            def publishedDirectoriesUpload =
+                stagingItems
+                | mapPartial publishedDirectoryUpload
 
-    require Pass uploads =
-        fileUploads
-        | findFail
-        | addErrorContext "rsc: Failed to upload file"
+            def hiddenDirectoriesUpload =
+                stagingItems
+                | mapPartial hiddenDirectoryUpload
 
-    require Pass resolvedLinks =
-        symlinksUpload
-        | findFail
-        | addErrorContext "rsc: Failed to resolve symlink"
+            def directoriesUpload =
+                publishedDirectoriesUpload ++ hiddenDirectoriesUpload
 
-    def req =
-        mkPostJobRequest input output hidden stdoutId stderrId uploads directoriesUpload resolvedLinks
+            Pass (Triple fileUploads directoriesUpload symlinksUpload)
 
-    rscApi
-    | rscApiPostJob req
+    match outputUploadsResult
+        Fail err -> Fail err
+        Pass (Triple fileUploads directoriesUpload symlinksUpload) ->
+
+            require Pass stdout = job.getJobFailedStdoutRaw
+            require Pass stderr = job.getJobFailedStderrRaw
+
+            def stdoutUpload =
+                rscApi
+                | rscApiPostStringBlob "stdout" stdout
+
+            def stderrUpload =
+                rscApi
+                | rscApiPostStringBlob "stderr" stderr
+
+            # Due to a side effect of filtering outputs its possible for a job to create both a file
+            # and a symlink to that file, but the only output said file. This will break the build
+            # and is explicitly disallowed. Panic if it occurs.
+            require True =
+                require False = symlinksUpload.len == 0
+                else True
+
+                # Get the list of potential targets the job may have uploaded
+                require Pass symlinkTargets =
+                    symlinksUpload
+                    | findFail
+                    |< map getCachePostRequestOutputSymlinkPath
+                else True
+
+                # Get the list of files created by this job that are also referenced by symlinks created by this job
+                def symlinkTargetsCreated =
+                    def created = output.getRunnerOutputCleanableOutputs
+
+                    symlinkTargets
+                    | intersect scmp created
+
+                # symlinkTargetsCreated must be a subset of the list of published outputs otherwise the job
+                # is breaking the contract.
+                subset scmp symlinkTargetsCreated filteredOutputPaths
+            else panic "Job may not create both a symlink and file, then output only the symlink"
+
+            require Pass stdoutId = stdoutUpload
+            require Pass stderrId = stderrUpload
+
+            require Pass uploads =
+                fileUploads
+                | findFail
+                | addErrorContext "rsc: Failed to upload file"
+
+            require Pass resolvedLinks =
+                symlinksUpload
+                | findFail
+                | addErrorContext "rsc: Failed to resolve symlink"
+
+            def req =
+                mkPostJobRequest input output hidden stdoutId stderrId uploads directoriesUpload resolvedLinks
+
+            rscApi
+            | rscApiPostJob req
 
 # Determines if the user has requested that debug info be emitted from the cache
 target shouldDebugRemoteCache Unit: Boolean =
