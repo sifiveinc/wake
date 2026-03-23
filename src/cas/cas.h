@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 
 #include "content_hash.h"
@@ -51,12 +52,20 @@ class Cas {
   // Get the root directory of this store
   const std::string& root() const { return root_; }
 
-  // Store a blob from a file, returns the content hash
-  // Uses reflink if possible, otherwise copies the file
+  // Store a blob from a file, returning its content hash.
+  // Uses reflink if possible, otherwise copies the file.
   wcl::result<ContentHash, CASError> store_blob_from_file(const std::string& path);
 
-  // Store a blob from memory, returns the content hash
+  // Store a blob from memory, returning its content hash.
   wcl::result<ContentHash, CASError> store_blob(const std::string& data);
+
+  // Store a file in CAS under an already-known hash without recomputing it.
+  wcl::result<bool, CASError> store_blob_from_file_with_hash(const std::string& path,
+                                                             const ContentHash& hash);
+
+  // Store bytes in CAS under an already-known hash without recomputing it.
+  wcl::result<bool, CASError> store_blob_with_hash(const std::string& data,
+                                                   const ContentHash& hash);
 
   // Check if a blob exists
   bool has_blob(const ContentHash& hash) const;
@@ -67,7 +76,7 @@ class Cas {
   // Read a blob's contents
   wcl::result<std::string, CASError> read_blob(const ContentHash& hash) const;
 
-  // Materialize a blob to a file path (uses reflink if possible)
+ // Materialize a blob to a file path (uses reflink if possible)
   wcl::result<bool, CASError> materialize_blob(const ContentHash& hash,
                                                const std::string& dest_path, mode_t mode,
                                                time_t mtime_sec, long mtime_nsec) const;
@@ -84,6 +93,12 @@ class Cas {
   // Ensure the shard directory exists for a given hash
   // Returns true on success
   wcl::result<bool, CASError> ensure_shard_dir(const ContentHash& hash) const;
+
+  // Shared implementations for storing already-materialized file or byte content.
+  wcl::result<ContentHash, CASError> store_blob_from_file_impl(
+      const std::string& path, const std::optional<ContentHash>& known_hash);
+  wcl::result<ContentHash, CASError> store_blob_impl(const std::string& data,
+                                                     const std::optional<ContentHash>& known_hash);
 };
 
 }  // namespace cas

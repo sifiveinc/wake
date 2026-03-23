@@ -1,0 +1,45 @@
+# Copyright 2024 SiFive, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You should have received a copy of LICENSE.Apache2 along with
+# this software. If not, you may obtain a copy at
+#
+#    https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+package wake
+
+export def casHasBlob (hash: String): Boolean =
+    def raw hash = prim "cas_has_blob"
+
+    raw hash
+
+# Ingest an already-hashed workspace path into CAS. The path already exists in the workspace, so
+# this does not materialize anything back to the workspace.
+export def casIngestWorkspacePath (path: String) (itemType: String) (hash: String): Result Unit Error =
+    def raw path itemType hash = prim "cas_ingest_workspace_path"
+
+    raw path itemType hash
+    | rmapError makeError
+
+# Materialize an item from CAS to workspace.
+export def casMaterializeItem (destPath: String) (itemType: String) (hashOrTarget: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
+    def raw destPath itemType hashOrTarget mode mtimeSec mtimeNsec = prim "cas_materialize_item"
+
+    raw destPath itemType hashOrTarget mode mtimeSec mtimeNsec
+    | rmapError makeError
+
+# Ingest a staged item after its hash has already been computed in Wake, materializing it at the
+# final workspace path as part of the same step.
+export def casIngestStagedItem (destPath: String) (itemType: String) (stagingPathOrTarget: String) (hash: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
+    def raw destPath itemType stagingPathOrTarget hash mode mtimeSec mtimeNsec =
+        prim "cas_ingest_staged_item"
+
+    raw destPath itemType stagingPathOrTarget hash mode mtimeSec mtimeNsec
+    | rmapError makeError

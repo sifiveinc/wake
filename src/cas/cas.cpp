@@ -24,8 +24,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 
 #include "wcl/file_ops.h"
@@ -34,6 +36,10 @@ namespace fs = std::filesystem;
 
 namespace cas {
 
+// Global counter for unique temp file names during materialization
+// Used to avoid collisions when multiple processes materialize files concurrently
+static std::atomic<uint64_t> g_materialize_counter{0};
+static std::atomic<uint64_t> g_store_counter{0};
 // Helper functions for hash-based directory sharding
 static std::string hash_prefix(const ContentHash& hash) {
   std::string hex = hash.to_hex();
@@ -99,7 +105,8 @@ std::string Cas::blob_path(const ContentHash& hash) const {
 
 bool Cas::has_blob(const ContentHash& hash) const { return fs::exists(blob_path(hash)); }
 
-wcl::result<ContentHash, CASError> Cas::store_blob_from_file(const std::string& path) {
+wcl::result<ContentHash, CASError> Cas::store_blob_from_file_impl(
+    const std::string& path, const std::optional<ContentHash>& known_hash) {
   std::error_code ec;
 
   // Get source file mode
@@ -112,9 +119,11 @@ wcl::result<ContentHash, CASError> Cas::store_blob_from_file(const std::string& 
   mode_t mode = static_cast<mode_t>(perms) & 07777;
 
   // Copy to staging area first.
-  std::string temp = (fs::path(staging_dir_) /
-                      (fs::path(path).filename().string() + "-" + std::to_string(getpid())))
-                         .string();
+  std::string temp =
+      (fs::path(staging_dir_) /
+       (fs::path(path).filename().string() + "." + std::to_string(getpid()) + "." +
+        std::to_string(g_store_counter.fetch_add(1))))
+          .string();
   auto copy_result = wcl::reflink_or_copy_file(path, temp, mode, reflink_supported_);
   if (!copy_result) {
     fs::remove(temp, ec);
@@ -124,13 +133,18 @@ wcl::result<ContentHash, CASError> Cas::store_blob_from_file(const std::string& 
     reflink_supported_ = false;
   }
 
-  // Hash what we actually stored
-  auto hash_result = ContentHash::from_file(temp);
-  if (!hash_result) {
-    fs::remove(temp, ec);
-    return wcl::make_error<ContentHash, CASError>(CASError::IOError);
+  ContentHash hash;
+  if (known_hash) {
+    hash = *known_hash;
+  } else {
+    // Hash what we actually staged, not the live source path.
+    auto hash_result = ContentHash::from_file(temp);
+    if (!hash_result) {
+      fs::remove(temp, ec);
+      return wcl::make_error<ContentHash, CASError>(CASError::IOError);
+    }
+    hash = *hash_result;
   }
-  ContentHash hash = *hash_result;
 
   // Check if blob already exists
   std::string dest = blob_path(hash);
@@ -156,8 +170,13 @@ wcl::result<ContentHash, CASError> Cas::store_blob_from_file(const std::string& 
   return wcl::make_result<ContentHash, CASError>(hash);
 }
 
-wcl::result<ContentHash, CASError> Cas::store_blob(const std::string& data) {
-  ContentHash hash = ContentHash::from_string(data);
+wcl::result<ContentHash, CASError> Cas::store_blob_from_file(const std::string& path) {
+  return store_blob_from_file_impl(path, std::nullopt);
+}
+
+wcl::result<ContentHash, CASError> Cas::store_blob_impl(
+    const std::string& data, const std::optional<ContentHash>& known_hash) {
+  ContentHash hash = known_hash.value_or(ContentHash::from_string(data));
 
   // Check if blob already exists
   std::string dest = blob_path(hash);
@@ -195,6 +214,28 @@ wcl::result<ContentHash, CASError> Cas::store_blob(const std::string& data) {
   }
 
   return wcl::make_result<ContentHash, CASError>(hash);
+}
+
+wcl::result<ContentHash, CASError> Cas::store_blob(const std::string& data) {
+  return store_blob_impl(data, std::nullopt);
+}
+
+wcl::result<bool, CASError> Cas::store_blob_from_file_with_hash(const std::string& path,
+                                                                const ContentHash& hash) {
+  auto result = store_blob_from_file_impl(path, hash);
+  if (!result) {
+    return wcl::make_error<bool, CASError>(result.error());
+  }
+  return wcl::make_result<bool, CASError>(true);
+}
+
+wcl::result<bool, CASError> Cas::store_blob_with_hash(const std::string& data,
+                                                      const ContentHash& hash) {
+  auto result = store_blob_impl(data, hash);
+  if (!result) {
+    return wcl::make_error<bool, CASError>(result.error());
+  }
+  return wcl::make_result<bool, CASError>(true);
 }
 
 wcl::result<std::string, CASError> Cas::read_blob(const ContentHash& hash) const {
@@ -265,5 +306,4 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
 
   return wcl::make_result<bool, CASError>(true);
 }
-
 }  // namespace cas

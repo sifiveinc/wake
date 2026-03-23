@@ -34,7 +34,11 @@ COMMON_CPP  := $(foreach dir,$(COMMON_DIRS),$(wildcard $(dir)/*.cpp))
 COMMON_OBJS := src/json/jlexer.o \
                $(patsubst %.cpp,%.o,$(COMMON_CPP)) $(patsubst %.c,%.o,$(COMMON_C))
 
-WAKE_DIRS := $(COMMON_DIRS) src/dst src/optimizer src/parser src/runtime src/types src/wcl tools/wake
+# CAS objects needed by fuse-waked for storing job outputs
+CAS_CPP     := $(wildcard src/cas/*.cpp)
+CAS_OBJS    := $(patsubst %.cpp,%.o,$(CAS_CPP)) vendor/blake2/blake2b-ref.o
+
+WAKE_DIRS := $(COMMON_DIRS) src/cas src/dst src/optimizer src/parser src/runtime src/types src/wcl tools/wake
 WAKE_C    := $(foreach dir,$(WAKE_DIRS),$(wildcard $(dir)/*.c)) \
              vendor/blake2/blake2b-ref.c vendor/utf8proc/utf8proc.c \
              vendor/siphash/siphash.c vendor/whereami/whereami.c \
@@ -104,16 +108,16 @@ static:	wake.db
 bin/wake:	$(WAKE_OBJS)
 	$(CXX) $(CFLAGS) $(CXX_VERSION) -o $@ $^ $(LDFLAGS) $(CORE_LDFLAGS)
 
-bin/wakebox:		tools/wakebox/main.cpp src/wakefs/*.cpp vendor/gopt/*.c $(COMMON_OBJS)
+bin/wakebox:		tools/wakebox/main.cpp src/wakefs/*.cpp vendor/gopt/*.c $(COMMON_OBJS) $(CAS_OBJS)
 	$(CXX) $(CFLAGS) $(LOCAL_CFLAGS) $(CXX_VERSION) $^ -o $@ $(LDFLAGS) $(CORE_LDFLAGS)
 
-lib/wake/fuse-waked:	tools/fuse-waked/main.cpp $(COMMON_OBJS)
+lib/wake/fuse-waked:	tools/fuse-waked/main.cpp $(COMMON_OBJS) $(CAS_OBJS)
 	$(CXX) $(CFLAGS) $(LOCAL_CFLAGS) $(FUSE_CFLAGS) $(CXX_VERSION) $^ -o $@ $(LDFLAGS)  $(CORE_LDFLAGS) $(FUSE_LDFLAGS)
 
-lib/wake/shim-wake:	tools/shim-wake/main.o vendor/blake2/blake2b-ref.o src/wcl/filepath.o
-	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(CORE_LDFLAGS)
+lib/wake/shim-wake:	tools/shim-wake/main.o $(COMMON_OBJS) $(CAS_OBJS)
+	$(CXX) $(CFLAGS) -o $@ $^ $(LOCAL_CFLAGS) $(CXX_VERSION) $(LDFLAGS) $(CORE_LDFLAGS)
 
-lib/wake/wake-hash: tools/wake-hash/main.o vendor/blake2/blake2b-ref.o $(COMMON_OBJS)
+lib/wake/wake-hash: tools/wake-hash/main.o $(COMMON_OBJS) $(CAS_OBJS)
 	$(CXX) $(CFLAGS) -o $@ $^ $(LOCAL_CFLAGS) $(CXX_VERSION) $(LDFLAGS) $(CORE_LDFLAGS)
 
 bin/wake-migrate: tools/wake-migrate/main.o $(COMMON_OBJS)
