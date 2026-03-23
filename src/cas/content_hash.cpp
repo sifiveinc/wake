@@ -122,4 +122,9 @@ bool ContentHash::operator<(const ContentHash& other) const {
   return false;
 }
 
+bool is_directory_hash_sentinel(const std::string& hash) {
+  return hash ==
+         "0000000000000000000000000000000000000000000000000000000000000000";
+}
+
 }  // namespace cas

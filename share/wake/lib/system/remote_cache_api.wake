@@ -1144,8 +1144,13 @@ def hashUsage =
 
 # RSC version of computing hashes for files, similar to Hashcode target in path.wake
 def rscHashFile (file: String): Result String Error =
+    def addCasHashEnv = match (getenv "WAKE_CAS")
+        Some value -> setPlanEnvVar "WAKE_CAS" value
+        None -> identity
+
     def hashPlan cmd =
         Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+        | addCasHashEnv
 
     def hashJob =
         hashPlan ("<hash>", file, Nil)
@@ -1160,10 +1165,11 @@ def rscHashFile (file: String): Result String Error =
     require Pass stdout = hashJob.getJobStdout
     else failWithError "rsc: Failed to get stdout for hash job"
 
-    def fileHash =
+    def hashLines =
         stdout
-        | extract `(.{64}).*`
+        | tokenize `\n`
+        | filter (_ !=* "")
 
-    match fileHash
-        (hash, Nil) -> Pass hash
+    match hashLines
+        hash, Nil -> Pass hash
         _ -> failWithError "rsc: No hash found in output for file {file}"

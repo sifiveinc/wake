@@ -31,88 +31,23 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#include "blake2/blake2.h"
-#include "compat/nofollow.h"
+#include "cas/resolve_path.h"
 #include "wcl/filepath.h"
 
-// Can increase to 64 if needed
-#define HASH_BYTES 32
-
-static int do_hash_dir() {
-  for (int i = 0; i < HASH_BYTES; ++i) printf("00");
-  printf("\n");
-  return 0;
-}
-
-static int do_hash_link(const char *link) {
-  blake2b_state S;
-  uint8_t hash[HASH_BYTES];
-  constexpr ssize_t len = 8192;
-  char buffer[len];
-
-  ssize_t out;
-  while (len == (out = readlink(link, buffer, len))) {
-    fprintf(stderr, "shim hash readlink(%s): symlink with more than 8192 bytes\n", link);
-    return 1;
-  }
-
-  if (out == -1) {
-    fprintf(stderr, "shim hash readlink(%s): %s\n", link, strerror(errno));
-    return 1;
-  }
-
-  blake2b_init(&S, sizeof(hash));
-  blake2b_update(&S, (uint8_t *)buffer, out);
-  blake2b_final(&S, &hash[0], sizeof(hash));
-
-  for (int i = 0; i < (int)sizeof(hash); ++i) printf("%02x", hash[i]);
-  printf("\n");
-
-  return 0;
-}
-
-static int do_hash_file(const char *file, int fd) {
-  blake2b_state S;
-  uint8_t hash[HASH_BYTES], buffer[8192];
-  ssize_t got;
-
-  blake2b_init(&S, sizeof(hash));
-  while ((got = read(fd, &buffer[0], sizeof(buffer))) > 0) blake2b_update(&S, &buffer[0], got);
-  blake2b_final(&S, &hash[0], sizeof(hash));
-
-  if (got < 0) {
-    fprintf(stderr, "shim hash read(%s): %s\n", file, strerror(errno));
-    return 1;
-  }
-
-  for (int i = 0; i < (int)sizeof(hash); ++i) printf("%02x", hash[i]);
-  printf("\n");
-
-  return 0;
-}
+static bool use_cas_hashes() { return getenv("WAKE_CAS") != nullptr; }
 
 static int do_hash(const char *file) {
-  struct stat stat;
-  int fd;
+  auto policy = use_cas_hashes() ? cas::SpecialFilePolicy::Reject
+                                 : cas::SpecialFilePolicy::LegacyExoticHash;
 
-  fd = open(file, O_RDONLY | O_NOFOLLOW);
-  if (fd == -1) {
-    if (errno == EISDIR) return do_hash_dir();
-    if (errno == ELOOP || errno == EMLINK) return do_hash_link(file);
-    fprintf(stderr, "shim hash open(%s): %s\n", file, strerror(errno));
+  auto result = cas::resolve_path(file, policy);
+  if (!result) {
+    fprintf(stderr, "shim hash: %s\n", result.error().c_str());
     return 1;
   }
 
-  if (fstat(fd, &stat) != 0) {
-    if (errno == EISDIR) return do_hash_dir();
-    fprintf(stderr, "shim hash fstat(%s): %s\n", file, strerror(errno));
-    return 1;
-  }
-
-  if (S_ISDIR(stat.st_mode)) return do_hash_dir();
-  if (S_ISLNK(stat.st_mode)) return do_hash_link(file);
-
-  return do_hash_file(file, fd);
+  printf("%s\n", result->hash.c_str());
+  return 0;
 }
 
 int main(int argc, char **argv) {

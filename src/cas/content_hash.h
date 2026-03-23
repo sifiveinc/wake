@@ -56,4 +56,6 @@ struct ContentHash {
   bool operator<(const ContentHash& other) const;
 };
 
+bool is_directory_hash_sentinel(const std::string& hash);
+
 }  // namespace cas
