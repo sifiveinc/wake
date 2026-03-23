@@ -150,12 +150,12 @@ def writeRunner (content: String) =
         require Some mode = int smode
         else
             Some "write {path}: Unable to convert mode to Integer ({smode})".makeError
-            | RunnerOutput Nil Nil Nil emptyUsage
+            | RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage
 
         require True = mode >= 0 && mode <= 0x1ff
         else
             Some "write {path}: Invalid mode ({strOctal mode})".makeError
-            | RunnerOutput Nil Nil Nil emptyUsage
+            | RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage
 
         def writeTask = primWrite mode path content
 
@@ -170,12 +170,12 @@ def writeRunner (content: String) =
 
         # Wait for the virtual job to complete
         match writeTask
-            Fail msg -> RunnerOutput fileInputs Nil Nil usage (Some msg.makeError)
+            Fail msg -> RunnerOutput fileInputs (OutputPaths Nil) Nil usage (Some msg.makeError)
             Pass path ->
                 def cleanable = (path, Nil)
-                def fileOutputs = fnOutputs cleanable
+                def outputPaths = fnOutputs cleanable
 
-                RunnerOutput fileInputs fileOutputs cleanable usage runnerError
+                RunnerOutput fileInputs (OutputPaths outputPaths) cleanable usage runnerError
 
     makeRunner "write" run
 
@@ -303,12 +303,12 @@ def mkdirRunner: Runner =
         require Some mode = int smode
         else
             Some "write {path}: Unable to convert mode to Integer ({smode})".makeError
-            | RunnerOutput Nil Nil Nil emptyUsage
+            | RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage
 
         require True = mode >= 0 && mode <= 0x1ff
         else
             Some "mkdir {path}: Invalid mode ({smode})".makeError
-            | RunnerOutput Nil Nil Nil emptyUsage
+            | RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage
 
         def mkdirTask = primMkdir mode path
 
@@ -323,12 +323,12 @@ def mkdirRunner: Runner =
 
         # Wait for the virtual job to complete
         match mkdirTask
-            Fail msg -> RunnerOutput fileInputs Nil Nil usage (Some msg.makeError)
+            Fail msg -> RunnerOutput fileInputs (OutputPaths Nil) Nil usage (Some msg.makeError)
             Pass path ->
                 def cleanable = (path, Nil)
-                def fileOutputs = fnOutputs cleanable
+                def outputPaths = fnOutputs cleanable
 
-                RunnerOutput fileInputs fileOutputs cleanable usage runnerError
+                RunnerOutput fileInputs (OutputPaths outputPaths) cleanable usage runnerError
 
     makeRunner "mkdir" run
 

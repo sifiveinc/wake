@@ -1,0 +1,210 @@
+# Copyright 2026 SiFive, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You should have received a copy of LICENSE.Apache2 along with
+# this software. If not, you may obtain a copy at
+#
+#    https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+package wake
+
+# Metadata for a staged regular file or hardlink emitted by the FUSE runner.
+export tuple StagingFileOutput =
+    export DestPath: String
+    export StagingPath: String
+    export Mode: Integer
+    export MtimeSec: Integer
+    export MtimeNsec: Integer
+
+# Metadata for a staged symlink emitted by the FUSE runner.
+export tuple StagingSymlinkOutput =
+    export DestPath: String
+    export Target: String
+
+# Metadata for a staged directory emitted by the FUSE runner.
+export tuple StagingDirectoryOutput =
+    export DestPath: String
+    export Mode: Integer
+
+# Parsed staged output variants coming back from the JSON/FUSE result payload.
+export data StagingItem =
+    StagingFile StagingFileOutput
+    StagingHardlink StagingFileOutput
+    StagingSymlink StagingSymlinkOutput
+    StagingDirectory StagingDirectoryOutput
+
+# Output values normalized so job finalization can handle workspace and staged outputs uniformly.
+export data ResolvedOutput =
+    ResolvedWorkspace Path Integer
+    ResolvedStaged StagingItem Path Integer
+
+# Returns the final workspace destination path for any staged item.
+export def getStagingItemDestPath (item: StagingItem): String = match item
+    StagingFile (StagingFileOutput destPath _ _ _ _) -> destPath
+    StagingHardlink (StagingFileOutput destPath _ _ _ _) -> destPath
+    StagingSymlink (StagingSymlinkOutput destPath _) -> destPath
+    StagingDirectory (StagingDirectoryOutput destPath _) -> destPath
+
+# Extracts the stored Path and mode pair from either kind of resolved output.
+export def getResolvedOutputValue (resolvedOutput: ResolvedOutput): Pair Path Integer = match resolvedOutput
+    ResolvedWorkspace path mode -> Pair path mode
+    ResolvedStaged _ path mode -> Pair path mode
+
+# Returns the final workspace path name for a resolved output.
+export def getResolvedOutputPathName (resolvedOutput: ResolvedOutput): String =
+    def Pair path _ = getResolvedOutputValue resolvedOutput
+    path.getPathName
+
+# Linux generally ignores symlink mode bits, so use a synthetic 0777 when normalizing staged symlinks.
+export def defaultSymlinkModeBits: Integer = 511
+
+# Wraps a staged item and its resolved hash/path metadata into the common ResolvedOutput shape.
+def resolvedStagedOutput (item: StagingItem) (pathType: PathType) (hash: String) (mode: Integer): ResolvedOutput =
+    ResolvedStaged item (mkPath (getStagingItemDestPath item) pathType hash) mode
+
+# Reads the staged item type string from the JSON payload for one destination path.
+def stagingItemType (destPath: String) (itemInfo: JValue): Result String Error =
+    require Some itemType =
+        itemInfo // `type`
+        | getJString
+    else failWithError "Missing type for {destPath}"
+
+    Pass itemType
+
+# Parses the JSON metadata shared by staged files and hardlinks.
+def fileLikeStagingOutput (destPath: String) (itemType: String) (itemInfo: JValue): Result StagingFileOutput Error =
+    require Some stagingPath =
+        itemInfo // `staging_path`
+        | getJString
+    else failWithError "Missing staging_path for {itemType} {destPath}"
+
+    require Some mode =
+        itemInfo // `mode`
+        | getJInteger
+    else failWithError "Missing mode for {itemType} {destPath}"
+
+    require Some mtimeSec =
+        itemInfo // `mtime_sec`
+        | getJInteger
+    else failWithError "Missing mtime_sec for {itemType} {destPath}"
+
+    require Some mtimeNsec =
+        itemInfo // `mtime_nsec`
+        | getJInteger
+    else failWithError "Missing mtime_nsec for {itemType} {destPath}"
+
+    Pass (StagingFileOutput destPath stagingPath mode mtimeSec mtimeNsec)
+
+# Parses the JSON metadata for a staged symlink.
+def symlinkStagingOutput (destPath: String) (itemInfo: JValue): Result StagingSymlinkOutput Error =
+    require Some symlinkTarget =
+        itemInfo // `target`
+        | getJString
+    else failWithError "Missing target for symlink {destPath}"
+
+    Pass (StagingSymlinkOutput destPath symlinkTarget)
+
+# Parses the JSON metadata for a staged directory.
+def directoryStagingOutput (destPath: String) (itemInfo: JValue): Result StagingDirectoryOutput Error =
+    require Some mode =
+        itemInfo // `mode`
+        | getJInteger
+    else failWithError "Missing mode for directory {destPath}"
+
+    Pass (StagingDirectoryOutput destPath mode)
+
+# Converts one staging_files JSON entry into a typed staged-output value.
+def parseStagingEntry (Pair destPath itemInfo): Result StagingItem Error =
+    match (stagingItemType destPath itemInfo)
+        Fail err -> Fail err
+        Pass itemType ->
+            if itemType ==* "file" then
+                match (fileLikeStagingOutput destPath itemType itemInfo)
+                    Pass fileOutput -> Pass (StagingFile fileOutput)
+                    Fail err -> Fail err
+            else if itemType ==* "hardlink" then
+                match (fileLikeStagingOutput destPath itemType itemInfo)
+                    Pass fileOutput -> Pass (StagingHardlink fileOutput)
+                    Fail err -> Fail err
+            else if itemType ==* "symlink" then
+                match (symlinkStagingOutput destPath itemInfo)
+                    Pass symlinkOutput -> Pass (StagingSymlink symlinkOutput)
+                    Fail err -> Fail err
+            else if itemType ==* "directory" then
+                directoryStagingOutput destPath itemInfo
+                | rmap StagingDirectory
+            else
+                failWithError "Unknown staging item type '{itemType}' for {destPath}"
+
+# Parses the full staging_files JSON object returned by the FUSE/JSON runner.
+export def parseStagingFiles (content: JValue): Result (List StagingItem) Error = match (content // `staging_files` | getJObject)
+    None -> Pass Nil
+    Some entries ->
+        entries
+        | map parseStagingEntry
+        | findFail
+
+# Picks the staged filesystem paths that still need hashing from disk.
+def stagingHashInput (item: StagingItem): Option (Pair String String) = match item
+    StagingFile (StagingFileOutput destPath stagingPath _ _ _) -> Some (Pair destPath stagingPath)
+    StagingHardlink (StagingFileOutput destPath stagingPath _ _ _) -> Some (Pair destPath stagingPath)
+    _ -> None
+
+# Converts staged metadata into ResolvedOutput values by hashing staged files/hardlinks from their
+# staging paths, deriving hashes for symlinks/directories, and rebuilding Path values at the final
+# destination paths with mode bits for job finalization.
+export def resolveStagingOutputs (stagingItems: List StagingItem): Result (List ResolvedOutput) Error =
+    def hashInputs =
+        stagingItems
+        | mapPartial stagingHashInput
+
+    def stagedFileHashesResult: Result (List (Pair Path Integer)) Error =
+        resolvePathInfos (map getPairSecond hashInputs)
+
+    match stagedFileHashesResult
+        Fail err -> Fail err
+        Pass stagedFileHashes ->
+            def stagedFileHashesByDest =
+                zip hashInputs stagedFileHashes
+
+            # Looks up the hashed staging-path result for one final destination path.
+            def lookupStagedFileHash (destPath: String): Result Path Error =
+                match (find (\(Pair (Pair entryDest _) _) entryDest ==* destPath) stagedFileHashesByDest)
+                    Some (Pair (Pair _ (Pair hashedPath _)) _) -> Pass hashedPath
+                    None -> failWithError "Missing hashed staging data for {destPath}"
+
+            # Converts each staged item into the normalized resolved form expected by later CAS/job code.
+            def processStagingItem (item: StagingItem): Result ResolvedOutput Error = match item
+                StagingFile (StagingFileOutput destPath _ mode _ _) ->
+                    match (lookupStagedFileHash destPath)
+                        Fail err -> Fail err
+                        Pass hashedPath ->
+                            def hash = hashedPath.getPathHash
+
+                            Pass (resolvedStagedOutput item PathTypeRegularFile hash mode)
+                StagingHardlink (StagingFileOutput destPath _ mode _ _) ->
+                    match (lookupStagedFileHash destPath)
+                        Fail err -> Fail err
+                        Pass hashedPath ->
+                            def hash = hashedPath.getPathHash
+
+                            Pass (resolvedStagedOutput item PathTypeRegularFile hash mode)
+                StagingSymlink (StagingSymlinkOutput _ symlinkTarget) ->
+                    def hash = hashString symlinkTarget
+                    # Linux generally ignores symlink mode bits, so carry the synthetic symlink mode here.
+                    def mode = defaultSymlinkModeBits
+
+                    Pass (resolvedStagedOutput item PathTypeSymlink hash mode)
+                StagingDirectory (StagingDirectoryOutput _ mode) ->
+                    Pass (resolvedStagedOutput item PathTypeDirectory dirHash mode)
+
+            stagingItems
+            | map processStagingItem
+            | findFail
