@@ -37,8 +37,8 @@
 static bool use_cas_hashes() { return getenv("WAKE_CAS") != nullptr; }
 
 static int do_hash(const char *file) {
-  auto policy = use_cas_hashes() ? cas::SpecialFilePolicy::Reject
-                                 : cas::SpecialFilePolicy::LegacyExoticHash;
+  auto policy =
+      use_cas_hashes() ? cas::SpecialFilePolicy::Reject : cas::SpecialFilePolicy::LegacyExoticHash;
 
   auto result = cas::resolve_path(file, policy);
   if (!result) {

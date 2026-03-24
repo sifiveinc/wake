@@ -22,11 +22,11 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <filesystem>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <filesystem>
 #include <iostream>
 
 #include "cas/cas.h"
@@ -85,8 +85,8 @@ wcl::result<std::string, std::string> read_symlink_target(const std::string& pat
   while (true) {
     ssize_t bytes_read = readlink(path.c_str(), buffer.data(), buffer.size());
     if (bytes_read < 0) {
-      return wcl::make_error<std::string, std::string>("readlink(" + path + "): " +
-                                                       strerror(errno));
+      return wcl::make_error<std::string, std::string>("readlink(" + path +
+                                                       "): " + strerror(errno));
     }
     if (static_cast<size_t>(bytes_read) < buffer.size()) {
       buffer.resize(bytes_read);
@@ -98,17 +98,16 @@ wcl::result<std::string, std::string> read_symlink_target(const std::string& pat
 
 }  // namespace
 
-// prim "cas_ingest_workspace_path" path: String -> type: String -> hash: String -> Result Unit Error
-// Ingests an already-hashed workspace path into CAS without recomputing its digest.
-// The path already exists in the workspace, so this does not materialize anything back to it.
+// prim "cas_ingest_workspace_path" path: String -> type: String -> hash: String -> Result Unit
+// Error Ingests an already-hashed workspace path into CAS without recomputing its digest. The path
+// already exists in the workspace, so this does not materialize anything back to it.
 static PRIMTYPE(type_cas_ingest_workspace_path) {
   TypeVar result;
   Data::typeResult.clone(result);
   result[0].unify(Data::typeUnit);
   result[1].unify(Data::typeString);
-  return args.size() == 3 && args[0]->unify(Data::typeString) &&
-         args[1]->unify(Data::typeString) && args[2]->unify(Data::typeString) &&
-         out->unify(result);
+  return args.size() == 3 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
+         args[2]->unify(Data::typeString) && out->unify(result);
 }
 
 static PRIMFN(prim_cas_ingest_workspace_path) {
@@ -172,8 +171,7 @@ static PRIMFN(prim_cas_ingest_workspace_path) {
 // prim "cas_has_blob" hash: String -> Boolean
 // Checks if a CAS blob exists in the store.
 static PRIMTYPE(type_cas_has_blob) {
-  return args.size() == 1 && args[0]->unify(Data::typeString) &&
-         out->unify(Data::typeBoolean);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(Data::typeBoolean);
 }
 
 static PRIMFN(prim_cas_has_blob) {
@@ -199,16 +197,15 @@ static PRIMFN(prim_cas_has_blob) {
   RETURN(claim_bool(runtime.heap, exists));
 }
 
-// prim "cas_materialize_file" hash: String -> destPath: String -> mode: Integer -> Result Unit Error
-// Materializes a file blob from CAS to the filesystem.
+// prim "cas_materialize_file" hash: String -> destPath: String -> mode: Integer -> Result Unit
+// Error Materializes a file blob from CAS to the filesystem.
 static PRIMTYPE(type_cas_materialize_file) {
   TypeVar result;
   Data::typeResult.clone(result);
   result[0].unify(Data::typeUnit);
   result[1].unify(Data::typeString);  // Error message as String, converted to Error in Wake
-  return args.size() == 3 && args[0]->unify(Data::typeString) &&
-         args[1]->unify(Data::typeString) && args[2]->unify(Data::typeInteger) &&
-         out->unify(result);
+  return args.size() == 3 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
+         args[2]->unify(Data::typeInteger) && out->unify(result);
 }
 
 static PRIMFN(prim_cas_materialize_file) {
@@ -246,8 +243,9 @@ static PRIMFN(prim_cas_materialize_file) {
   RETURN(claim_result(runtime.heap, true, claim_unit(runtime.heap)));
 }
 
-// prim "cas_materialize_item" destPath type hashOrTarget mode mtimeSec mtimeNsec -> Result Unit Error
-// Materialize an item from CAS to workspace (files already in CAS) or create symlink/directory.
+// prim "cas_materialize_item" destPath type hashOrTarget mode mtimeSec mtimeNsec -> Result Unit
+// Error Materialize an item from CAS to workspace (files already in CAS) or create
+// symlink/directory.
 // - type="file": hashOrTarget = file hash, uses mode/mtime
 // - type="symlink": hashOrTarget = hash of the symlink target path blob
 // - type="directory": hashOrTarget = "" (unused), uses mode
@@ -256,12 +254,12 @@ static PRIMTYPE(type_cas_materialize_item) {
   Data::typeResult.clone(result);
   result[0].unify(Data::typeUnit);
   result[1].unify(Data::typeString);  // Error message as String, converted to Error in Wake
-  return args.size() == 6 && args[0]->unify(Data::typeString) &&   // destPath
-         args[1]->unify(Data::typeString) &&                       // type
-         args[2]->unify(Data::typeString) &&                       // hashOrTarget
-         args[3]->unify(Data::typeInteger) &&                      // mode
-         args[4]->unify(Data::typeInteger) &&                      // mtimeSec
-         args[5]->unify(Data::typeInteger) &&                      // mtimeNsec
+  return args.size() == 6 && args[0]->unify(Data::typeString) &&  // destPath
+         args[1]->unify(Data::typeString) &&                      // type
+         args[2]->unify(Data::typeString) &&                      // hashOrTarget
+         args[3]->unify(Data::typeInteger) &&                     // mode
+         args[4]->unify(Data::typeInteger) &&                     // mtimeSec
+         args[5]->unify(Data::typeInteger) &&                     // mtimeNsec
          out->unify(result);
 }
 
@@ -338,9 +336,8 @@ static PRIMFN(prim_cas_materialize_item) {
 
     auto target_result = store->read_blob(hash);
     if (!target_result) {
-      std::string msg =
-          "Failed to materialize symlink " + std::string(hash_or_target->c_str()) + " to " +
-          dest_str;
+      std::string msg = "Failed to materialize symlink " + std::string(hash_or_target->c_str()) +
+                        " to " + dest_str;
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));
@@ -395,9 +392,9 @@ static PRIMFN(prim_cas_materialize_item) {
   RETURN(claim_result(runtime.heap, true, claim_unit(runtime.heap)));
 }
 
-// prim "cas_ingest_staged_item" destPath type stagingPathOrTarget hash mode mtimeSec mtimeNsec -> Result Unit Error
-// Unified output ingestion step after hashing has already happened in Wake.
-// This step also materializes or creates the final workspace item.
+// prim "cas_ingest_staged_item" destPath type stagingPathOrTarget hash mode mtimeSec mtimeNsec ->
+// Result Unit Error Unified output ingestion step after hashing has already happened in Wake. This
+// step also materializes or creates the final workspace item.
 // - type="file": stagingPathOrTarget = staging path, uses precomputed hash/mode/mtime
 // - type="symlink": stagingPathOrTarget = symlink target, uses precomputed hash
 // - type="directory": stagingPathOrTarget = "" (unused), uses mode
@@ -406,13 +403,13 @@ static PRIMTYPE(type_cas_ingest_staged_item) {
   Data::typeResult.clone(result);
   result[0].unify(Data::typeUnit);
   result[1].unify(Data::typeString);  // Error message as String, converted to Error in Wake
-  return args.size() == 7 && args[0]->unify(Data::typeString) &&   // destPath
-         args[1]->unify(Data::typeString) &&                       // type
-         args[2]->unify(Data::typeString) &&                       // stagingPathOrTarget
-         args[3]->unify(Data::typeString) &&                       // hash
-         args[4]->unify(Data::typeInteger) &&                      // mode
-         args[5]->unify(Data::typeInteger) &&                      // mtimeSec
-         args[6]->unify(Data::typeInteger) &&                      // mtimeNsec
+  return args.size() == 7 && args[0]->unify(Data::typeString) &&  // destPath
+         args[1]->unify(Data::typeString) &&                      // type
+         args[2]->unify(Data::typeString) &&                      // stagingPathOrTarget
+         args[3]->unify(Data::typeString) &&                      // hash
+         args[4]->unify(Data::typeInteger) &&                     // mode
+         args[5]->unify(Data::typeInteger) &&                     // mtimeSec
+         args[6]->unify(Data::typeInteger) &&                     // mtimeNsec
          out->unify(result);
 }
 
@@ -462,7 +459,8 @@ static PRIMFN(prim_cas_ingest_staged_item) {
     }
 
     if (access(staging_path.c_str(), F_OK) == 0) {
-      auto store_result = store->store_blob_from_file_with_hash(staging_path.c_str(), expected_hash);
+      auto store_result =
+          store->store_blob_from_file_with_hash(staging_path.c_str(), expected_hash);
       if (!store_result) {
         std::string msg = "Failed to store staging file in CAS: " + staging_path;
         runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
@@ -480,8 +478,8 @@ static PRIMFN(prim_cas_ingest_staged_item) {
     time_t mtime_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
     long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
 
-    auto mat_result = store->materialize_blob(expected_hash, dest_str.c_str(), mode, mtime_sec,
-                                              mtime_nsec);
+    auto mat_result =
+        store->materialize_blob(expected_hash, dest_str.c_str(), mode, mtime_sec, mtime_nsec);
     if (!mat_result) {
       std::string msg = "Failed to materialize blob " + expected_hash.to_hex() + " to " + dest_str;
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
@@ -494,7 +492,8 @@ static PRIMFN(prim_cas_ingest_staged_item) {
     }
 
   } else if (type == "symlink") {
-    // Handle symlink: insert the target bytes into CAS under the precomputed hash, then materialize.
+    // Handle symlink: insert the target bytes into CAS under the precomputed hash, then
+    // materialize.
     cas::Cas* store = ctx->get_store(".");
     if (!store) {
       runtime.heap.reserve(reserve_result() + String::reserve(28));
@@ -521,7 +520,8 @@ static PRIMFN(prim_cas_ingest_staged_item) {
 
     (void)unlink(dest_str.c_str());
     if (symlink(target.c_str(), dest_str.c_str()) != 0) {
-      std::string msg = "Failed to create symlink " + dest_str + " -> " + target + ": " + strerror(errno);
+      std::string msg =
+          "Failed to create symlink " + dest_str + " -> " + target + ": " + strerror(errno);
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));

@@ -76,7 +76,7 @@ class Cas {
   // Read a blob's contents
   wcl::result<std::string, CASError> read_blob(const ContentHash& hash) const;
 
- // Materialize a blob to a file path (uses reflink if possible)
+  // Materialize a blob to a file path (uses reflink if possible)
   wcl::result<bool, CASError> materialize_blob(const ContentHash& hash,
                                                const std::string& dest_path, mode_t mode,
                                                time_t mtime_sec, long mtime_nsec) const;

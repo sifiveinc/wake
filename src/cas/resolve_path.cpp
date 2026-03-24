@@ -17,8 +17,6 @@
 
 #include "resolve_path.h"
 
-#include "compat/nofollow.h"
-
 #include <errno.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -28,6 +26,7 @@
 #include <sstream>
 #include <vector>
 
+#include "compat/nofollow.h"
 #include "wcl/unique_fd.h"
 
 namespace cas {

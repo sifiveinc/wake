@@ -119,11 +119,10 @@ wcl::result<ContentHash, CASError> Cas::store_blob_from_file_impl(
   mode_t mode = static_cast<mode_t>(perms) & 07777;
 
   // Copy to staging area first.
-  std::string temp =
-      (fs::path(staging_dir_) /
-       (fs::path(path).filename().string() + "." + std::to_string(getpid()) + "." +
-        std::to_string(g_store_counter.fetch_add(1))))
-          .string();
+  std::string temp = (fs::path(staging_dir_) /
+                      (fs::path(path).filename().string() + "." + std::to_string(getpid()) + "." +
+                       std::to_string(g_store_counter.fetch_add(1))))
+                         .string();
   auto copy_result = wcl::reflink_or_copy_file(path, temp, mode, reflink_supported_);
   if (!copy_result) {
     fs::remove(temp, ec);

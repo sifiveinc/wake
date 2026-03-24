@@ -53,17 +53,20 @@ export def getStagingItemDestPath (item: StagingItem): String = match item
     StagingDirectory (StagingDirectoryOutput destPath _) -> destPath
 
 # Extracts the stored Path and mode pair from either kind of resolved output.
-export def getResolvedOutputValue (resolvedOutput: ResolvedOutput): Pair Path Integer = match resolvedOutput
-    ResolvedWorkspace path mode -> Pair path mode
-    ResolvedStaged _ path mode -> Pair path mode
+export def getResolvedOutputValue (resolvedOutput: ResolvedOutput): Pair Path Integer =
+    match resolvedOutput
+        ResolvedWorkspace path mode -> Pair path mode
+        ResolvedStaged _ path mode -> Pair path mode
 
 # Returns the final workspace path name for a resolved output.
 export def getResolvedOutputPathName (resolvedOutput: ResolvedOutput): String =
     def Pair path _ = getResolvedOutputValue resolvedOutput
+
     path.getPathName
 
 # Linux generally ignores symlink mode bits, so use a synthetic 0777 when normalizing staged symlinks.
-export def defaultSymlinkModeBits: Integer = 511
+export def defaultSymlinkModeBits: Integer =
+    511
 
 # Wraps a staged item and its resolved hash/path metadata into the common ResolvedOutput shape.
 def resolvedStagedOutput (item: StagingItem) (pathType: PathType) (hash: String) (mode: Integer): ResolvedOutput =
@@ -144,17 +147,19 @@ def parseStagingEntry (Pair destPath itemInfo): Result StagingItem Error =
                 failWithError "Unknown staging item type '{itemType}' for {destPath}"
 
 # Parses the full staging_files JSON object returned by the FUSE/JSON runner.
-export def parseStagingFiles (content: JValue): Result (List StagingItem) Error = match (content // `staging_files` | getJObject)
-    None -> Pass Nil
-    Some entries ->
-        entries
-        | map parseStagingEntry
-        | findFail
+export def parseStagingFiles (content: JValue): Result (List StagingItem) Error =
+    match (content // `staging_files` | getJObject)
+        None -> Pass Nil
+        Some entries ->
+            entries
+            | map parseStagingEntry
+            | findFail
 
 # Picks the staged filesystem paths that still need hashing from disk.
 def stagingHashInput (item: StagingItem): Option (Pair String String) = match item
     StagingFile (StagingFileOutput destPath stagingPath _ _ _) -> Some (Pair destPath stagingPath)
-    StagingHardlink (StagingFileOutput destPath stagingPath _ _ _) -> Some (Pair destPath stagingPath)
+    StagingHardlink (StagingFileOutput destPath stagingPath _ _ _) ->
+        Some (Pair destPath stagingPath)
     _ -> None
 
 # Converts staged metadata into ResolvedOutput values by hashing staged files/hardlinks from their
@@ -171,8 +176,7 @@ export def resolveStagingOutputs (stagingItems: List StagingItem): Result (List 
     match stagedFileHashesResult
         Fail err -> Fail err
         Pass stagedFileHashes ->
-            def stagedFileHashesByDest =
-                zip hashInputs stagedFileHashes
+            def stagedFileHashesByDest = zip hashInputs stagedFileHashes
 
             # Looks up the hashed staging-path result for one final destination path.
             def lookupStagedFileHash (destPath: String): Result Path Error =
@@ -198,6 +202,7 @@ export def resolveStagingOutputs (stagingItems: List StagingItem): Result (List 
                             Pass (resolvedStagedOutput item PathTypeRegularFile hash mode)
                 StagingSymlink (StagingSymlinkOutput _ symlinkTarget) ->
                     def hash = hashString symlinkTarget
+
                     # Linux generally ignores symlink mode bits, so carry the synthetic symlink mode here.
                     def mode = defaultSymlinkModeBits
 

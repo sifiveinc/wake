@@ -185,12 +185,11 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             # Workspace outputs are already at their final path, so CAS ingestion only stores them
             # in CAS. Staged outputs still need to be materialized to their final workspace path.
             def ingestResolvedOutput resolvedOutput = match resolvedOutput
-                ResolvedWorkspace path _mode ->
-                    match useCasHashes
-                        True ->
-                            ingestWorkspacePathInCas path
-                            | addErrorContext "Failed to ingest hashed workspace path {path.getPathName} into CAS"
-                        False -> Pass Unit
+                ResolvedWorkspace path _mode -> match useCasHashes
+                    True ->
+                        ingestWorkspacePathInCas path
+                        | addErrorContext "Failed to ingest hashed workspace path {path.getPathName} into CAS"
+                    False -> Pass Unit
                 ResolvedStaged item path mode -> match item
                     StagingFile (StagingFileOutput destPath stagingPath _ mtimeSec mtimeNsec) ->
                         casIngestStagedItem destPath "file" stagingPath path.getPathHash mode mtimeSec mtimeNsec
@@ -205,39 +204,35 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                         casIngestStagedItem destPath "directory" "" path.getPathHash mode 0 0
                         | addErrorContext "Creating directory {destPath}"
 
-            def resolvePublishedOutput resolvedOutputs destPath = match (find (\resolvedOutput getResolvedOutputPathName resolvedOutput ==* destPath) resolvedOutputs)
-                Some (Pair resolvedOutput _) -> Pass resolvedOutput
-                None -> failWithError "Missing output metadata for {destPath}"
+            def resolvePublishedOutput resolvedOutputs destPath =
+                match (find (\resolvedOutput getResolvedOutputPathName resolvedOutput ==* destPath) resolvedOutputs)
+                    Some (Pair resolvedOutput _) -> Pass resolvedOutput
+                    None -> failWithError "Missing output metadata for {destPath}"
 
             # Split runner outputs into:
             # 1. resolvedOutputsToIngest: everything that must be ingested into CAS/workspace
             # 2. resolvedPublishedOutputs: the subset that should be stored/finalized as outputs
-            def Pair (Pair resolvedOutputsToIngest resolvedPublishedOutputs) preprocessRunnerError = match outputs
-                OutputPaths outputPaths ->
-                    # Ordinary workspace outputs: hash the filtered output paths and publish all of them.
-                    match (computeHashes outputPaths)
-                        Fail err -> Pair (Pair Nil Nil) (Some err)
-                        Pass hashedOutputs ->
-                            match (
-                                hashedOutputs
-                                | map resolveWorkspaceOutput
-                                | findFail
-                            )
-                                Pass resolvedOutputs -> Pair (Pair resolvedOutputs resolvedOutputs) runnerError
-                                Fail err -> Pair (Pair Nil Nil) (Some err)
-                OutputStaged (StagedOutputs filteredOutputPaths stagingItems) ->
-                    # Staged outputs: resolve all staged items so they can be ingested/materialized,
-                    # then use filteredOutputPaths to choose which resolved items are published.
-                    match (resolveStagingOutputs stagingItems)
-                        Fail err -> Pair (Pair Nil Nil) (Some err)
-                        Pass resolvedOutputs ->
-                            match (
-                                filteredOutputPaths
-                                | map (resolvePublishedOutput resolvedOutputs)
-                                | findFail
-                            )
-                                Pass publishedOutputs -> Pair (Pair resolvedOutputs publishedOutputs) runnerError
-                                Fail err -> Pair (Pair Nil Nil) (Some err)
+            def Pair (Pair resolvedOutputsToIngest resolvedPublishedOutputs) preprocessRunnerError =
+                match outputs
+                    OutputPaths outputPaths ->
+                        # Ordinary workspace outputs: hash the filtered output paths and publish all of them.
+                        match (computeHashes outputPaths)
+                            Fail err -> Pair (Pair Nil Nil) (Some err)
+                            Pass hashedOutputs ->
+                                match (hashedOutputs | map resolveWorkspaceOutput | findFail)
+                                    Pass resolvedOutputs ->
+                                        Pair (Pair resolvedOutputs resolvedOutputs) runnerError
+                                    Fail err -> Pair (Pair Nil Nil) (Some err)
+                    OutputStaged (StagedOutputs filteredOutputPaths stagingItems) ->
+                        # Staged outputs: resolve all staged items so they can be ingested/materialized,
+                        # then use filteredOutputPaths to choose which resolved items are published.
+                        match (resolveStagingOutputs stagingItems)
+                            Fail err -> Pair (Pair Nil Nil) (Some err)
+                            Pass resolvedOutputs ->
+                                match (filteredOutputPaths | map (resolvePublishedOutput resolvedOutputs) | findFail)
+                                    Pass publishedOutputs ->
+                                        Pair (Pair resolvedOutputs publishedOutputs) runnerError
+                                    Fail err -> Pair (Pair Nil Nil) (Some err)
 
             def ingestOutputsResult =
                 resolvedOutputsToIngest
@@ -247,6 +242,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             def finalPublishedOutputs = match ingestOutputsResult
                 Pass _ -> resolvedPublishedOutputs
                 Fail _ -> Nil
+
             # Add to DB while materializing the final path list so the stored metadata is
             # required to compute the output names passed into primJobFinish.
             def storedOutputPathsResult =
@@ -254,14 +250,17 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 | map storeResolvedOutput
                 | findFail
 
-            def finalRunnerError = match (preprocessRunnerError; ingestOutputsResult; storedOutputPathsResult)
-                Some err; _; _ -> Some err
-                None; Fail err; _ -> Some err
-                None; Pass _; Fail err -> Some err
-                None; Pass _; Pass _ -> None
+            def finalRunnerError =
+                match (preprocessRunnerError; ingestOutputsResult; storedOutputPathsResult)
+                    Some err; _; _ -> Some err
+                    None; Fail err; _ -> Some err
+                    None; Pass _; Fail err -> Some err
+                    None; Pass _; Pass _ -> None
 
             def resolvedOutputPaths = match storedOutputPathsResult
-                Pass storedOutputPaths -> storedOutputPaths | map getPathName
+                Pass storedOutputPaths ->
+                    storedOutputPaths
+                    | map getPathName
                 Fail _ -> Nil
 
             def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError

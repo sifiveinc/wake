@@ -385,18 +385,21 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         def defaultCleanableOutputs = specFile, resultFile, jsonOutputs
 
         def outputSetResult = match useCasHashes
-            True ->
-                match (parseStagingFiles content)
-                    Pass stagingItems ->
-                        def stagedOutputPaths =
-                            stagingItems
-                            | map getStagingItemDestPath
+            True -> match (parseStagingFiles content)
+                Pass stagingItems ->
+                    def stagedOutputPaths =
+                        stagingItems
+                        | map getStagingItemDestPath
 
-                        require True = empty filteredOutputPaths || ! empty stagingItems
-                        else failWithError "Missing staging_files metadata for CAS outputs"
+                    require True = empty filteredOutputPaths || ! empty stagingItems
+                    else failWithError "Missing staging_files metadata for CAS outputs"
 
-                        Pass (Pair (OutputStaged (StagedOutputs filteredOutputPaths stagingItems)) (specFile, resultFile, stagedOutputPaths))
-                    Fail err -> Fail err
+                    Pass (
+                        Pair
+                        (OutputStaged (StagedOutputs filteredOutputPaths stagingItems))
+                        (specFile, resultFile, stagedOutputPaths)
+                    )
+                Fail err -> Fail err
             False -> Pass (Pair (OutputPaths filteredOutputPaths) defaultCleanableOutputs)
 
         match (jobUsageResult; outputSetResult)

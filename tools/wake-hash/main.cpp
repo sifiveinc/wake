@@ -40,8 +40,8 @@
 static bool use_cas_hashes() { return getenv("WAKE_CAS") != nullptr; }
 
 static std::optional<cas::ResolvedPath> do_resolve(const char* file) {
-  auto policy = use_cas_hashes() ? cas::SpecialFilePolicy::Reject
-                                 : cas::SpecialFilePolicy::LegacyExoticHash;
+  auto policy =
+      use_cas_hashes() ? cas::SpecialFilePolicy::Reject : cas::SpecialFilePolicy::LegacyExoticHash;
 
   auto result = cas::resolve_path(file, policy);
   if (!result) {
