@@ -10,7 +10,7 @@ on:
 
 jobs:
     tarball:
-      runs-on: ubuntu-22.04
+      runs-on: ubuntu-22.04-x64-2_06afb7825116
       name: Tarball
       steps:
         - name: Clone wake
@@ -94,7 +94,7 @@ jobs:
             retention-days: 1
 
     docker_builds:
-      runs-on: ubuntu-22.04
+      runs-on: ubuntu-22.04-x64-2_06afb7825116
       needs: tarball
       name: Build ${{ matrix.target }}
       strategy:
@@ -132,8 +132,8 @@ jobs:
               test_cmd: rpm -i x86_64/*.rpm && cd tests && wake runTests
               install_src_glob: build/x86_64/*.rpm
 
-            - target: ubuntu_22_04
-              dockerfile: ubuntu-22.04
+            - target: ubuntu_22_04-x64-2
+              dockerfile: ubuntu-22.04-x64-2
               extra_docker_build_args: ''
               extra_docker_run_args: -w /$(ls -d build/wake-*)
               build_cmd: debuild -us -uc
@@ -223,7 +223,7 @@ jobs:
             path: release/${{ matrix.target }}
 
     docs:
-      runs-on: ubuntu-22.04
+      runs-on: ubuntu-22.04-x64-2_06afb7825116
       needs: tarball
       name: Docs
       steps:
@@ -257,7 +257,7 @@ jobs:
         name: github-pages
         url: ${{ steps.deployment.outputs.page_url }}
 
-      runs-on: ubuntu-22.04
+      runs-on: ubuntu-22.04-x64-2_06afb7825116
       needs: docs
       name: Deploy Docs to GH Pages
       steps:
@@ -269,7 +269,7 @@ jobs:
       # Only run the 'release' job if this workflow was triggered by the creation of a tag
       if: github.event_name == 'push' && github.ref_type == 'tag'
 
-      runs-on: ubuntu-22.04
+      runs-on: ubuntu-22.04-x64-2_06afb7825116
       needs: [tarball, docker_builds]
       name: Create Release
       steps:

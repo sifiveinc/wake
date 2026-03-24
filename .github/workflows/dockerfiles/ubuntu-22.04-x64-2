@@ -1,4 +1,4 @@
-FROM ubuntu:22.04
+FROM ubuntu:22.04-x64-2
 
 RUN apt-get update && apt-get install -y build-essential m4 debhelper devscripts git fuse libfuse-dev libgmp-dev libncurses5-dev libre2-dev libsqlite3-dev pkg-config squashfuse wget iproute2 jq libssl-dev
 
