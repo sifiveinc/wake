@@ -334,7 +334,7 @@ int main(int argc, char* argv[]) {
   std::string db_path = argv[1];
   sqlite3* db = nullptr;
 
-  if (sqlite3_open(db_path.c_str(), &db) != SQLITE_OK) {
+  if (sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK) {
     std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << std::endl;
     return 1;
   }
