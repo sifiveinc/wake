@@ -171,37 +171,57 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             run job (RunnerInput label cmd vis env dir stdin res prefix usage isatty finputs foutputs)
 
         def final _ =
-            def resolveWorkspaceOutput path =
-                require Pass (Some mode) = getCachedPathMode path.getPathName
-                else failWithError "Missing cached mode for output path {path.getPathName}"
-
-                Pass (ResolvedWorkspace path mode)
+            def withStoredPathInfo resolvedOutput storedPathInfo = match resolvedOutput
+                ResolvedWorkspace _ -> ResolvedWorkspace storedPathInfo
+                ResolvedStaged item _ -> ResolvedStaged item storedPathInfo
 
             def storeResolvedOutput resolvedOutput =
-                getResolvedOutputValue resolvedOutput
-                | storeHashedPathInfo
-                | Pass
+                resolvedOutput
+                | getResolvedOutputInfo
+                | storePathInfo
+                | withStoredPathInfo resolvedOutput
 
             # Workspace outputs are already at their final path, so CAS ingestion only stores them
             # in CAS. Staged outputs still need to be materialized to their final workspace path.
             def ingestResolvedOutput resolvedOutput = match resolvedOutput
-                ResolvedWorkspace path _mode -> match useCasHashes
+                ResolvedWorkspace pathInfo -> match useCasHashes
                     True ->
-                        ingestWorkspacePathInCas path
-                        | addErrorContext "Failed to ingest hashed workspace path {path.getPathName} into CAS"
+                        ingestWorkspacePathInCas pathInfo
+                        | addErrorContext "Failed to ingest hashed workspace path {pathInfo.getPathInfoName} into CAS"
                     False -> Pass Unit
-                ResolvedStaged item path mode -> match item
+                ResolvedStaged item pathInfo -> match item
                     StagingFile (StagingFileOutput destPath stagingPath _ mtimeSec mtimeNsec) ->
-                        casIngestStagedItem destPath "file" stagingPath path.getPathHash mode mtimeSec mtimeNsec
+                        casIngestStagedItem
+                        destPath
+                        "file"
+                        stagingPath
+                        pathInfo.getPathInfoHash
+                        pathInfo.getPathInfoMode
+                        mtimeSec
+                        mtimeNsec
                         | addErrorContext "Ingesting staged file {stagingPath} -> {destPath}"
                     StagingHardlink (StagingFileOutput destPath stagingPath _ mtimeSec mtimeNsec) ->
-                        casIngestStagedItem destPath "file" stagingPath path.getPathHash mode mtimeSec mtimeNsec
+                        casIngestStagedItem
+                        destPath
+                        "file"
+                        stagingPath
+                        pathInfo.getPathInfoHash
+                        pathInfo.getPathInfoMode
+                        mtimeSec
+                        mtimeNsec
                         | addErrorContext "Ingesting staged hardlink {stagingPath} -> {destPath}"
                     StagingSymlink (StagingSymlinkOutput destPath symlinkTarget) ->
-                        casIngestStagedItem destPath "symlink" symlinkTarget path.getPathHash mode 0 0
+                        casIngestStagedItem
+                        destPath
+                        "symlink"
+                        symlinkTarget
+                        pathInfo.getPathInfoHash
+                        pathInfo.getPathInfoMode
+                        0
+                        0
                         | addErrorContext "Ingesting staged symlink {destPath}"
                     StagingDirectory (StagingDirectoryOutput destPath _) ->
-                        casIngestStagedItem destPath "directory" "" path.getPathHash mode 0 0
+                        casIngestStagedItem destPath "directory" "" pathInfo.getPathInfoHash pathInfo.getPathInfoMode 0 0
                         | addErrorContext "Creating directory {destPath}"
 
             def resolvePublishedOutput resolvedOutputs destPath =
@@ -210,58 +230,53 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                     None -> failWithError "Missing output metadata for {destPath}"
 
             # Split runner outputs into:
-            # 1. resolvedOutputsToIngest: everything that must be ingested into CAS/workspace
-            # 2. resolvedPublishedOutputs: the subset that should be stored/finalized as outputs
-            def Pair (Pair resolvedOutputsToIngest resolvedPublishedOutputs) preprocessRunnerError =
+            # 1. resolvedOutputsToStore: everything that should be written into the files DB first
+            # 2. publishedOutputPaths: the subset that should be finalized as outputs
+            def Pair (Pair resolvedOutputsToStore publishedOutputPaths) preprocessRunnerError =
                 match outputs
                     OutputPaths outputPaths ->
                         # Ordinary workspace outputs: hash the filtered output paths and publish all of them.
                         match (computeHashes outputPaths)
                             Fail err -> Pair (Pair Nil Nil) (Some err)
                             Pass hashedOutputs ->
-                                match (hashedOutputs | map resolveWorkspaceOutput | findFail)
-                                    Pass resolvedOutputs ->
-                                        Pair (Pair resolvedOutputs resolvedOutputs) runnerError
-                                    Fail err -> Pair (Pair Nil Nil) (Some err)
+                                Pair (Pair (map ResolvedWorkspace hashedOutputs) outputPaths) runnerError
                     OutputStaged (StagedOutputs filteredOutputPaths stagingItems) ->
                         # Staged outputs: resolve all staged items so they can be ingested/materialized,
                         # then use filteredOutputPaths to choose which resolved items are published.
                         match (resolveStagingOutputs stagingItems)
                             Fail err -> Pair (Pair Nil Nil) (Some err)
                             Pass resolvedOutputs ->
-                                match (filteredOutputPaths | map (resolvePublishedOutput resolvedOutputs) | findFail)
-                                    Pass publishedOutputs ->
-                                        Pair (Pair resolvedOutputs publishedOutputs) runnerError
-                                    Fail err -> Pair (Pair Nil Nil) (Some err)
+                                Pair (Pair resolvedOutputs filteredOutputPaths) runnerError
+
+            # Store output metadata in the files table before CAS ingestion/materialization.
+            def storedOutputsToIngest =
+                resolvedOutputsToStore
+                | map storeResolvedOutput
+
+            def publishedOutputsResult =
+                publishedOutputPaths
+                | map (resolvePublishedOutput storedOutputsToIngest)
+                | findFail
 
             def ingestOutputsResult =
-                resolvedOutputsToIngest
+                storedOutputsToIngest
                 | map ingestResolvedOutput
                 | findFail
 
-            def finalPublishedOutputs = match ingestOutputsResult
-                Pass _ -> resolvedPublishedOutputs
-                Fail _ -> Nil
-
-            # Add to DB while materializing the final path list so the stored metadata is
-            # required to compute the output names passed into primJobFinish.
-            def storedOutputPathsResult =
-                finalPublishedOutputs
-                | map storeResolvedOutput
-                | findFail
+            def finalPublishedOutputs = match (publishedOutputsResult; ingestOutputsResult)
+                Pass publishedOutputs; Pass _ -> publishedOutputs
+                _; _ -> Nil
 
             def finalRunnerError =
-                match (preprocessRunnerError; ingestOutputsResult; storedOutputPathsResult)
+                match (preprocessRunnerError; publishedOutputsResult; ingestOutputsResult)
                     Some err; _; _ -> Some err
                     None; Fail err; _ -> Some err
                     None; Pass _; Fail err -> Some err
                     None; Pass _; Pass _ -> None
 
-            def resolvedOutputPaths = match storedOutputPathsResult
-                Pass storedOutputPaths ->
-                    storedOutputPaths
-                    | map getPathName
-                Fail _ -> Nil
+            def resolvedOutputPaths =
+                finalPublishedOutputs
+                | map getResolvedOutputPathName
 
             def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError
 
