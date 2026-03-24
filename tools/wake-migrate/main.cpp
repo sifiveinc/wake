@@ -275,10 +275,8 @@ static std::vector<Migration> get_migrations() {
          while (sqlite3_step(select_stmt) == SQLITE_ROW) {
            const unsigned char* path_txt = sqlite3_column_text(select_stmt, 0);
            const unsigned char* hash_txt = sqlite3_column_text(select_stmt, 1);
-           std::string path =
-               path_txt ? reinterpret_cast<const char*>(path_txt) : std::string();
-           std::string hash =
-               hash_txt ? reinterpret_cast<const char*>(hash_txt) : std::string();
+           std::string path = path_txt ? reinterpret_cast<const char*>(path_txt) : std::string();
+           std::string hash = hash_txt ? reinterpret_cast<const char*>(hash_txt) : std::string();
            std::string type = infer_file_type_from_path_or_hash(path, hash);
 
            sqlite3_bind_text(update_stmt, 1, type.c_str(), -1, SQLITE_TRANSIENT);

@@ -50,4 +50,3 @@ class CASContext {
 void prim_register_cas(CASContext* ctx, PrimMap& pmap);
 
 #endif
-

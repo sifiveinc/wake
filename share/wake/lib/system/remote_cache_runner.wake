@@ -375,14 +375,14 @@ def thirdBy (acceptFn: a => ThirdByGroup): (list: List a) => Triple (one: List a
 # Posts a completed job to the remote cache
 def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: String) (input: RunnerInput) (output: RunnerOutput): Result Unit Error =
     def outputSet = output.getRunnerOutputOutputs
+
     def filteredOutputPaths =
         outputSet
         | outputSetPathNames
 
     def cleanableOutputs = output.getRunnerOutputCleanableOutputs
     def hiddenOutputs = subtract scmp cleanableOutputs filteredOutputPaths
-    def isPublishedOutput (path: String): Boolean =
-        exists (_ ==* path) filteredOutputPaths
+    def isPublishedOutput (path: String): Boolean = exists (_ ==* path) filteredOutputPaths
 
     def statToGroup (Stat t _ _) = match t
         PathTypeRegularFile -> ThirdByGroupFirst
@@ -437,30 +437,29 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
         CachePostRequestOutputDirectory path (mode | mode2bits) hidden
 
     def outputUploadsResult = match outputSet
-        OutputPaths _ ->
-            match filteredOutputsStatThunk
-                Fail err -> Fail err
-                Pass (Triple regFiles directories symlinks) ->
-                    def fileUploads =
-                        regFiles
-                        | map uploadAndMakeFile
+        OutputPaths _ -> match filteredOutputsStatThunk
+            Fail err -> Fail err
+            Pass (Triple regFiles directories symlinks) ->
+                def fileUploads =
+                    regFiles
+                    | map uploadAndMakeFile
 
-                    def symlinksUpload =
-                        symlinks
-                        | map makeSymlink
+                def symlinksUpload =
+                    symlinks
+                    | map makeSymlink
 
-                    def publishedDirectoriesUpload =
-                        directories
-                        | map (makeDirectory False)
+                def publishedDirectoriesUpload =
+                    directories
+                    | map (makeDirectory False)
 
-                    match hiddenOutputsStatThunk
-                        Fail err -> Fail err
-                        Pass (Triple _ hiddenDirs _) ->
-                            def hiddenDirectoriesUpload =
-                                hiddenDirs
-                                | map (makeDirectory True)
+                match hiddenOutputsStatThunk
+                    Fail err -> Fail err
+                    Pass (Triple _ hiddenDirs _) ->
+                        def hiddenDirectoriesUpload =
+                            hiddenDirs
+                            | map (makeDirectory True)
 
-                            Pass (Triple fileUploads (publishedDirectoriesUpload ++ hiddenDirectoriesUpload) symlinksUpload)
+                        Pass (Triple fileUploads (publishedDirectoriesUpload ++ hiddenDirectoriesUpload) symlinksUpload)
         OutputStaged (StagedOutputs _ stagingItems) ->
             def stagedOutputPaths =
                 stagingItems
@@ -479,42 +478,46 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
                 CachePostRequestOutputFile destPath mode id
                 | Pass
 
-            def publishedFileUpload (item: StagingItem): Option (Result CachePostRequestOutputFile Error) = match item
-                StagingFile file ->
-                    if isPublishedOutput file.getStagingFileOutputDestPath then
-                        Some (uploadStagingFile file)
-                    else
-                        None
-                StagingHardlink file ->
-                    if isPublishedOutput file.getStagingFileOutputDestPath then
-                        Some (uploadStagingFile file)
-                    else
-                        None
-                _ -> None
+            def publishedFileUpload (item: StagingItem): Option (Result CachePostRequestOutputFile Error) =
+                match item
+                    StagingFile file ->
+                        if isPublishedOutput file.getStagingFileOutputDestPath then
+                            Some (uploadStagingFile file)
+                        else
+                            None
+                    StagingHardlink file ->
+                        if isPublishedOutput file.getStagingFileOutputDestPath then
+                            Some (uploadStagingFile file)
+                        else
+                            None
+                    _ -> None
 
-            def publishedSymlinkUpload (item: StagingItem): Option (Result CachePostRequestOutputSymlink Error) = match item
-                StagingSymlink (StagingSymlinkOutput destPath symlinkTarget) ->
-                    if isPublishedOutput destPath then
-                        Some (Pass (CachePostRequestOutputSymlink symlinkTarget destPath))
-                    else
-                        None
-                _ -> None
+            def publishedSymlinkUpload (item: StagingItem): Option (Result CachePostRequestOutputSymlink Error) =
+                match item
+                    StagingSymlink (StagingSymlinkOutput destPath symlinkTarget) ->
+                        if isPublishedOutput destPath then
+                            Some (Pass (CachePostRequestOutputSymlink symlinkTarget destPath))
+                        else
+                            None
+                    _ -> None
 
-            def publishedDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory = match item
-                StagingDirectory (StagingDirectoryOutput destPath mode) ->
-                    if isPublishedOutput destPath then
-                        Some (CachePostRequestOutputDirectory destPath mode False)
-                    else
-                        None
-                _ -> None
+            def publishedDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory =
+                match item
+                    StagingDirectory (StagingDirectoryOutput destPath mode) ->
+                        if isPublishedOutput destPath then
+                            Some (CachePostRequestOutputDirectory destPath mode False)
+                        else
+                            None
+                    _ -> None
 
-            def hiddenDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory = match item
-                StagingDirectory (StagingDirectoryOutput destPath mode) ->
-                    if isPublishedOutput destPath then
-                        None
-                    else
-                        Some (CachePostRequestOutputDirectory destPath mode True)
-                _ -> None
+            def hiddenDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory =
+                match item
+                    StagingDirectory (StagingDirectoryOutput destPath mode) ->
+                        if isPublishedOutput destPath then
+                            None
+                        else
+                            Some (CachePostRequestOutputDirectory destPath mode True)
+                    _ -> None
 
             def fileUploads =
                 stagingItems
@@ -532,15 +535,13 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
                 stagingItems
                 | mapPartial hiddenDirectoryUpload
 
-            def directoriesUpload =
-                publishedDirectoriesUpload ++ hiddenDirectoriesUpload
+            def directoriesUpload = publishedDirectoriesUpload ++ hiddenDirectoriesUpload
 
             Pass (Triple fileUploads directoriesUpload symlinksUpload)
 
     match outputUploadsResult
         Fail err -> Fail err
         Pass (Triple fileUploads directoriesUpload symlinksUpload) ->
-
             require Pass stdout = job.getJobFailedStdoutRaw
             require Pass stderr = job.getJobFailedStderrRaw
 
