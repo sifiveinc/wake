@@ -42,8 +42,8 @@ export data StagingItem =
 
 # Output values normalized so job finalization can handle workspace and staged outputs uniformly.
 export data ResolvedOutput =
-    ResolvedWorkspace Path Integer
-    ResolvedStaged StagingItem Path Integer
+    ResolvedWorkspace PathInfo
+    ResolvedStaged StagingItem PathInfo
 
 # Returns the final workspace destination path for any staged item.
 export def getStagingItemDestPath (item: StagingItem): String = match item
@@ -52,17 +52,15 @@ export def getStagingItemDestPath (item: StagingItem): String = match item
     StagingSymlink (StagingSymlinkOutput destPath _) -> destPath
     StagingDirectory (StagingDirectoryOutput destPath _) -> destPath
 
-# Extracts the stored Path and mode pair from either kind of resolved output.
-export def getResolvedOutputValue (resolvedOutput: ResolvedOutput): Pair Path Integer =
-    match resolvedOutput
-        ResolvedWorkspace path mode -> Pair path mode
-        ResolvedStaged _ path mode -> Pair path mode
+# Extracts the stored path metadata from either kind of resolved output.
+export def getResolvedOutputInfo (resolvedOutput: ResolvedOutput): PathInfo = match resolvedOutput
+    ResolvedWorkspace pathInfo -> pathInfo
+    ResolvedStaged _ pathInfo -> pathInfo
 
 # Returns the final workspace path name for a resolved output.
 export def getResolvedOutputPathName (resolvedOutput: ResolvedOutput): String =
-    def Pair path _ = getResolvedOutputValue resolvedOutput
-
-    path.getPathName
+    getResolvedOutputInfo resolvedOutput
+    | getPathInfoName
 
 # Linux generally ignores symlink mode bits, so use a synthetic 0777 when normalizing staged symlinks.
 export def defaultSymlinkModeBits: Integer =
@@ -70,7 +68,7 @@ export def defaultSymlinkModeBits: Integer =
 
 # Wraps a staged item and its resolved hash/path metadata into the common ResolvedOutput shape.
 def resolvedStagedOutput (item: StagingItem) (pathType: PathType) (hash: String) (mode: Integer): ResolvedOutput =
-    ResolvedStaged item (mkPath (getStagingItemDestPath item) pathType hash) mode
+    ResolvedStaged item (mkPathInfo (getStagingItemDestPath item) pathType hash mode)
 
 # Reads the staged item type string from the JSON payload for one destination path.
 def stagingItemType (destPath: String) (itemInfo: JValue): Result String Error =
@@ -163,14 +161,14 @@ def stagingHashInput (item: StagingItem): Option (Pair String String) = match it
     _ -> None
 
 # Converts staged metadata into ResolvedOutput values by hashing staged files/hardlinks from their
-# staging paths, deriving hashes for symlinks/directories, and rebuilding Path values at the final
-# destination paths with mode bits for job finalization.
+# staging paths, deriving hashes for symlinks/directories, and rebuilding final-path PathInfo
+# values with mode bits for DB storage and later job finalization.
 export def resolveStagingOutputs (stagingItems: List StagingItem): Result (List ResolvedOutput) Error =
     def hashInputs =
         stagingItems
         | mapPartial stagingHashInput
 
-    def stagedFileHashesResult: Result (List (Pair Path Integer)) Error =
+    def stagedFileHashesResult: Result (List PathInfo) Error =
         resolvePathInfos (map getPairSecond hashInputs)
 
     match stagedFileHashesResult
@@ -179,9 +177,9 @@ export def resolveStagingOutputs (stagingItems: List StagingItem): Result (List 
             def stagedFileHashesByDest = zip hashInputs stagedFileHashes
 
             # Looks up the hashed staging-path result for one final destination path.
-            def lookupStagedFileHash (destPath: String): Result Path Error =
+            def lookupStagedFileHash (destPath: String): Result PathInfo Error =
                 match (find (\(Pair (Pair entryDest _) _) entryDest ==* destPath) stagedFileHashesByDest)
-                    Some (Pair (Pair _ (Pair hashedPath _)) _) -> Pass hashedPath
+                    Some (Pair (Pair _ hashedPathInfo) _) -> Pass hashedPathInfo
                     None -> failWithError "Missing hashed staging data for {destPath}"
 
             # Converts each staged item into the normalized resolved form expected by later CAS/job code.
@@ -189,15 +187,15 @@ export def resolveStagingOutputs (stagingItems: List StagingItem): Result (List 
                 StagingFile (StagingFileOutput destPath _ mode _ _) ->
                     match (lookupStagedFileHash destPath)
                         Fail err -> Fail err
-                        Pass hashedPath ->
-                            def hash = hashedPath.getPathHash
+                        Pass hashedPathInfo ->
+                            def hash = hashedPathInfo.getPathInfoHash
 
                             Pass (resolvedStagedOutput item PathTypeRegularFile hash mode)
                 StagingHardlink (StagingFileOutput destPath _ mode _ _) ->
                     match (lookupStagedFileHash destPath)
                         Fail err -> Fail err
-                        Pass hashedPath ->
-                            def hash = hashedPath.getPathHash
+                        Pass hashedPathInfo ->
+                            def hash = hashedPathInfo.getPathInfoHash
 
                             Pass (resolvedStagedOutput item PathTypeRegularFile hash mode)
                 StagingSymlink (StagingSymlinkOutput _ symlinkTarget) ->
