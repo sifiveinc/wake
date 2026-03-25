@@ -107,6 +107,4 @@ inline const char *getWakeSchemaSQLTxn() {
          "COMMIT;";
 }
 
-#define WAKE_SCHEMA_SQL getWakeSchemaSQLTxn()
-
 #endif

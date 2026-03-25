@@ -41,8 +41,8 @@ static bool checkpoint_wal(sqlite3* db) {
 
 static bool run_wake_schema(sqlite3* db) {
   char* err = nullptr;
-  if (sqlite3_exec(db, WAKE_SCHEMA_SQL, nullptr, nullptr, &err) != SQLITE_OK) {
-    std::cerr << "Failed to apply WAKE_SCHEMA_SQL: " << (err ? err : "(null)") << std::endl;
+  if (sqlite3_exec(db, getWakeSchemaSQLTxn(), nullptr, nullptr, &err) != SQLITE_OK) {
+    std::cerr << "Failed to apply schema: " << (err ? err : "(null)") << std::endl;
     if (err) sqlite3_free(err);
     return false;
   }
@@ -341,9 +341,9 @@ static bool migrate_via_copy(sqlite3* old_db, const std::string& db_path, int fr
     current_version = next_version;
   }
 
-  // Apply WAKE_SCHEMA_SQL to ensure all current schema objects exist
+  // Apply schema to ensure all current schema objects exist
   if (!run_wake_schema(new_db)) {
-    std::cerr << "Failed to apply WAKE_SCHEMA_SQL after migration." << std::endl;
+    std::cerr << "Failed to apply schema after migration" << std::endl;
     sqlite3_close(new_db);
     return false;
   }
