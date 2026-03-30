@@ -282,12 +282,28 @@ export def installAs (dest: String) (file: Path): Result Path Error =
     def inputs = destDir, file, Nil
     def foutputs _ = sdest, Nil
 
-    makeExecPlan cmd inputs
-    | setPlanLabel "installAs: {dest} {file.getPathName}"
-    | setPlanEnvironment Nil
-    | setPlanFnOutputs foutputs
-    | runJobWith workspaceRunner
-    | getJobOutput
+    if matches `/.*` sdest then
+        # Absolute destination: bypass workspace staging.
+        # wake-stage only supports workspace-relative paths; absolute install targets
+        # don't belong in the CAS or hash DB.
+        # TODO: Remove this bypass, and enforce installAs to deal with workspace file paths only.
+        def job =
+            makeExecPlan cmd inputs
+            | setPlanLabel "installAs: {dest} {file.getPathName}"
+            | setPlanEnvironment Nil
+            | runJobWith localRunner
+
+        require True = job.isJobOk
+        else failWithError "installAs to {sdest} failed"
+
+        Pass (Path sdest (file.getPathType) (file.getPathHash))
+    else
+        makeExecPlan cmd inputs
+        | setPlanLabel "installAs: {dest} {file.getPathName}"
+        | setPlanEnvironment Nil
+        | setPlanFnOutputs foutputs
+        | runJobWith workspaceRunner
+        | getJobOutput
 
 # Copy a file from one directory subtree to another
 # installIn "/to" "from"  "from/subdir/file"  => "/to/subdir/file"

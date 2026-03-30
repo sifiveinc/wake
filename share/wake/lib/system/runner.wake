@@ -213,19 +213,27 @@ def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: Li
         else
             StagingNeedsWorkspaceMaterialization
 
-    require True = subset scmp filteredOutputPaths allOutputPaths
+    # Normalize paths so string comparisons and wake-stage path lookups are consistent
+    def normAllOutputPaths = map simplify allOutputPaths
+    def normFilteredOutputPaths = map simplify filteredOutputPaths
+
+    require True = subset scmp normFilteredOutputPaths normAllOutputPaths
     else failWithError "Published outputs must be a subset of staged workspace outputs"
 
-    if empty allOutputPaths then
-        Pass (Pair (StagedOutputs filteredOutputPaths workspaceBehavior Nil None (\_ Unit)) baseCleanableOutputs)
+    if empty normAllOutputPaths then
+        Pass (
+            Pair
+            (StagedOutputs normFilteredOutputPaths workspaceBehavior Nil None (\_ Unit))
+            baseCleanableOutputs
+        )
     else
         require True = access workspaceStageTool xOK
         else failWithError "workspace staging helper {workspaceStageTool} is not executable"
 
-        def stageInputsLen = len allOutputPaths
-        def stageInputsBytes = sum (map strlen allOutputPaths)
+        def stageInputsLen = len normAllOutputPaths
+        def stageInputsBytes = sum (map strlen normAllOutputPaths)
         def useStageStdinFile = stageInputsBytes >= 1900000 || stageInputsLen >= 12000
-        def stageStdinContent = catWith "\n" allOutputPaths
+        def stageStdinContent = catWith "\n" normAllOutputPaths
         def stageStdinFilePath = ".build/tmp/workspace.stage.{hashString stageStdinContent}.stdin"
         def stageCommandBase = "{workspaceStageTool}", "--staging-base", workspaceStageBase, Nil
 
@@ -238,7 +246,7 @@ def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: Li
                 | Pass
                 |< (\plan Pair plan (stdinFile.getPathName, Nil))
             False ->
-                makeExecPlan (stageCommandBase ++ allOutputPaths) Nil
+                makeExecPlan (stageCommandBase ++ normAllOutputPaths) Nil
                 | Pass
                 |< (\plan Pair plan Nil)
         else failWithError "Failed to prepare workspace staging helper"
@@ -275,7 +283,7 @@ def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: Li
             stagingItems
             | map getStagingItemDestPath
 
-        require True = subset scmp allOutputPaths stagedOutputPaths
+        require True = subset scmp normAllOutputPaths stagedOutputPaths
         else failWithError "Missing staged metadata for workspace outputs"
 
         def stagingRootOutputs = match stagingRoot
@@ -286,7 +294,7 @@ def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: Li
 
         Pass (
             Pair
-            (StagedOutputs filteredOutputPaths workspaceBehavior stagingItems stagingRoot (\_ Unit))
+            (StagedOutputs normFilteredOutputPaths workspaceBehavior stagingItems stagingRoot (\_ Unit))
             cleanableOutputs
         )
 
