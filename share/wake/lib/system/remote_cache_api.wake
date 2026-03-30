@@ -1145,32 +1145,36 @@ def hashUsage =
 
 # RSC version of computing hashes for files, similar to Hashcode target in path.wake
 def rscHashFile (file: String): Result String Error =
-    def addCasHashEnv = match (getenv "WAKE_CAS")
-        Some value -> setPlanEnvVar "WAKE_CAS" value
-        None -> identity
+    # Try DB-stored hash first (covers outputs already finalized).
+    def get f = prim "get_hash"
+    def cached = get file
 
-    def hashPlan cmd =
-        Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
-        | addCasHashEnv
+    if cached !=* "" then
+        Pass cached
+    else
+        # Fall back to shim job for files not yet in DB (e.g. downloaded blobs).
+        def hashPlan cmd =
+            Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+            | addCasHashEnv
 
-    def hashJob =
-        hashPlan ("<hash>", file, Nil)
-        | setPlanLabel "rsc: compute hash for {file}"
-        | setPlanEcho logDebug
-        | runJobWith localRunner
-        | setJobInspectVisibilityHidden
+        def hashJob =
+            hashPlan ("<hash>", file, Nil)
+            | setPlanLabel "rsc: compute hash for {file}"
+            | setPlanEcho logDebug
+            | runJobWith localRunner
+            | setJobInspectVisibilityHidden
 
-    require True = hashJob.isJobOk
-    else failWithError "rsc: Failed to compute hash for file {file}"
+        require True = hashJob.isJobOk
+        else failWithError "rsc: Failed to compute hash for file {file}"
 
-    require Pass stdout = hashJob.getJobStdout
-    else failWithError "rsc: Failed to get stdout for hash job"
+        require Pass stdout = hashJob.getJobStdout
+        else failWithError "rsc: Failed to get stdout for hash job"
 
-    def hashLines =
-        stdout
-        | tokenize `\n`
-        | filter (_ !=* "")
+        def hashLines =
+            stdout
+            | tokenize `\n`
+            | filter (_ !=* "")
 
-    match hashLines
-        hash, Nil -> Pass hash
-        _ -> failWithError "rsc: No hash found in output for file {file}"
+        match hashLines
+            hash, Nil -> Pass hash
+            _ -> failWithError "rsc: No hash found in output for file {file}"

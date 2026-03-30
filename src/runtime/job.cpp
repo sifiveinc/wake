@@ -1417,8 +1417,8 @@ static PRIMFN(prim_job_create) {
 static size_t reserve_tree(const std::vector<FileReflection> &files) {
   size_t need = reserve_list(files.size());
   for (auto &i : files)
-    need += reserve_tuple2() + reserve_tuple2() + String::reserve(i.path.size()) +
-            String::reserve(i.type.size()) + String::reserve(i.hash.size());
+    need += reserve_tuple2() * 2 + String::reserve(i.path.size()) + String::reserve(i.type.size()) +
+            String::reserve(i.hash.size());
   return need;
 }
 
@@ -1434,20 +1434,20 @@ static Value *claim_tree(Heap &h, const std::vector<FileReflection> &files) {
 
 static PRIMTYPE(type_job_cache) {
   TypeVar detail;
-  TypeVar spair;
+  TypeVar triple;
   TypeVar plist;
   TypeVar jlist;
   TypeVar pair;
   Data::typePair.clone(detail);
-  Data::typePair.clone(spair);
+  Data::typePair.clone(triple);
   Data::typeList.clone(plist);
   Data::typeList.clone(jlist);
   Data::typePair.clone(pair);
-  spair[0].unify(Data::typeString);
-  spair[1].unify(detail);
   detail[0].unify(Data::typeString);
   detail[1].unify(Data::typeString);
-  plist[0].unify(spair);
+  triple[0].unify(Data::typeString);
+  triple[1].unify(detail);
+  plist[0].unify(triple);
   jlist[0].unify(Data::typeJob);
   pair[0].unify(jlist);
   pair[1].unify(plist);

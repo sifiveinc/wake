@@ -112,20 +112,25 @@ export def dirname (file: String): String =
 
 export def isPathDir (path: Path): Boolean = match path.getPathType
     PathTypeDirectory -> True
-    _ ->
-        getPathHash path
-        | matches `0+`
+    _ -> False
 
 export def pathTypeToString = match _
     PathTypeRegularFile -> "file"
     PathTypeDirectory -> "directory"
+    PathTypeCharacterDevice -> "character"
+    PathTypeBlockDevice -> "block"
+    PathTypeFifo -> "fifo"
     PathTypeSymlink -> "symlink"
-    _ -> panic "Unsupported PathType for Path transport"
+    PathTypeSocket -> "socket"
 
 export def pathTypeFromString (pathType: String): Result PathType Error = match pathType
     "file" -> Pass PathTypeRegularFile
     "directory" -> Pass PathTypeDirectory
+    "character" -> Pass PathTypeCharacterDevice
+    "block" -> Pass PathTypeBlockDevice
+    "fifo" -> Pass PathTypeFifo
     "symlink" -> Pass PathTypeSymlink
+    "socket" -> Pass PathTypeSocket
     "" -> Pass PathTypeRegularFile
     _ -> failWithError "Unknown path type '{pathType}'"
 
@@ -139,7 +144,7 @@ from wake export type Path
 from wake export def getPathName getPathType getPathHash
 
 # PathInfo is the intermediate path metadata shape before the final Path object flow, carrying
-# metadata before the output is stored in the DB and ingested into CAS.
+# name/type/hash/mode before the output is stored in the DB and ingested into CAS.
 export tuple PathInfo =
     export Name: String
     export Type: PathType
@@ -154,37 +159,8 @@ from wake export def getPathInfoName getPathInfoType getPathInfoHash getPathInfo
 def dirHash =
     "0000000000000000000000000000000000000000000000000000000000000000"
 
-def mkPath (name: String) (pathType: PathType) (hash: String): Path =
-    Path name pathType hash
-
-def mkPathInfo (name: String) (pathType: PathType) (hash: String) (mode: Integer): PathInfo =
-    PathInfo name pathType hash mode
-
-def useCasHashes = match (getenv "WAKE_CAS")
-    Some _ -> True
-    None -> False
-
-def addCasHashEnv = match (getenv "WAKE_CAS")
-    Some value -> setPlanEnvVar "WAKE_CAS" value
-    None -> identity
-
 export def getPathParent (path: Path): Path =
-    mkPath (simplify "{getPathName path}/..") PathTypeDirectory dirHash
-
-def parseResolvedPathInfo (file: String) (line: String): Result PathInfo Error =
-    require False = line ==* "BadHash"
-    else failWithError "Failed to hash path {file}"
-
-    require pathTypeString, hash, smode, Nil = extract `([^:]+):([^:]+):([0-9]+)` line
-    else failWithError "Failed to decode path identity '{line}' for {file}"
-
-    require Pass pathType = pathTypeFromString pathTypeString
-    else failWithError "Failed to decode path type '{pathTypeString}' for {file}"
-
-    require Some mode = int smode
-    else failWithError "Failed to decode path mode '{smode}' for {file}"
-
-    Pass (mkPathInfo file pathType hash mode)
+    Path (simplify "{getPathName path}/..") PathTypeDirectory dirHash
 
 def getCachedPathInfo (file: String): Result (Option PathInfo) Error =
     def get f = prim "get_hash_type_mode"
@@ -196,13 +172,14 @@ def getCachedPathInfo (file: String): Result (Option PathInfo) Error =
         require Pass pathType = pathTypeFromString pathTypeString
         else failWithError "Failed to decode cached path type '{pathTypeString}' for {file}"
 
-        def cachedPathInfo = mkPathInfo file pathType hash mode
+        def cachedPathInfo = PathInfo file pathType hash mode
 
+        # TODO: Remove the non-CAS cache acceptance path once WAKE_CAS is the default.
         if useCasHashes then
             match pathType
                 PathTypeDirectory -> Pass (Some cachedPathInfo)
                 _ ->
-                    if casHasBlob hash then
+                    if primCasHasBlob hash then
                         Pass (Some cachedPathInfo)
                     else
                         Pass None
@@ -214,33 +191,6 @@ export def getCachedPathMode (file: String): Result (Option Integer) Error =
         Pass None -> Pass None
         Pass (Some pathInfo) -> Pass (Some pathInfo.getPathInfoMode)
         Fail err -> Fail err
-
-# Previously we were using ++ to concat the hashed and non-hashed files
-# but this would cause non-deterministic behavior with the hash order being
-# different on different runs depending on which files were touched. By
-# merging them this way we can maintain the existing order.
-def mergeSelect (whichFilesToHash: List Boolean) (hashed: List PathInfo) (cached: List PathInfo): Result (List PathInfo) Error =
-    match whichFilesToHash hashed cached
-        Nil Nil Nil -> Pass Nil
-        (False, es) _ (path, ns) ->
-            require Pass rest = mergeSelect es hashed ns
-
-            Pass (path, rest)
-        (True, es) (path, hs) _ ->
-            require Pass rest = mergeSelect es hs cached
-
-            Pass (path, rest)
-        _ _ _ ->
-            failWithError
-            "impossible path hash merge occured ({format whichFilesToHash}), ({format hashed}), ({format cached})"
-
-def needsHashing = match _
-    None -> True
-    Some _ -> False
-
-def getCachedPathInfoValue = match _
-    Some pathInfo -> pathInfo
-    None -> unreachable "missing cached path info in computeHashes"
 
 def storePathInfo (pathInfo: PathInfo): PathInfo =
     def addHash f t h m = prim "add_hash"
@@ -254,17 +204,7 @@ def storePathInfo (pathInfo: PathInfo): PathInfo =
 
     pathInfo
 
-def ingestWorkspacePathInCas (pathInfo: PathInfo): Result Unit Error =
-    match pathInfo.getPathInfoType
-        PathTypeDirectory -> Pass Unit
-        _ ->
-            casIngestWorkspacePath
-            pathInfo.getPathInfoName
-            (pathTypeToString pathInfo.getPathInfoType)
-            pathInfo.getPathInfoHash
-            | addErrorContext "Ingesting hashed workspace path {pathInfo.getPathInfoName} into CAS"
-
-export def resolvePathInfos (files: List String): Result (List PathInfo) Error =
+export def computeHashes (files: List String): Result (List String) Error =
     def simpleFiles = map simplify files
 
     require False = empty simpleFiles
@@ -289,11 +229,11 @@ export def resolvePathInfos (files: List String): Result (List PathInfo) Error =
         True ->
             require Pass stdinFile = write stdinFilePath stdinContent
 
-            hashPlan ("{wakePath}/../lib/wake/wake-hash", "--typed", "@", Nil) (stdinFile,)
+            hashPlan ("{wakePath}/../lib/wake/wake-hash", "@", Nil) (stdinFile,)
             | setPlanStdin stdinFile.getPathName
             | Pass
         False ->
-            hashPlan ("{wakePath}/../lib/wake/wake-hash", "--typed", simpleFiles) Nil
+            hashPlan ("{wakePath}/../lib/wake/wake-hash", simpleFiles) Nil
             | Pass
     else failWithError "Failed to prepare batched hash job"
 
@@ -319,59 +259,27 @@ export def resolvePathInfos (files: List String): Result (List PathInfo) Error =
     require True = len lines == toHashLen
     else failWithError "wake-hash returned {format lines} lines but expected {str toHashLen}"
 
+    # Clean up the temporary stdin file if we created one.
+    def unlink _ = prim "unlink"
+    def _ = if useStdinFile then unlink stdinFilePath else Unit
+
+    def parseHash (Pair file hash) =
+        require False = hash ==* "BadHash"
+        else failWithError "Failed to hash path {file}"
+
+        Pass hash
+
     zip simpleFiles lines
-    | map (\(Pair file line) parseResolvedPathInfo file line)
+    | map parseHash
     | findFail
-
-def computeHashes (files: List String): Result (List PathInfo) Error =
-    def simpleFiles = map simplify files
-
-    require False = empty simpleFiles
-    else Pass Nil
-
-    # Many files will not even need to be rehashed because of their modtime
-    require Pass cachedPathInfos =
-        simpleFiles
-        | map getCachedPathInfo
-        | findFail
-
-    def whichFilesToHash = map needsHashing cachedPathInfos
-
-    def (Pair hs ns) =
-        zip simpleFiles cachedPathInfos
-        | splitBy (\(Pair _ cached) needsHashing cached)
-
-    def toHash = map getPairFirst hs
-
-    def cachedPathInfosToReuse =
-        ns
-        | map getPairSecond
-        | map getCachedPathInfoValue
-
-    # Lots of jobs have no outputs at all, and some do not need to be rehashed
-    require False = empty toHash
-    else mergeSelect whichFilesToHash Nil cachedPathInfosToReuse
-
-    def freshPathInfosResult: Result (List PathInfo) Error = resolvePathInfos toHash
-
-    require Pass freshPathInfos = freshPathInfosResult
-
-    # Finally we merge them back in the order we got them so that we don't
-    # get non-determinism in the hash order.
-    mergeSelect whichFilesToHash freshPathInfos cachedPathInfosToReuse
 
 def hashUsage =
     defaultUsage
     | setUsageCPUtime 0.1
 
 target hashcode (f: String): String =
-    def reuse =
-        if useCasHashes then
-            ""
-        else
-            def get f = prim "get_hash"
-
-            get f
+    def get f = prim "get_hash"
+    def reuse = get f
 
     if reuse !=* "" then
         reuse

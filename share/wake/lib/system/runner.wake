@@ -79,35 +79,41 @@ export tuple RunnerInput =
     #     so that it can apply filtering after collecting the files written.
     export FnOutputs: (List String => List String)
 
-# The staged-output metadata returned by FUSE/CAS runners.
+# The staged-output metadata returned by runners that stage outputs before job finalization.
 export tuple StagedOutputs =
     # The fnOutputs-filtered published output list.
     export FilteredOutputPaths: List String
+    # Whether this entire staged-output batch still needs workspace write-back during finalization.
+    export WorkspaceBehavior: StagingWorkspaceBehavior
     # The full staged output set returned by the runner.
     export StagingItems: List StagingItem
+    # Optional staging root directory path (e.g. .build/staging/<id>).
+    # Set this to opt into automatic cleanup: job.wake will rmdir it after finalization
+    # once all staged files have been consumed. Leave as None if the runner does not use
+    # a separate staging directory (e.g. RSC cache hits write directly to workspace).
+    export StagingRoot: Option String
+    # Callback invoked after finalization (CAS ingestion + workspace materialization).
+    # Used by RSC to upload outputs from their permanent workspace locations.
+    # Default: no-op.
+    export PostFinalize: Unit => Unit
 
-# The output description returned by a runner.
-export data OutputSet =
-    # Ordinary workspace outputs. The list is already filtered by fnOutputs and is both ingested
-    # and published as the job's output set.
-    OutputPaths (List String)
-    # FUSE/CAS output form. job.wake ingests and materializes all staged items, then uses
-    # FilteredOutputPaths to choose which resolved items are stored and finalized as the job's
-    # official outputs.
-    OutputStaged StagedOutputs
+export def stagedOutputsNeedWorkspaceMaterialization (StagedOutputs _ workspaceBehavior _ _ _): Boolean =
+    match workspaceBehavior
+        StagingNeedsWorkspaceMaterialization -> True
+        StagingAlreadyInWorkspace -> False
 
-# Returns the published output path list carried by an OutputSet.
-export def outputSetPathNames = match _
-    OutputPaths paths -> paths
-    OutputStaged (StagedOutputs paths _) -> paths
+export def emptyStagedOutputs: StagedOutputs =
+    StagedOutputs Nil StagingNeedsWorkspaceMaterialization Nil None (\_ Unit)
 
 # The result returned by a Runner after running a job
 export tuple RunnerOutput =
     # The filtered list of files actually read by the job. It can be used for more precise reruns
     export Inputs: List String
-    # The filtered list of files output by the job, either as raw output paths or as staged outputs
-    # that still need post-processing after the runner returns.
-    export Outputs: OutputSet
+    # The filtered list of staged outputs returned by the runner. job.wake hashes and stores the
+    # FilteredOutputPaths subset, ingesting it into CAS when enabled and materializing it directly
+    # otherwise. Non-published staged items are materialized directly to the workspace and only
+    # tracked as cleanable outputs.
+    export Outputs: StagedOutputs
     # The list of files output by the job that should be deleted by wake --clean. May include files
     # listed in Outputs as they will be removed later. The files in the list that are not in
     # Outputs will not be hashed, published, or elevated to Path but will be deleted by wake --clean
@@ -142,10 +148,11 @@ export def makeRunner (name: String) (run: Job => RunnerInput => RunnerOutput): 
 
 # localRunner: A runner that provides no sandboxing protections and no file tracking.
 #
-# You must use Fn{Inputs,Outputs} to fill in this information for wake to maintain safety and reusability
+# You must use FnInputs to fill in input tracking. localRunner itself never publishes outputs;
+# wrappers such as workspaceRunner and makeJSONRunner are responsible for staging and reporting them.
 # Advanced usage only, proceed with caution
 export def localRunner: Runner =
-    def run (job: Job) ((RunnerInput _ cmd vis env dir stdin _ _ predict isAtty fnInputs fnOutputs): RunnerInput): RunnerOutput =
+    def run (job: Job) ((RunnerInput _ cmd vis env dir stdin _ _ predict isAtty fnInputs _): RunnerInput): RunnerOutput =
         def jobKey = JobKey dir stdin env.implode cmd.implode 0 "" isAtty.booleanToInteger
         def _ = primJobLaunch job jobKey predict
 
@@ -154,9 +161,7 @@ export def localRunner: Runner =
             | map getPathName
             | fnInputs
 
-        # Caller needs to fill this in from nothing
         def cleanable = Nil
-        def fileOutputs = fnOutputs cleanable
 
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
@@ -165,11 +170,170 @@ export def localRunner: Runner =
             Pass reality -> Pair reality None
 
         # Wait for the job to complete
-        def return _ = RunnerOutput fileInputs (OutputPaths fileOutputs) cleanable usage runnerError
+        def return _ = RunnerOutput fileInputs emptyStagedOutputs cleanable usage runnerError
 
         waitJobMerged return job
 
     makeRunner "local" run
+
+tuple WorkspaceStagingResult =
+    export StagingRoot: Option String
+    export StagingItems: List StagingItem
+
+# Decodes the JSON emitted by wake-stage into the staging root and staged output metadata.
+def parseWorkspaceStagingResult (body: String): Result WorkspaceStagingResult Error =
+    require Pass content = parseJSONBody body
+    else failWithError "Failed to parse workspace staging result JSON"
+
+    def stagingRoot =
+        content // `staging_root`
+        | getJString
+
+    require Pass stagingItems = parseStagingFiles content
+    else failWithError "Failed to decode staged outputs from workspace staging helper output"
+
+    Pass (WorkspaceStagingResult stagingRoot stagingItems)
+
+def workspaceStageTool =
+    "{wakePath}/../lib/wake/wake-stage"
+
+def workspaceStageBase =
+    ".build/staging"
+
+# Stages a declared workspace-output list with wake-stage and returns the full staged output
+# metadata plus any helper paths that should be cleaned later.
+#
+# allOutputPaths: every output path that should be represented in staging
+# filteredOutputPaths: the published subset of allOutputPaths
+# baseCleanableOutputs: non-staging cleanables to preserve alongside helper artifacts
+def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String) (alreadyInWorkspace: Boolean): Result (Pair StagedOutputs (List String)) Error =
+    def workspaceBehavior =
+        if alreadyInWorkspace then
+            StagingAlreadyInWorkspace
+        else
+            StagingNeedsWorkspaceMaterialization
+
+    require True = subset scmp filteredOutputPaths allOutputPaths
+    else failWithError "Published outputs must be a subset of staged workspace outputs"
+
+    if empty allOutputPaths then
+        Pass (Pair (StagedOutputs filteredOutputPaths workspaceBehavior Nil None (\_ Unit)) baseCleanableOutputs)
+    else
+        require True = access workspaceStageTool xOK
+        else failWithError "workspace staging helper {workspaceStageTool} is not executable"
+
+        def stageInputsLen = len allOutputPaths
+        def stageInputsBytes = sum (map strlen allOutputPaths)
+        def useStageStdinFile = stageInputsBytes >= 1900000 || stageInputsLen >= 12000
+        def stageStdinContent = catWith "\n" allOutputPaths
+        def stageStdinFilePath = ".build/tmp/workspace.stage.{hashString stageStdinContent}.stdin"
+        def stageCommandBase = "{workspaceStageTool}", "--staging-base", workspaceStageBase, Nil
+
+        require Pass stagePlanPair = match useStageStdinFile
+            True ->
+                require Pass stdinFile = write stageStdinFilePath stageStdinContent
+
+                makeExecPlan (stageCommandBase ++ ("@", Nil)) (stdinFile,)
+                | setPlanStdin stdinFile.getPathName
+                | Pass
+                |< (\plan Pair plan (stdinFile.getPathName, Nil))
+            False ->
+                makeExecPlan (stageCommandBase ++ allOutputPaths) Nil
+                | Pass
+                |< (\plan Pair plan Nil)
+        else failWithError "Failed to prepare workspace staging helper"
+
+        def Pair stagePlan helperOutputs = stagePlanPair
+
+        def stageJob =
+            stagePlan
+            | setPlanLabel "stage: {str stageInputsLen} outputs"
+            | setPlanStdout logNever
+            | setPlanStderr logNever
+            | setPlanPersistence ReRun
+            | setPlanEcho logDebug
+            | runJobWith localRunner
+            | setJobInspectVisibilityHidden
+
+        require Exited 0 = getJobStatus stageJob
+        else
+            require Pass stderr = getJobStderr stageJob
+            else failWithError "workspace staging helper failed"
+
+            failWithError "workspace staging helper failed: {stderr}"
+
+        require Pass stdout = getJobStdout stageJob
+        else failWithError "Failed to read workspace staging helper output"
+
+        require Pass (WorkspaceStagingResult stagingRoot stagingItems) =
+            parseWorkspaceStagingResult stdout
+        else failWithError "Failed to decode workspace staging helper output"
+
+        # The helper must account for every staged output path before we hand staged
+        # metadata back to job.wake for hashing/finalization.
+        def stagedOutputPaths =
+            stagingItems
+            | map getStagingItemDestPath
+
+        require True = subset scmp allOutputPaths stagedOutputPaths
+        else failWithError "Missing staged metadata for workspace outputs"
+
+        def stagingRootOutputs = match stagingRoot
+            Some root -> root, Nil
+            None -> Nil
+
+        def cleanableOutputs = helperOutputs ++ baseCleanableOutputs ++ stagingRootOutputs
+
+        Pass (
+            Pair
+            (StagedOutputs filteredOutputPaths workspaceBehavior stagingItems stagingRoot (\_ Unit))
+            cleanableOutputs
+        )
+
+# workspaceRunner: execute a normal workspace job, then stage its published outputs into a
+# per-invocation staging root for later job finalization.
+export def workspaceRunner: Runner =
+    def run (job: Job) ((RunnerInput label command visible environment directory stdin res prefix record isAtty fnInputs fnOutputs): RunnerInput): RunnerOutput =
+        def publishedOutputPaths = fnOutputs Nil
+
+        # Run the underlying workspace command exactly once, but suppress direct output reporting.
+        # workspaceRunner will report outputs only after wake-stage snapshots them.
+        def localInput =
+            RunnerInput
+            label
+            command
+            visible
+            environment
+            directory
+            stdin
+            res
+            prefix
+            record
+            isAtty
+            fnInputs
+            (\_ Nil)
+
+        def (Runner _ localRun) = localRunner
+        def localOutput = localRun job localInput
+        def filteredInputs = localOutput.getRunnerOutputInputs
+        def runnerUsage = localOutput.getRunnerOutputUsage
+        def baseRunnerError = localOutput.getRunnerOutputRunnerError
+        def jobFailed = runnerUsage.getUsageStatus != 0
+
+        # Preserve the base command's status first. Only successful jobs replace raw workspace
+        # outputs with staged metadata.
+        match baseRunnerError
+            Some err -> RunnerOutput filteredInputs emptyStagedOutputs Nil runnerUsage (Some err)
+            None if jobFailed -> RunnerOutput filteredInputs emptyStagedOutputs Nil runnerUsage None
+            None ->
+                # Stage published outputs only after the real command succeeds.
+                match (stageWorkspaceOutputs publishedOutputPaths publishedOutputPaths publishedOutputPaths False)
+                    Fail err ->
+                        RunnerOutput filteredInputs emptyStagedOutputs Nil runnerUsage (Some err)
+                    Pass (Pair stagedOutputs cleanableOutputs) ->
+                        RunnerOutput filteredInputs stagedOutputs cleanableOutputs runnerUsage None
+
+    makeRunner "workspace" run
 
 # virtualRunner: A runner that immediatly marks the job as complete using the predicted usage
 #
@@ -193,8 +357,16 @@ export def virtualRunner: Runner =
             # to set the appropriate status message if the job that ran is an extension of a runner
             Pass reality -> Pair reality None
 
+        def stagedOutputSetResult = match runnerError
+            Some _ -> Pass (Pair emptyStagedOutputs cleanable)
+            None -> stageWorkspaceOutputs fileOutputs fileOutputs cleanable True
+
         # Wait for the job to complete
-        def return _ = RunnerOutput fileInputs (OutputPaths fileOutputs) cleanable usage runnerError
+        def return _ = match (runnerError; stagedOutputSetResult)
+            Some err; _ -> RunnerOutput fileInputs emptyStagedOutputs cleanable usage (Some err)
+            None; Fail err -> RunnerOutput fileInputs emptyStagedOutputs cleanable usage (Some err)
+            None; Pass (Pair stagedOutputs cleanableOutputs) ->
+                RunnerOutput fileInputs stagedOutputs cleanableOutputs usage None
 
         waitJobMerged return job
 
@@ -257,7 +429,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             def runnerError = "Runner {script} is not executable".makeError
             def _ = markJobSetupFailure job runnerError
 
-            RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage (Some runnerError)
+            RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some runnerError)
 
         def Usage jobStatus runtime cputime membytes inbytes outbytes = record
 
@@ -266,6 +438,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                 "label" :-> JString label,
                 "command" :-> command | map JString | JArray,
                 "environment" :-> environment | map JString | JArray,
+                #TODO: Add updated visible transport fileds {path,type,hash,mode}
                 "visible" :-> visible | map getPathName | map JString | JArray,
                 "directory" :-> JString directory,
                 "stdin" :-> JString stdin,
@@ -296,7 +469,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             | rmapFail (markJobSetupFailure job)
 
         require Pass _ = writeResult
-        else RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage writeResult.getFail
+        else RunnerOutput Nil emptyStagedOutputs Nil emptyUsage writeResult.getFail
 
         def cmd = script, "-I", "-p", specFile, "-o", resultFile, extraArgs
 
@@ -331,12 +504,12 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         require 0 = runnerStatusCode
         else
             Some "Non-zero exit status ({str runnerStatusCode}) for JSON runner on {specFile}".makeError
-            | RunnerOutput Nil (OutputPaths Nil) (specFile, Nil) runnerUsage
+            | RunnerOutput Nil emptyStagedOutputs (specFile, Nil) runnerUsage
 
-        require Pass content = parseJSONFile (mkPath resultFile PathTypeRegularFile "BadHash")
+        require Pass content = parseJSONFile (Path resultFile PathTypeRegularFile "BadHash")
         else
             Some "Failed to parse output {resultFile} for JSON runner".makeError
-            | RunnerOutput Nil (OutputPaths Nil) (specFile, Nil) runnerUsage
+            | RunnerOutput Nil emptyStagedOutputs (specFile, Nil) runnerUsage
 
         def field name = match _ _
             _ (Fail f) -> Fail f
@@ -384,6 +557,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         def filteredOutputPaths = fnOutputs jsonOutputs
         def defaultCleanableOutputs = specFile, resultFile, jsonOutputs
 
+        # TODO: Remove the non-CAS post-staging branch once WAKE_CAS is the default.
         def outputSetResult = match useCasHashes
             True -> match (parseStagingFiles content)
                 Pass stagingItems ->
@@ -394,23 +568,35 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                     require True = empty filteredOutputPaths || ! empty stagingItems
                     else failWithError "Missing staging_files metadata for CAS outputs"
 
+                    def jsonStagingRoot =
+                        content // `staging_root`
+                        | getJString
+
                     Pass (
                         Pair
-                        (OutputStaged (StagedOutputs filteredOutputPaths stagingItems))
+                        (
+                            StagedOutputs
+                            filteredOutputPaths
+                            StagingNeedsWorkspaceMaterialization
+                            stagingItems
+                            jsonStagingRoot
+                            (\_ Unit)
+                        )
                         (specFile, resultFile, stagedOutputPaths)
                     )
                 Fail err -> Fail err
-            False -> Pass (Pair (OutputPaths filteredOutputPaths) defaultCleanableOutputs)
+            False ->
+                stageWorkspaceOutputs jsonOutputs filteredOutputPaths defaultCleanableOutputs False
 
         match (jobUsageResult; outputSetResult)
-            Pass jobUsage; Pass (Pair outputSet cleanableOutputs) ->
+            Pass jobUsage; Pass (Pair stagedOutputs cleanableOutputs) ->
                 None
-                | RunnerOutput filteredInputs outputSet cleanableOutputs jobUsage
+                | RunnerOutput filteredInputs stagedOutputs cleanableOutputs jobUsage
             Pass _; Fail err ->
                 Some err
-                | RunnerOutput filteredInputs (OutputPaths Nil) defaultCleanableOutputs runnerUsage
+                | RunnerOutput filteredInputs emptyStagedOutputs defaultCleanableOutputs runnerUsage
             Fail msg; _ ->
                 Some msg.makeError
-                | RunnerOutput filteredInputs (OutputPaths Nil) defaultCleanableOutputs runnerUsage
+                | RunnerOutput filteredInputs emptyStagedOutputs defaultCleanableOutputs runnerUsage
 
     makeRunner "json-{script}" run

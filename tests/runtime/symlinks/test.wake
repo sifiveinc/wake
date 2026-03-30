@@ -53,13 +53,11 @@ export def test _ =
     require Pass link = badLink Unit
     require True = getPathHash link !=* "BadHash"
     else failWithError "cannot hash a dangling symlink"
-    require PathTypeSymlink = link.getPathType
-    else failWithError "expected badLink to be typed as a symlink"
     require Pass what = shouldWork Unit
     require Fail _ = shouldFail1 Unit else failWithError "fail1 passed!"
     require Fail _ = shouldFail2 Unit else failWithError "fail2 passed!"
     require a, b, Nil = what
     else failWithError "did not detect both inputs ({format what})"
-    require False = pathTypeToString a.getPathType ==* pathTypeToString b.getPathType
-    else failWithError "file and symlink inputs should not have the same path type"
+    require True = getPathHash a !=* getPathHash b
+    else failWithError "identical hashes should not be identical"
     Pass 0

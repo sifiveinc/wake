@@ -31,23 +31,46 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#include "cas/resolve_path.h"
+#include "cas/content_hash.h"
 #include "wcl/filepath.h"
 
-static bool use_cas_hashes() { return getenv("WAKE_CAS") != nullptr; }
-
+// TODO: Remove do_hash and the "<hash>" shim path entirely once WAKE_CAS is the default.
 static int do_hash(const char *file) {
-  auto policy =
-      use_cas_hashes() ? cas::SpecialFilePolicy::Reject : cas::SpecialFilePolicy::LegacyExoticHash;
-
-  auto result = cas::resolve_path(file, policy);
-  if (!result) {
-    fprintf(stderr, "shim hash: %s\n", result.error().c_str());
+  struct stat st;
+  if (lstat(file, &st) != 0) {
+    fprintf(stderr, "shim hash: lstat(%s): %s\n", file, strerror(errno));
     return 1;
   }
 
-  printf("%s\n", result->hash.c_str());
-  return 0;
+  if (S_ISDIR(st.st_mode)) {
+    printf("0000000000000000000000000000000000000000000000000000000000000000\n");
+    return 0;
+  }
+
+  if (S_ISLNK(st.st_mode)) {
+    char buf[8192];
+    ssize_t len = readlink(file, buf, sizeof(buf));
+    if (len < 0) {
+      fprintf(stderr, "shim hash: readlink(%s): %s\n", file, strerror(errno));
+      return 1;
+    }
+    auto hash = cas::ContentHash::from_string(std::string(buf, len));
+    printf("%s\n", hash.to_hex().c_str());
+    return 0;
+  }
+
+  if (S_ISREG(st.st_mode)) {
+    auto result = cas::ContentHash::from_file(file);
+    if (!result) {
+      fprintf(stderr, "shim hash: read(%s): %s\n", file, strerror(result.error()));
+      return 1;
+    }
+    printf("%s\n", result->to_hex().c_str());
+    return 0;
+  }
+
+  fprintf(stderr, "shim hash: unsupported file type for %s\n", file);
+  return 1;
 }
 
 int main(int argc, char **argv) {

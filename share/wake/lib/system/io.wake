@@ -135,10 +135,16 @@ export def read (path: Path): Result String Error =
 # Ideally content would be part of RunnerInputCmd however this gets tracked exactly in the database
 # which means all writes would use 2x the total storage in the database.
 def writeRunner (content: String) =
+    def primStageMkdir (path: String): Result String Error =
+        def raw mode path = prim "mkdir"
+
+        raw 0755 path
+        | rmapError makeError
+
     def primWrite (mode: Integer) (path: String) (content: String): Result String String =
         (\_ \_ \_ prim "write") mode path content
 
-    def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
+    def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ prefix predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
         # Command must be ("<write>", "-m", "{string mode}", "{string path}", Nil)
         require "<write>", "-m", smode, path, Nil = cmd
         else panic "writeImp violated command-line contract"
@@ -150,14 +156,22 @@ def writeRunner (content: String) =
         require Some mode = int smode
         else
             Some "write {path}: Unable to convert mode to Integer ({smode})".makeError
-            | RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage
+            | RunnerOutput Nil emptyStagedOutputs Nil emptyUsage
 
         require True = mode >= 0 && mode <= 0x1ff
         else
             Some "write {path}: Invalid mode ({strOctal mode})".makeError
-            | RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage
+            | RunnerOutput Nil emptyStagedOutputs Nil emptyUsage
 
-        def writeTask = primWrite mode path content
+        def stagedFilePath = ".build/staging/direct/write.{prefix}.{hashString "{path}\n{content}"}"
+
+        def writeTask =
+            require Pass _ = primStageMkdir ".build"
+            require Pass _ = primStageMkdir ".build/staging"
+            require Pass _ = primStageMkdir ".build/staging/direct"
+
+            primWrite mode stagedFilePath content
+            | rmapError makeError
 
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
@@ -168,14 +182,26 @@ def writeRunner (content: String) =
             | map getPathName
             | fnInputs
 
-        # Wait for the virtual job to complete
-        match writeTask
-            Fail msg -> RunnerOutput fileInputs (OutputPaths Nil) Nil usage (Some msg.makeError)
-            Pass path ->
-                def cleanable = (path, Nil)
-                def outputPaths = fnOutputs cleanable
+        def stagedOutputSetResult = match writeTask
+            Fail err -> Fail err
+            Pass _ ->
+                def rawOutputPaths = (path, Nil)
+                def cleanableOutputs = (path, stagedFilePath, Nil)
+                def publishedOutputPaths = fnOutputs rawOutputPaths
+                def stagingItems = StagingFile (StagingFileOutput path stagedFilePath mode 0 0), Nil
 
-                RunnerOutput fileInputs (OutputPaths outputPaths) cleanable usage runnerError
+                Pass (
+                    Pair
+                    (StagedOutputs publishedOutputPaths StagingNeedsWorkspaceMaterialization stagingItems None (\_ Unit))
+                    cleanableOutputs
+                )
+
+        # Wait for the virtual job to complete
+        match (runnerError; stagedOutputSetResult)
+            Some err; _ -> RunnerOutput fileInputs emptyStagedOutputs Nil usage (Some err)
+            None; Fail err -> RunnerOutput fileInputs emptyStagedOutputs Nil usage (Some err)
+            None; Pass (Pair stagedOutputs cleanableOutputs) ->
+                RunnerOutput fileInputs stagedOutputs cleanableOutputs usage None
 
     makeRunner "write" run
 
@@ -260,7 +286,7 @@ export def installAs (dest: String) (file: Path): Result Path Error =
     | setPlanLabel "installAs: {dest} {file.getPathName}"
     | setPlanEnvironment Nil
     | setPlanFnOutputs foutputs
-    | runJobWith localRunner
+    | runJobWith workspaceRunner
     | getJobOutput
 
 # Copy a file from one directory subtree to another
@@ -288,9 +314,6 @@ export def installIn (toRoot: String) (fromRoot: String) (sourcePath: Path): Res
 #
 # Allows for calls to the mkdir prim to be tracked in the database as any other job
 def mkdirRunner: Runner =
-    def primMkdir (mode: Integer) (path: String): Result String String =
-        (\_ \_ prim "mkdir") mode path
-
     def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
         # Command must be ("<mkdir>", "-m", "{string mode}", "{string path}", Nil)
         require "<mkdir>", "-m", smode, path, Nil = cmd
@@ -303,14 +326,12 @@ def mkdirRunner: Runner =
         require Some mode = int smode
         else
             Some "write {path}: Unable to convert mode to Integer ({smode})".makeError
-            | RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage
+            | RunnerOutput Nil emptyStagedOutputs Nil emptyUsage
 
         require True = mode >= 0 && mode <= 0x1ff
         else
             Some "mkdir {path}: Invalid mode ({smode})".makeError
-            | RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage
-
-        def mkdirTask = primMkdir mode path
+            | RunnerOutput Nil emptyStagedOutputs Nil emptyUsage
 
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
@@ -321,14 +342,23 @@ def mkdirRunner: Runner =
             | map getPathName
             | fnInputs
 
-        # Wait for the virtual job to complete
-        match mkdirTask
-            Fail msg -> RunnerOutput fileInputs (OutputPaths Nil) Nil usage (Some msg.makeError)
-            Pass path ->
-                def cleanable = (path, Nil)
-                def outputPaths = fnOutputs cleanable
+        def stagedOutputSetResult =
+            def cleanableOutputs = (path, Nil)
+            def publishedOutputPaths = fnOutputs cleanableOutputs
+            def stagingItems = StagingDirectory (StagingDirectoryOutput path mode), Nil
 
-                RunnerOutput fileInputs (OutputPaths outputPaths) cleanable usage runnerError
+            Pass (
+                Pair
+                (StagedOutputs publishedOutputPaths StagingNeedsWorkspaceMaterialization stagingItems None (\_ Unit))
+                cleanableOutputs
+            )
+
+        # Wait for the virtual job to complete
+        match (runnerError; stagedOutputSetResult)
+            Some err; _ -> RunnerOutput fileInputs emptyStagedOutputs Nil usage (Some err)
+            None; Fail err -> RunnerOutput fileInputs emptyStagedOutputs Nil usage (Some err)
+            None; Pass (Pair stagedOutputs cleanableOutputs) ->
+                RunnerOutput fileInputs stagedOutputs cleanableOutputs usage None
 
     makeRunner "mkdir" run
 
