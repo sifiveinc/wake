@@ -56,12 +56,17 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             (rscApi | rscApiCheckJobAllowed (mkCacheAllowedRequest input output hashKey))
         else output
 
-        # Post the job to the server. This is left as 'def _' so that wake won't block progess
-        # on it but it will stil be joined on before wake exits. Regardless of the result this
-        # call should return the passing output to allow the build to continue
-        def _ = postJob rscApi job wakeroot hashKey input output
+        # Attach a post-finalization callback. After job.wake finalizes (CAS ingestion +
+        # workspace materialization), it invokes this to upload outputs from their permanent
+        # workspace locations. This is left as 'def _' so that wake won't block progess
+        # on it but it will stil be joined on before wake exits.
+        def postFinalize _ =
+            def _ = postJob rscApi job wakeroot hashKey input output
+
+            Unit
 
         output
+        | editRunnerOutputOutputs (setStagedOutputsPostFinalize postFinalize)
 
     def rehydrateJob details label input job =
         def _ =
@@ -204,6 +209,29 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             | map getCacheSearchOutputDirectoryPath
 
         def outputs = resolvedOutputs ++ resolvedDirectories ++ resolvedSymlinks
+
+        def fileStagingItems =
+            outputFiles
+            | map (\(CacheSearchOutputFile path mode _) StagingFile (StagingFileOutput path path mode 0 0))
+
+        def symlinkStagingItems =
+            outputSymlinks
+            | map (\(CacheSearchOutputSymlink path link) StagingSymlink (StagingSymlinkOutput link path))
+
+        def publishedDirectoryStagingItems =
+            publishedDirectories
+            | map (\(CacheSearchOutputDirectory path mode _) StagingDirectory (StagingDirectoryOutput path mode))
+
+        def hiddenDirectoryStagingItems =
+            hiddenDirectories
+            | map (\(CacheSearchOutputDirectory path mode _) StagingDirectory (StagingDirectoryOutput path mode))
+
+        def stagingItems =
+            fileStagingItems ++
+            publishedDirectoryStagingItems ++
+            hiddenDirectoryStagingItems ++
+            symlinkStagingItems
+
         def predict = Usage status runtime cputime mem ibytes obytes
         def inputs = map getPathName (input.getRunnerInputVisible)
 
@@ -249,7 +277,14 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         #     by the same job. If so, upload the target as a "hidden" output file. On rehydration
         #     retore the file as normal but don't list it in the outputs.
         ## -------------------------------------------------------------------------------------- ##
-        Pass (RunnerOutput inputs (OutputPaths outputs) cleanableOutputs predict None)
+        Pass (
+            RunnerOutput
+            inputs
+            (StagedOutputs outputs StagingAlreadyInWorkspace stagingItems None (\_ Unit))
+            cleanableOutputs
+            predict
+            None
+        )
 
     def run (job: Job) (input: RunnerInput): RunnerOutput =
         def label = input.getRunnerInputLabel
@@ -259,7 +294,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             | rmapFail (markJobSetupFailure job)
 
         require Pass hashKey = hashKeyResult
-        else RunnerOutput Nil (OutputPaths Nil) Nil emptyUsage hashKeyResult.getFail
+        else RunnerOutput Nil emptyStagedOutputs Nil emptyUsage hashKeyResult.getFail
 
         # If pulling from the cache is not enabled don't bother searching.
         require True = rscApi.getRemoteCacheApiCanPull
@@ -347,189 +382,86 @@ def mkCacheAllowedRequest ((RunnerInput label cmd vis env dir stdin _res _prefix
 
     CacheAllowedRequest label cmd dir env hidden isAtty stdin vis jobStatus runtime cputime mem obytes
 
-data ThirdByGroup =
-    ThirdByGroupFirst
-    ThirdByGroupSecond
-    ThirdByGroupThird
-
-def thirdBy (acceptFn: a => ThirdByGroup): (list: List a) => Triple (one: List a) (two: List a) (three: List a) =
-    def loop list = match list
-        Nil -> Triple Nil Nil Nil
-        h, t ->
-            # don't wait on acceptFn to process tail:
-            def Triple x y z = loop t
-
-            match (acceptFn h)
-                ThirdByGroupFirst -> Triple (h, x) y z
-                ThirdByGroupSecond -> Triple x (h, y) z
-                ThirdByGroupThird -> Triple x y (h, z)
-
-    loop
-
 # Posts a completed job to the remote cache
 def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: String) (input: RunnerInput) (output: RunnerOutput): Result Unit Error =
-    def outputSet = output.getRunnerOutputOutputs
-
-    def filteredOutputPaths =
-        outputSet
-        | outputSetPathNames
-
-    def cleanableOutputs = output.getRunnerOutputCleanableOutputs
-    def hiddenOutputs = subtract scmp cleanableOutputs filteredOutputPaths
+    def stagedOutputs = output.getRunnerOutputOutputs
+    def StagedOutputs filteredOutputPaths _ stagingItems _ _ = stagedOutputs
     def isPublishedOutput (path: String): Boolean = exists (_ ==* path) filteredOutputPaths
 
-    def statToGroup (Stat t _ _) = match t
-        PathTypeRegularFile -> ThirdByGroupFirst
-        PathTypeDirectory -> ThirdByGroupSecond
-        PathTypeSymlink -> ThirdByGroupThird
-        _ -> panic "rsc: unsuported filetype: {format t}"
+    def outputUploadsResult =
+        def stagedOutputPaths =
+            stagingItems
+            | map getStagingItemDestPath
 
-    def makeStatTripleThunk paths =
-        paths
-        | map (\p unsafe_stat p |< Pair p)
-        | findFail
-        | addErrorContext "rsc: Failed to stat files"
-        |< thirdBy (_.getPairSecond.statToGroup)
+        require True = subset scmp filteredOutputPaths stagedOutputPaths
+        else failWithError "rsc: Missing staging metadata for published outputs"
 
-    def filteredOutputsStatThunk = makeStatTripleThunk filteredOutputPaths
-    def hiddenOutputsStatThunk = makeStatTripleThunk hiddenOutputs
+        def uploadStagingFile (StagingFileOutput destPath _stagingPath mode _ _) =
+            # Post-finalization: staging file has been consumed. Upload from workspace dest path.
+            def doUpload =
+                rscApi
+                | rscApiPostFileBlob destPath destPath
 
-    def uploadAndMakeFile (Pair path (Stat _ mode _)) =
-        def doUpload =
-            rscApi
-            | rscApiPostFileBlob path path
+            require Pass id = doUpload
 
-        require Pass id = doUpload
+            CachePostRequestOutputFile destPath mode id
+            | Pass
 
-        CachePostRequestOutputFile path (mode | mode2bits) id
-        | Pass
+        def publishedFileUpload (item: StagingItem): Option (Result CachePostRequestOutputFile Error) =
+            match item
+                StagingFile file ->
+                    if isPublishedOutput file.getStagingFileOutputDestPath then
+                        Some (uploadStagingFile file)
+                    else
+                        None
+                _ -> None
 
-    # The path output by the job itself is the created symlink. The contents of the symlink
-    # is the original file on disk. This is reversed when downloading a job.
-    def makeSymlink (Pair link _) =
-        require Pass path =
-            makeExecPlan
-            (
-                "readlink",
-                "-n",
-                link,
-            )
-            Nil
-            | setPlanLabel "rsc: readlink {link}"
-            | setPlanPersistence Once
-            | setPlanEcho logDebug
-            | runJobWith localRunner
-            | setJobInspectVisibilityHidden
-            | getJobStdout
+        def publishedSymlinkUpload (item: StagingItem): Option (Result CachePostRequestOutputSymlink Error) =
+            match item
+                StagingSymlink (StagingSymlinkOutput destPath symlinkTarget) ->
+                    if isPublishedOutput destPath then
+                        Some (Pass (CachePostRequestOutputSymlink symlinkTarget destPath))
+                    else
+                        None
+                _ -> None
 
-        CachePostRequestOutputSymlink path link
-        | Pass
+        def publishedDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory =
+            match item
+                StagingDirectory (StagingDirectoryOutput destPath mode) ->
+                    if isPublishedOutput destPath then
+                        Some (CachePostRequestOutputDirectory destPath mode False)
+                    else
+                        None
+                _ -> None
 
-    def makeDirectory hidden (Pair path (Stat _ mode _)) =
-        CachePostRequestOutputDirectory path (mode | mode2bits) hidden
+        def hiddenDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory =
+            match item
+                StagingDirectory (StagingDirectoryOutput destPath mode) ->
+                    if isPublishedOutput destPath then
+                        None
+                    else
+                        Some (CachePostRequestOutputDirectory destPath mode True)
+                _ -> None
 
-    def outputUploadsResult = match outputSet
-        OutputPaths _ -> match filteredOutputsStatThunk
-            Fail err -> Fail err
-            Pass (Triple regFiles directories symlinks) ->
-                def fileUploads =
-                    regFiles
-                    | map uploadAndMakeFile
+        def fileUploads =
+            stagingItems
+            | mapPartial publishedFileUpload
 
-                def symlinksUpload =
-                    symlinks
-                    | map makeSymlink
+        def symlinksUpload =
+            stagingItems
+            | mapPartial publishedSymlinkUpload
 
-                def publishedDirectoriesUpload =
-                    directories
-                    | map (makeDirectory False)
+        def publishedDirectoriesUpload =
+            stagingItems
+            | mapPartial publishedDirectoryUpload
 
-                match hiddenOutputsStatThunk
-                    Fail err -> Fail err
-                    Pass (Triple _ hiddenDirs _) ->
-                        def hiddenDirectoriesUpload =
-                            hiddenDirs
-                            | map (makeDirectory True)
+        def hiddenDirectoriesUpload =
+            stagingItems
+            | mapPartial hiddenDirectoryUpload
 
-                        Pass (Triple fileUploads (publishedDirectoriesUpload ++ hiddenDirectoriesUpload) symlinksUpload)
-        OutputStaged (StagedOutputs _ stagingItems) ->
-            def stagedOutputPaths =
-                stagingItems
-                | map getStagingItemDestPath
+        def directoriesUpload = publishedDirectoriesUpload ++ hiddenDirectoriesUpload
 
-            require True = subset scmp filteredOutputPaths stagedOutputPaths
-            else failWithError "rsc: Missing staging metadata for published outputs"
-
-            def uploadStagingFile (StagingFileOutput destPath stagingPath mode _ _) =
-                def doUpload =
-                    rscApi
-                    | rscApiPostFileBlob destPath stagingPath
-
-                require Pass id = doUpload
-
-                CachePostRequestOutputFile destPath mode id
-                | Pass
-
-            def publishedFileUpload (item: StagingItem): Option (Result CachePostRequestOutputFile Error) =
-                match item
-                    StagingFile file ->
-                        if isPublishedOutput file.getStagingFileOutputDestPath then
-                            Some (uploadStagingFile file)
-                        else
-                            None
-                    StagingHardlink file ->
-                        if isPublishedOutput file.getStagingFileOutputDestPath then
-                            Some (uploadStagingFile file)
-                        else
-                            None
-                    _ -> None
-
-            def publishedSymlinkUpload (item: StagingItem): Option (Result CachePostRequestOutputSymlink Error) =
-                match item
-                    StagingSymlink (StagingSymlinkOutput destPath symlinkTarget) ->
-                        if isPublishedOutput destPath then
-                            Some (Pass (CachePostRequestOutputSymlink symlinkTarget destPath))
-                        else
-                            None
-                    _ -> None
-
-            def publishedDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory =
-                match item
-                    StagingDirectory (StagingDirectoryOutput destPath mode) ->
-                        if isPublishedOutput destPath then
-                            Some (CachePostRequestOutputDirectory destPath mode False)
-                        else
-                            None
-                    _ -> None
-
-            def hiddenDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory =
-                match item
-                    StagingDirectory (StagingDirectoryOutput destPath mode) ->
-                        if isPublishedOutput destPath then
-                            None
-                        else
-                            Some (CachePostRequestOutputDirectory destPath mode True)
-                    _ -> None
-
-            def fileUploads =
-                stagingItems
-                | mapPartial publishedFileUpload
-
-            def symlinksUpload =
-                stagingItems
-                | mapPartial publishedSymlinkUpload
-
-            def publishedDirectoriesUpload =
-                stagingItems
-                | mapPartial publishedDirectoryUpload
-
-            def hiddenDirectoriesUpload =
-                stagingItems
-                | mapPartial hiddenDirectoryUpload
-
-            def directoriesUpload = publishedDirectoriesUpload ++ hiddenDirectoriesUpload
-
-            Pass (Triple fileUploads directoriesUpload symlinksUpload)
+        Pass (Triple fileUploads directoriesUpload symlinksUpload)
 
     match outputUploadsResult
         Fail err -> Fail err

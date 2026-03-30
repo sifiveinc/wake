@@ -171,116 +171,107 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             run job (RunnerInput label cmd vis env dir stdin res prefix usage isatty finputs foutputs)
 
         def final _ =
-            def withStoredPathInfo resolvedOutput storedPathInfo = match resolvedOutput
-                ResolvedWorkspace _ -> ResolvedWorkspace storedPathInfo
-                ResolvedStaged item _ -> ResolvedStaged item storedPathInfo
+            def needsWorkspaceMaterialization = stagedOutputsNeedWorkspaceMaterialization outputs
 
-            def storeResolvedOutput resolvedOutput =
-                resolvedOutput
-                | getResolvedOutputInfo
-                | storePathInfo
-                | withStoredPathInfo resolvedOutput
+            # Maybe materialize a prepared published item to the workspace.
+            def maybeMaterialize item hash =
+                if needsWorkspaceMaterialization then
+                    # TODO: Remove the non-CAS staging-materialization branch once WAKE_CAS is the default.
+                    if useCasHashes then
+                        materializeStagedItemFromCas item hash
+                    else
+                        materializeStagedItemFromStaging item
+                else
+                    Pass Unit
 
-            # Workspace outputs are already at their final path, so CAS ingestion only stores them
-            # in CAS. Staged outputs still need to be materialized to their final workspace path.
-            def ingestResolvedOutput resolvedOutput = match resolvedOutput
-                ResolvedWorkspace pathInfo -> match useCasHashes
-                    True ->
-                        ingestWorkspacePathInCas pathInfo
-                        | addErrorContext "Failed to ingest hashed workspace path {pathInfo.getPathInfoName} into CAS"
-                    False -> Pass Unit
-                ResolvedStaged item pathInfo -> match item
-                    StagingFile (StagingFileOutput destPath stagingPath _ mtimeSec mtimeNsec) ->
-                        casIngestStagedItem
-                        destPath
-                        "file"
-                        stagingPath
-                        pathInfo.getPathInfoHash
-                        pathInfo.getPathInfoMode
-                        mtimeSec
-                        mtimeNsec
-                        | addErrorContext "Ingesting staged file {stagingPath} -> {destPath}"
-                    StagingHardlink (StagingFileOutput destPath stagingPath _ mtimeSec mtimeNsec) ->
-                        casIngestStagedItem
-                        destPath
-                        "file"
-                        stagingPath
-                        pathInfo.getPathInfoHash
-                        pathInfo.getPathInfoMode
-                        mtimeSec
-                        mtimeNsec
-                        | addErrorContext "Ingesting staged hardlink {stagingPath} -> {destPath}"
-                    StagingSymlink (StagingSymlinkOutput destPath symlinkTarget) ->
-                        casIngestStagedItem
-                        destPath
-                        "symlink"
-                        symlinkTarget
-                        pathInfo.getPathInfoHash
-                        pathInfo.getPathInfoMode
-                        0
-                        0
-                        | addErrorContext "Ingesting staged symlink {destPath}"
-                    StagingDirectory (StagingDirectoryOutput destPath _) ->
-                        casIngestStagedItem destPath "directory" "" pathInfo.getPathInfoHash pathInfo.getPathInfoMode 0 0
-                        | addErrorContext "Creating directory {destPath}"
+            # For published items: optionally ingest to CAS, then materialize.
+            def ingestAndMaterialize (PreparedStagingItem item hash) =
+                require Pass _ =
+                    # TODO: Remove the non-CAS no-ingest branch once WAKE_CAS is the default.
+                    if useCasHashes then
+                        ingestStagedItemIntoCas item hash
+                    else
+                        Pass Unit
 
-            def resolvePublishedOutput resolvedOutputs destPath =
-                match (find (\resolvedOutput getResolvedOutputPathName resolvedOutput ==* destPath) resolvedOutputs)
-                    Some (Pair resolvedOutput _) -> Pass resolvedOutput
-                    None -> failWithError "Missing output metadata for {destPath}"
+                maybeMaterialize item hash
 
-            # Split runner outputs into:
-            # 1. resolvedOutputsToStore: everything that should be written into the files DB first
-            # 2. publishedOutputPaths: the subset that should be finalized as outputs
-            def Pair (Pair resolvedOutputsToStore publishedOutputPaths) preprocessRunnerError =
-                match outputs
-                    OutputPaths outputPaths ->
-                        # Ordinary workspace outputs: hash the filtered output paths and publish all of them.
-                        match (computeHashes outputPaths)
-                            Fail err -> Pair (Pair Nil Nil) (Some err)
-                            Pass hashedOutputs ->
-                                Pair (Pair (map ResolvedWorkspace hashedOutputs) outputPaths) runnerError
-                    OutputStaged (StagedOutputs filteredOutputPaths stagingItems) ->
-                        # Staged outputs: resolve all staged items so they can be ingested/materialized,
-                        # then use filteredOutputPaths to choose which resolved items are published.
-                        match (resolveStagingOutputs stagingItems)
-                            Fail err -> Pair (Pair Nil Nil) (Some err)
-                            Pass resolvedOutputs ->
-                                Pair (Pair resolvedOutputs filteredOutputPaths) runnerError
+            # For unpublished items: materialize directly from staging.
+            def materializeUnpublishedStagedItem (item: StagingItem): Result Unit Error =
+                if needsWorkspaceMaterialization then
+                    materializeStagedItemFromStaging item
+                else
+                    Pass Unit
 
-            # Store output metadata in the files table before CAS ingestion/materialization.
-            def storedOutputsToIngest =
-                resolvedOutputsToStore
-                | map storeResolvedOutput
+            # Split outputs into published (CAS path) and unpublished (direct workspace path)
+            def preprocessOutputsResult =
+                def StagedOutputs filteredOutputPaths _ stagingItems _ _ = outputs
 
-            def publishedOutputsResult =
-                publishedOutputPaths
-                | map (resolvePublishedOutput storedOutputsToIngest)
-                | findFail
+                def Pair publishedStagingItems unpublishedStagingItems =
+                    partitionStagingItems filteredOutputPaths stagingItems
 
-            def ingestOutputsResult =
-                storedOutputsToIngest
-                | map ingestResolvedOutput
-                | findFail
+                prepareStagingOutputs publishedStagingItems
+                | rmap (\preparedItems Triple preparedItems filteredOutputPaths unpublishedStagingItems)
 
-            def finalPublishedOutputs = match (publishedOutputsResult; ingestOutputsResult)
-                Pass publishedOutputs; Pass _ -> publishedOutputs
-                _; _ -> Nil
+            def storedOutputsResult = match preprocessOutputsResult
+                Pass (Triple preparedItemsToStore _ _) ->
+                    Pass (map storePreparedStagingItem preparedItemsToStore)
+                Fail err -> Fail err
 
-            def finalRunnerError =
-                match (preprocessRunnerError; publishedOutputsResult; ingestOutputsResult)
-                    Some err; _; _ -> Some err
-                    None; Fail err; _ -> Some err
-                    None; Pass _; Fail err -> Some err
-                    None; Pass _; Pass _ -> None
+            def ingestAndMaterializePublishedOutputsResult = match storedOutputsResult
+                Pass storedOutputsToIngest ->
+                    storedOutputsToIngest
+                    | map ingestAndMaterialize
+                    | findFail
+                Fail err -> Fail err
 
-            def resolvedOutputPaths =
+            def materializeUnpublishedStagedItemsResult = match preprocessOutputsResult
+                Pass (Triple _ _ unpublishedStagingItems) ->
+                    unpublishedStagingItems
+                    | map materializeUnpublishedStagedItem
+                    | findFail
+                Fail err -> Fail err
+
+            def finalPublishedOutputs = match (
+                storedOutputsResult;
+                ingestAndMaterializePublishedOutputsResult;
+                materializeUnpublishedStagedItemsResult
+            )
+                Pass storedOutputs; Pass _; Pass _ -> storedOutputs
+                _; _; _ -> Nil
+
+            def finalRunnerError = match (
+                runnerError;
+                preprocessOutputsResult;
+                storedOutputsResult;
+                ingestAndMaterializePublishedOutputsResult;
+                materializeUnpublishedStagedItemsResult
+            )
+                Some err; _; _; _; _ -> Some err
+                None; Fail err; _; _; _ -> Some err
+                None; Pass _; Fail err; _; _ -> Some err
+                None; Pass _; Pass _; Fail err; _ -> Some err
+                None; Pass _; Pass _; Pass _; Fail err -> Some err
+                None; Pass _; Pass _; Pass _; Pass _ -> None
+
+            def preparedOutputPaths =
                 finalPublishedOutputs
-                | map getResolvedOutputPathName
+                | map getPreparedStagingItemPathName
+
+            # Clean up the empty staging root directory now that all staged files are consumed.
+            def rmdir _ = prim "rmdir"
+
+            def _ = match outputs.getStagedOutputsStagingRoot
+                Some root -> rmdir root
+                None -> Unit
+
+            # Invoke post-finalization callback (e.g. RSC upload from workspace dest paths).
+            def _ = match finalRunnerError
+                None -> outputs.getStagedOutputsPostFinalize Unit
+                Some _ -> Unit
 
             def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError
 
-            primJobFinish job inputs.implode resolvedOutputPaths.implode cleanable.implode reality
+            primJobFinish job inputs.implode preparedOutputPaths.implode cleanable.implode reality
 
         # Make sure we don't hash files before the job has stopped running
         def _ = waitJobMerged final job
@@ -418,7 +409,7 @@ def treeOk file =
         _ ->
             require Pass pathType = pathTypeFromString pathTypeString
 
-            Pass (mkPath f pathType h)
+            Pass (Path f pathType h)
 
 def guardPath job = match _
     Fail e -> Fail e

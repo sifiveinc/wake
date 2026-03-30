@@ -15,7 +15,14 @@
 
 package wake
 
-# Metadata for a staged regular file or hardlink emitted by the FUSE runner.
+# Indicates whether a staged-output batch still needs to be written back to its final workspace
+# paths during job finalization, or whether those paths already exist and staging is only used for
+# hashing/CAS ingestion.
+export data StagingWorkspaceBehavior =
+    StagingNeedsWorkspaceMaterialization
+    StagingAlreadyInWorkspace
+
+# Metadata for a staged regular file emitted by the runner.
 export tuple StagingFileOutput =
     export DestPath: String
     export StagingPath: String
@@ -36,39 +43,39 @@ export tuple StagingDirectoryOutput =
 # Parsed staged output variants coming back from the JSON/FUSE result payload.
 export data StagingItem =
     StagingFile StagingFileOutput
-    StagingHardlink StagingFileOutput
     StagingSymlink StagingSymlinkOutput
     StagingDirectory StagingDirectoryOutput
 
-# Output values normalized so job finalization can handle workspace and staged outputs uniformly.
-export data ResolvedOutput =
-    ResolvedWorkspace PathInfo
-    ResolvedStaged StagingItem PathInfo
+# A staged item paired with its computed content hash.
+export tuple PreparedStagingItem =
+    export Item: StagingItem
+    export Hash: String
 
 # Returns the final workspace destination path for any staged item.
 export def getStagingItemDestPath (item: StagingItem): String = match item
     StagingFile (StagingFileOutput destPath _ _ _ _) -> destPath
-    StagingHardlink (StagingFileOutput destPath _ _ _ _) -> destPath
     StagingSymlink (StagingSymlinkOutput destPath _) -> destPath
     StagingDirectory (StagingDirectoryOutput destPath _) -> destPath
 
-# Extracts the stored path metadata from either kind of resolved output.
-export def getResolvedOutputInfo (resolvedOutput: ResolvedOutput): PathInfo = match resolvedOutput
-    ResolvedWorkspace pathInfo -> pathInfo
-    ResolvedStaged _ pathInfo -> pathInfo
+# Returns the mode bits for any staged item.
+export def getStagingItemMode (item: StagingItem): Integer = match item
+    StagingFile (StagingFileOutput _ _ mode _ _) -> mode
+    StagingSymlink _ -> defaultSymlinkModeBits
+    StagingDirectory (StagingDirectoryOutput _ mode) -> mode
 
-# Returns the final workspace path name for a resolved output.
-export def getResolvedOutputPathName (resolvedOutput: ResolvedOutput): String =
-    getResolvedOutputInfo resolvedOutput
-    | getPathInfoName
+# Returns the PathType for any staged item.
+export def getStagingItemPathType (item: StagingItem): PathType = match item
+    StagingFile _ -> PathTypeRegularFile
+    StagingSymlink _ -> PathTypeSymlink
+    StagingDirectory _ -> PathTypeDirectory
+
+# Returns the final workspace path name for a prepared staged item.
+export def getPreparedStagingItemPathName (preparedItem: PreparedStagingItem): String =
+    getStagingItemDestPath preparedItem.getPreparedStagingItemItem
 
 # Linux generally ignores symlink mode bits, so use a synthetic 0777 when normalizing staged symlinks.
 export def defaultSymlinkModeBits: Integer =
     511
-
-# Wraps a staged item and its resolved hash/path metadata into the common ResolvedOutput shape.
-def resolvedStagedOutput (item: StagingItem) (pathType: PathType) (hash: String) (mode: Integer): ResolvedOutput =
-    ResolvedStaged item (mkPathInfo (getStagingItemDestPath item) pathType hash mode)
 
 # Reads the staged item type string from the JSON payload for one destination path.
 def stagingItemType (destPath: String) (itemInfo: JValue): Result String Error =
@@ -79,7 +86,7 @@ def stagingItemType (destPath: String) (itemInfo: JValue): Result String Error =
 
     Pass itemType
 
-# Parses the JSON metadata shared by staged files and hardlinks.
+# Parses the JSON metadata shared by staged file-like entries.
 def fileLikeStagingOutput (destPath: String) (itemType: String) (itemInfo: JValue): Result StagingFileOutput Error =
     require Some stagingPath =
         itemInfo // `staging_path`
@@ -130,10 +137,6 @@ def parseStagingEntry (Pair destPath itemInfo): Result StagingItem Error =
                 match (fileLikeStagingOutput destPath itemType itemInfo)
                     Pass fileOutput -> Pass (StagingFile fileOutput)
                     Fail err -> Fail err
-            else if itemType ==* "hardlink" then
-                match (fileLikeStagingOutput destPath itemType itemInfo)
-                    Pass fileOutput -> Pass (StagingHardlink fileOutput)
-                    Fail err -> Fail err
             else if itemType ==* "symlink" then
                 match (symlinkStagingOutput destPath itemInfo)
                     Pass symlinkOutput -> Pass (StagingSymlink symlinkOutput)
@@ -156,58 +159,120 @@ export def parseStagingFiles (content: JValue): Result (List StagingItem) Error 
 # Picks the staged filesystem paths that still need hashing from disk.
 def stagingHashInput (item: StagingItem): Option (Pair String String) = match item
     StagingFile (StagingFileOutput destPath stagingPath _ _ _) -> Some (Pair destPath stagingPath)
-    StagingHardlink (StagingFileOutput destPath stagingPath _ _ _) ->
-        Some (Pair destPath stagingPath)
     _ -> None
 
-# Converts staged metadata into ResolvedOutput values by hashing staged files/hardlinks from their
-# staging paths, deriving hashes for symlinks/directories, and rebuilding final-path PathInfo
-# values with mode bits for DB storage and later job finalization.
-export def resolveStagingOutputs (stagingItems: List StagingItem): Result (List ResolvedOutput) Error =
+# Converts staged metadata into PreparedStagingItem values by hashing staged files from their
+# staging paths and deriving hashes for symlinks/directories. Checks the dest-path hash cache
+# first to avoid re-hashing files whose content is already known (e.g. source files).
+export def prepareStagingOutputs (stagingItems: List StagingItem): Result (List PreparedStagingItem) Error =
+    # Check if the dest path already has a cached hash (and CAS blob, when in CAS mode).
+    def tryCachedFileHash (destPath: String): Option String = match (getCachedPathInfo destPath)
+        Pass (Some pathInfo) -> Some pathInfo.getPathInfoHash
+        _ -> None
+
     def hashInputs =
         stagingItems
         | mapPartial stagingHashInput
 
-    def stagedFileHashesResult: Result (List PathInfo) Error =
-        resolvePathInfos (map getPairSecond hashInputs)
+    # Split into cached (hash already known) and uncached (needs wake-hash).
+    def cachedByDest =
+        hashInputs
+        | mapPartial (
+            \(Pair destPath _) match (tryCachedFileHash destPath)
+                Some hash -> Some (Pair destPath hash)
+                None -> None
+        )
 
-    match stagedFileHashesResult
+    def uncachedInputs =
+        hashInputs
+        | filter (
+            \(Pair destPath _) match (tryCachedFileHash destPath)
+                Some _ -> False
+                None -> True
+        )
+
+    # Only hash files that missed the cache.
+    def freshHashesResult: Result (List String) Error =
+        computeHashes (map getPairSecond uncachedInputs)
+
+    match freshHashesResult
         Fail err -> Fail err
-        Pass stagedFileHashes ->
-            def stagedFileHashesByDest = zip hashInputs stagedFileHashes
+        Pass freshHashes ->
+            def freshByDest = zip (map getPairFirst uncachedInputs) freshHashes
+            def allHashesByDest = cachedByDest ++ freshByDest
 
-            # Looks up the hashed staging-path result for one final destination path.
-            def lookupStagedFileHash (destPath: String): Result PathInfo Error =
-                match (find (\(Pair (Pair entryDest _) _) entryDest ==* destPath) stagedFileHashesByDest)
-                    Some (Pair (Pair _ hashedPathInfo) _) -> Pass hashedPathInfo
-                    None -> failWithError "Missing hashed staging data for {destPath}"
+            def lookupFileHash (destPath: String): Result String Error =
+                match (find (\(Pair d _) d ==* destPath) allHashesByDest)
+                    Some (Pair (Pair _ hash) _) -> Pass hash
+                    None -> failWithError "Missing hash for staged file {destPath}"
 
-            # Converts each staged item into the normalized resolved form expected by later CAS/job code.
-            def processStagingItem (item: StagingItem): Result ResolvedOutput Error = match item
-                StagingFile (StagingFileOutput destPath _ mode _ _) ->
-                    match (lookupStagedFileHash destPath)
-                        Fail err -> Fail err
-                        Pass hashedPathInfo ->
-                            def hash = hashedPathInfo.getPathInfoHash
-
-                            Pass (resolvedStagedOutput item PathTypeRegularFile hash mode)
-                StagingHardlink (StagingFileOutput destPath _ mode _ _) ->
-                    match (lookupStagedFileHash destPath)
-                        Fail err -> Fail err
-                        Pass hashedPathInfo ->
-                            def hash = hashedPathInfo.getPathInfoHash
-
-                            Pass (resolvedStagedOutput item PathTypeRegularFile hash mode)
-                StagingSymlink (StagingSymlinkOutput _ symlinkTarget) ->
-                    def hash = hashString symlinkTarget
-
-                    # Linux generally ignores symlink mode bits, so carry the synthetic symlink mode here.
-                    def mode = defaultSymlinkModeBits
-
-                    Pass (resolvedStagedOutput item PathTypeSymlink hash mode)
-                StagingDirectory (StagingDirectoryOutput _ mode) ->
-                    Pass (resolvedStagedOutput item PathTypeDirectory dirHash mode)
+            def processStagingItem (item: StagingItem): Result PreparedStagingItem Error =
+                match item
+                    StagingFile (StagingFileOutput destPath _ _ _ _) ->
+                        match (lookupFileHash destPath)
+                            Fail err -> Fail err
+                            Pass hash -> Pass (PreparedStagingItem item hash)
+                    StagingSymlink (StagingSymlinkOutput _ symlinkTarget) ->
+                        Pass (PreparedStagingItem item (hashString symlinkTarget))
+                    StagingDirectory _ -> Pass (PreparedStagingItem item dirHash)
 
             stagingItems
             | map processStagingItem
             | findFail
+
+# Materialize a staged item directly from staging to the workspace (no CAS).
+export def materializeStagedItemFromStaging (item: StagingItem): Result Unit Error = match item
+    StagingFile (StagingFileOutput destPath stagingPath mode mtimeSec mtimeNsec) ->
+        primMaterializeStagedWorkspaceItem destPath "file" stagingPath mode mtimeSec mtimeNsec
+        | addErrorContext "Materializing staged file {stagingPath} -> {destPath}"
+    StagingSymlink (StagingSymlinkOutput destPath symlinkTarget) ->
+        primMaterializeStagedWorkspaceItem destPath "symlink" symlinkTarget defaultSymlinkModeBits 0 0
+        | addErrorContext "Materializing staged symlink {destPath}"
+    StagingDirectory (StagingDirectoryOutput destPath mode) ->
+        primMaterializeStagedWorkspaceItem destPath "directory" "" mode 0 0
+        | addErrorContext "Creating directory {destPath}"
+
+# Splits staging items into published (matched by filteredOutputPaths) and unpublished (the rest).
+export def partitionStagingItems (filteredOutputPaths: List String) (stagingItems: List StagingItem): Pair (List StagingItem) (List StagingItem) =
+    def stagingItemByDestPath =
+        stagingItems
+        | map (\item getStagingItemDestPath item :-> item)
+        | listToMap scmp
+
+    def publishedDestPathSet =
+        filteredOutputPaths
+        | map (\destPath destPath :-> Unit)
+        | listToMap scmp
+
+    def stagedDestPathSet =
+        stagingItems
+        | map (\item getStagingItemDestPath item :-> Unit)
+        | listToMap scmp
+
+    def unpublishedDestPathSet = msubtract stagedDestPathSet publishedDestPathSet
+
+    def publishedStagingItems =
+        filteredOutputPaths
+        | mapPartial (\destPath mlookup destPath stagingItemByDestPath)
+
+    def unpublishedStagingItems =
+        stagingItems
+        | filter (
+            \item match (mlookup (getStagingItemDestPath item) unpublishedDestPathSet)
+                Some _ -> True
+                None -> False
+        )
+
+    Pair publishedStagingItems unpublishedStagingItems
+
+# Store a prepared staged item's hash and metadata into the files DB.
+export def storePreparedStagingItem (preparedItem: PreparedStagingItem): PreparedStagingItem =
+    def item = preparedItem.getPreparedStagingItemItem
+    def hash = preparedItem.getPreparedStagingItemHash
+
+    def pathInfo =
+        PathInfo (getStagingItemDestPath item) (getStagingItemPathType item) hash (getStagingItemMode item)
+
+    def _ = storePathInfo pathInfo
+
+    preparedItem

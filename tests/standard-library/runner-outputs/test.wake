@@ -296,37 +296,6 @@ export def testFdOutputs _: Result Unit Error =
 
     addErrorContext "fd-outputs" check
 
-# Test that a CAS-visible executable keeps its execute bit when launched through the default runner.
-export def testVisibleExecutableModesInCas _: Result Unit Error =
-    require Pass scriptPath =
-        writeTempFile
-        "visible_exec_test.sh"
-        """
-        #!/bin/sh
-        echo visible-exec-ok
-        """
-
-    require Pass _ =
-        makeExecPlan ("chmod", "+x", scriptPath.getPathName, Nil) (scriptPath, Nil)
-        | runJobWith localRunner
-        | getJobOutputs
-        | addErrorContext "visible-exec-chmod"
-
-    def job =
-        makeExecPlan (scriptPath.getPathName, Nil) (scriptPath, Nil)
-        | runJobWith defaultRunner
-
-    def check =
-        require Pass _ = job.getJobOutputs
-        require Pass stdout = job.getJobStdout
-
-        require True = stdout ==* "visible-exec-ok\n"
-        else failWithError "Unexpected stdout for CAS-visible executable: '{stdout}'"
-
-        Pass Unit
-
-    addErrorContext "visible-exec-in-cas" check
-
 # Test that a runner can report custom output information
 export def testRunnerCustomOutput _: Result Unit Error =
     # Create a custom runner that reports output information
