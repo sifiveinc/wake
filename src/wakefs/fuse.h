@@ -25,9 +25,12 @@
 
 #include "namespace.h"
 
+// Represents a visible file with its path, type, and content hash for CAS-based reads.
 struct visible_file {
   std::string path;
-  std::string hash;
+  std::string type;  // "file", "directory", "symlink", ...
+  std::string hash;  // Content hash for CAS lookup; empty means read from workspace
+  std::optional<int> mode;  // Permission bits when available
 };
 
 struct daemon_client {
@@ -62,10 +65,10 @@ struct json_args {
   std::vector<std::string> command;
   std::optional<int> command_timeout;  // timeout in seconds.
   std::vector<std::string> environment;
-  std::vector<visible_file> visible;
+  std::vector<visible_file> visible;  // Visible files with path, type, hash, and mode
   std::string directory;
   std::string stdin_file;
-  std::string cas_blobs_dir;
+  std::string cas_blobs_dir;  // Path to CAS blobs directory (default: .cas/blobs)
 
   std::string hostname;
   std::string domainname;
