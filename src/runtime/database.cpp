@@ -608,7 +608,8 @@ bool Database::try_acquire_build_lock(bool wait, bool tty) {
 
       if (written < (ssize_t)strlen(pid_str)) {
         std::cerr << "Failed to create build lock: "
-                  << (errno ? strerror(errno) : "invalid content size") << std::endl;
+                  << (written < 0 ? strerror(errno) : "incomplete pid written") << std::endl;
+        unlink(lock_file);
         return false;
       }
 
