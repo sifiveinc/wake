@@ -74,6 +74,10 @@ export def workspace: String =
 export def cwd: String =
     prim "cwd"
 
+# The PID of the current wake process.
+def wakePid: Integer =
+    prim "pid"
+
 # Remove any leading directories from `file`.
 #
 # Parameters:
@@ -134,36 +138,46 @@ export def pathTypeFromString (pathType: String): Result PathType Error = match 
     "" -> Pass PathTypeRegularFile
     _ -> failWithError "Unknown path type '{pathType}'"
 
-# Paths differ from Strings in that they have been hashed; their content is frozen
+# A Path is intended to represent metadata that has already been recorded in the files DB.
 tuple Path =
     Name: String
     Type: PathType
     Hash: String
+    Mode: Integer
 
 from wake export type Path
-from wake export def getPathName getPathType getPathHash
+from wake export def getPathName getPathType getPathHash getPathMode
 
-# PathInfo is the intermediate path metadata shape before the final Path object flow, carrying
-# name/type/hash/mode before the output is stored in the DB and ingested into CAS.
-export tuple PathInfo =
-    export Name: String
-    export Type: PathType
-    export Hash: String
-    export Mode: Integer
-
-from wake export type PathInfo
-from wake export def getPathInfoName getPathInfoType getPathInfoHash getPathInfoMode
+# Metadata used to insert/update a path in the files DB before it becomes a Path.
+tuple PathInfo =
+    Name: String
+    Type: PathType
+    Hash: String
+    Mode: Integer
 
 # We still use Path for directories even though hashing doesn't make a lot of sense.
 # The previous definition of `getPathHash` would return all zeros so we mimic that.
 def dirHash =
     "0000000000000000000000000000000000000000000000000000000000000000"
 
+# TODO: Simplify to return String instead of Path.
 export def getPathParent (path: Path): Path =
-    Path (simplify "{getPathName path}/..") PathTypeDirectory dirHash
+    def parentName = simplify "{getPathName path}/.."
+
+    def parentMode = match (getCachedPathInfo parentName)
+        Pass (Some cachedPathInfo) -> match cachedPathInfo.getPathInfoType
+            PathTypeDirectory -> cachedPathInfo.getPathInfoMode
+            _ -> match (unsafe_stat parentName)
+                Pass (Stat PathTypeDirectory mode _) -> mode2bits mode
+                _ -> 0755
+        _ -> match (unsafe_stat parentName)
+            Pass (Stat PathTypeDirectory mode _) -> mode2bits mode
+            _ -> 0755
+
+    Path parentName PathTypeDirectory dirHash parentMode
 
 def getCachedPathInfo (file: String): Result (Option PathInfo) Error =
-    def get f = prim "get_hash_type_mode"
+    def get f = prim "get_cached_path"
     def Pair pathTypeString (Pair hash mode) = get file
 
     if hash ==* "" then
@@ -174,26 +188,12 @@ def getCachedPathInfo (file: String): Result (Option PathInfo) Error =
 
         def cachedPathInfo = PathInfo file pathType hash mode
 
-        # TODO: Remove the non-CAS cache acceptance path once WAKE_CAS is the default.
-        if useCasHashes then
-            match pathType
-                PathTypeDirectory -> Pass (Some cachedPathInfo)
-                _ ->
-                    if primCasHasBlob hash then
-                        Pass (Some cachedPathInfo)
-                    else
-                        Pass None
-        else
-            Pass (Some cachedPathInfo)
+        Pass (Some cachedPathInfo)
 
-export def getCachedPathMode (file: String): Result (Option Integer) Error =
-    match (getCachedPathInfo file)
-        Pass None -> Pass None
-        Pass (Some pathInfo) -> Pass (Some pathInfo.getPathInfoMode)
-        Fail err -> Fail err
-
-def storePathInfo (pathInfo: PathInfo): PathInfo =
-    def addHash f t h m = prim "add_hash"
+# Store path hash/metadata into the files DB. mtimeNs == 0 falls back to getmtime_ns(path).
+# The returned Path represents the now-recorded DB-backed path metadata.
+def storePath (mtimeNs: Integer) (pathInfo: PathInfo): Path =
+    def addHash f t h m mns = prim "add_hash"
 
     def _ =
         addHash
@@ -201,8 +201,13 @@ def storePathInfo (pathInfo: PathInfo): PathInfo =
         (pathTypeToString pathInfo.getPathInfoType)
         pathInfo.getPathInfoHash
         pathInfo.getPathInfoMode
+        mtimeNs
 
-    pathInfo
+    Path
+    pathInfo.getPathInfoName
+    pathInfo.getPathInfoType
+    pathInfo.getPathInfoHash
+    pathInfo.getPathInfoMode
 
 export def computeHashes (files: List String): Result (List String) Error =
     def simpleFiles = map simplify files
@@ -218,23 +223,26 @@ export def computeHashes (files: List String): Result (List String) Error =
     # things cause us to go over. These numbers appear to be safe in practice (found exact via binary search).
     # To account for any other variance I backed off these numbers quite a bit.
     def useStdinFile = toHashFileBytes >= 1900000 || toHashLen >= 12000
-    def stdinContent = catWith "\n" simpleFiles
-    def stdinFilePath = ".build/tmp/hash.{hashString stdinContent}.stdin"
 
     def hashPlan cmd vis =
         Plan "" cmd vis Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
         | addCasHashEnv
 
-    require Pass plan = match useStdinFile
+    require Pass (Pair plan maybeStdinFilePath) = match useStdinFile
         True ->
+            def stdinContent = catWith "\n" simpleFiles
+            def stdinFilePath = ".build/tmp/hash.{str wakePid}.{hashString stdinContent}.stdin"
+
             require Pass stdinFile = write stdinFilePath stdinContent
 
             hashPlan ("{wakePath}/../lib/wake/wake-hash", "@", Nil) (stdinFile,)
             | setPlanStdin stdinFile.getPathName
             | Pass
+            |< (\p Pair p (Some stdinFilePath))
         False ->
             hashPlan ("{wakePath}/../lib/wake/wake-hash", simpleFiles) Nil
             | Pass
+            |< (\p Pair p None)
     else failWithError "Failed to prepare batched hash job"
 
     def job =
@@ -258,7 +266,10 @@ export def computeHashes (files: List String): Result (List String) Error =
 
     # Clean up the temporary stdin file if we created one.
     def unlink _ = prim "unlink"
-    def _ = if useStdinFile then unlink stdinFilePath else Unit
+
+    def _ = match maybeStdinFilePath
+        Some stdinFilePath -> unlink stdinFilePath
+        None -> Unit
 
     def parseHash (Pair file hash) =
         require False = hash ==* "BadHash"
@@ -292,13 +303,13 @@ target hashcode (f: String): String =
             | runJobWith localRunner
             | setJobInspectVisibilityHidden
 
-        def hash_lines =
+        def hashLines =
             job.getJobStdout
             | getWhenFail ""
             | tokenize `\n`
             | filter (_ !=* "")
 
-        match job.isJobOk hash_lines
+        match job.isJobOk hashLines
             True (x, Nil) -> x
             _ _ -> "BadHash"
 

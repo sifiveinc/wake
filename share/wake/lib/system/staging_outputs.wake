@@ -15,13 +15,6 @@
 
 package wake
 
-# Indicates whether a staged-output batch still needs to be written back to its final workspace
-# paths during job finalization, or whether those paths already exist and staging is only used for
-# hashing/CAS ingestion.
-export data StagingWorkspaceBehavior =
-    StagingNeedsWorkspaceMaterialization
-    StagingAlreadyInWorkspace
-
 # Metadata for a staged regular file emitted by the runner.
 export tuple StagingFileOutput =
     export DestPath: String
@@ -34,11 +27,15 @@ export tuple StagingFileOutput =
 export tuple StagingSymlinkOutput =
     export DestPath: String
     export Target: String
+    export MtimeSec: Integer
+    export MtimeNsec: Integer
 
 # Metadata for a staged directory emitted by the FUSE runner.
 export tuple StagingDirectoryOutput =
     export DestPath: String
     export Mode: Integer
+    export MtimeSec: Integer
+    export MtimeNsec: Integer
 
 # Parsed staged output variants coming back from the JSON/FUSE result payload.
 export data StagingItem =
@@ -54,14 +51,14 @@ export tuple PreparedStagingItem =
 # Returns the final workspace destination path for any staged item.
 export def getStagingItemDestPath (item: StagingItem): String = match item
     StagingFile (StagingFileOutput destPath _ _ _ _) -> destPath
-    StagingSymlink (StagingSymlinkOutput destPath _) -> destPath
-    StagingDirectory (StagingDirectoryOutput destPath _) -> destPath
+    StagingSymlink (StagingSymlinkOutput destPath _ _ _) -> destPath
+    StagingDirectory (StagingDirectoryOutput destPath _ _ _) -> destPath
 
 # Returns the mode bits for any staged item.
 export def getStagingItemMode (item: StagingItem): Integer = match item
     StagingFile (StagingFileOutput _ _ mode _ _) -> mode
     StagingSymlink _ -> defaultSymlinkModeBits
-    StagingDirectory (StagingDirectoryOutput _ mode) -> mode
+    StagingDirectory (StagingDirectoryOutput _ mode _ _) -> mode
 
 # Returns the PathType for any staged item.
 export def getStagingItemPathType (item: StagingItem): PathType = match item
@@ -75,7 +72,7 @@ export def getPreparedStagingItemPathName (preparedItem: PreparedStagingItem): S
 
 # Linux generally ignores symlink mode bits, so use a synthetic 0777 when normalizing staged symlinks.
 export def defaultSymlinkModeBits: Integer =
-    511
+    0777
 
 # Reads the staged item type string from the JSON payload for one destination path.
 def stagingItemType (destPath: String) (itemInfo: JValue): Result String Error =
@@ -117,7 +114,17 @@ def symlinkStagingOutput (destPath: String) (itemInfo: JValue): Result StagingSy
         | getJString
     else failWithError "Missing target for symlink {destPath}"
 
-    Pass (StagingSymlinkOutput destPath symlinkTarget)
+    def mtimeSec =
+        itemInfo // `mtime_sec`
+        | getJInteger
+        | getOrElse 0
+
+    def mtimeNsec =
+        itemInfo // `mtime_nsec`
+        | getJInteger
+        | getOrElse 0
+
+    Pass (StagingSymlinkOutput destPath symlinkTarget mtimeSec mtimeNsec)
 
 # Parses the JSON metadata for a staged directory.
 def directoryStagingOutput (destPath: String) (itemInfo: JValue): Result StagingDirectoryOutput Error =
@@ -126,7 +133,17 @@ def directoryStagingOutput (destPath: String) (itemInfo: JValue): Result Staging
         | getJInteger
     else failWithError "Missing mode for directory {destPath}"
 
-    Pass (StagingDirectoryOutput destPath mode)
+    def mtimeSec =
+        itemInfo // `mtime_sec`
+        | getJInteger
+        | getOrElse 0
+
+    def mtimeNsec =
+        itemInfo // `mtime_nsec`
+        | getJInteger
+        | getOrElse 0
+
+    Pass (StagingDirectoryOutput destPath mode mtimeSec mtimeNsec)
 
 # Converts one staging_files JSON entry into a typed staged-output value.
 def parseStagingEntry (Pair destPath itemInfo): Result StagingItem Error =
@@ -159,6 +176,7 @@ export def parseStagingFiles (content: JValue): Result (List StagingItem) Error 
 # Picks the staged filesystem paths that still need hashing from disk.
 def stagingHashInput (item: StagingItem): Option (Pair String String) = match item
     StagingFile (StagingFileOutput destPath stagingPath _ _ _) -> Some (Pair destPath stagingPath)
+    StagingSymlink (StagingSymlinkOutput destPath _ _ _) -> Some (Pair destPath destPath)
     _ -> None
 
 # Converts staged metadata into PreparedStagingItem values by hashing staged files from their
@@ -199,11 +217,11 @@ export def prepareStagingOutputs (stagingItems: List StagingItem): Result (List 
         Fail err -> Fail err
         Pass freshHashes ->
             def freshByDest = zip (map getPairFirst uncachedInputs) freshHashes
-            def allHashesByDest = cachedByDest ++ freshByDest
+            def allHashesByDest = listToMap scmp (cachedByDest ++ freshByDest)
 
             def lookupFileHash (destPath: String): Result String Error =
-                match (find (\(Pair d _) d ==* destPath) allHashesByDest)
-                    Some (Pair (Pair _ hash) _) -> Pass hash
+                match (mlookup destPath allHashesByDest)
+                    Some hash -> Pass hash
                     None -> failWithError "Missing hash for staged file {destPath}"
 
             def processStagingItem (item: StagingItem): Result PreparedStagingItem Error =
@@ -212,8 +230,10 @@ export def prepareStagingOutputs (stagingItems: List StagingItem): Result (List 
                         match (lookupFileHash destPath)
                             Fail err -> Fail err
                             Pass hash -> Pass (PreparedStagingItem item hash)
-                    StagingSymlink (StagingSymlinkOutput _ symlinkTarget) ->
-                        Pass (PreparedStagingItem item (hashString symlinkTarget))
+                    StagingSymlink (StagingSymlinkOutput destPath _ _ _) ->
+                        match (lookupFileHash destPath)
+                            Fail err -> Fail err
+                            Pass hash -> Pass (PreparedStagingItem item hash)
                     StagingDirectory _ -> Pass (PreparedStagingItem item dirHash)
 
             stagingItems
@@ -225,11 +245,17 @@ export def materializeStagedItemFromStaging (item: StagingItem): Result Unit Err
     StagingFile (StagingFileOutput destPath stagingPath mode mtimeSec mtimeNsec) ->
         primMaterializeStagedWorkspaceItem destPath "file" stagingPath mode mtimeSec mtimeNsec
         | addErrorContext "Materializing staged file {stagingPath} -> {destPath}"
-    StagingSymlink (StagingSymlinkOutput destPath symlinkTarget) ->
-        primMaterializeStagedWorkspaceItem destPath "symlink" symlinkTarget defaultSymlinkModeBits 0 0
+    StagingSymlink (StagingSymlinkOutput destPath symlinkTarget mtimeSec mtimeNsec) ->
+        primMaterializeStagedWorkspaceItem
+        destPath
+        "symlink"
+        symlinkTarget
+        defaultSymlinkModeBits
+        mtimeSec
+        mtimeNsec
         | addErrorContext "Materializing staged symlink {destPath}"
-    StagingDirectory (StagingDirectoryOutput destPath mode) ->
-        primMaterializeStagedWorkspaceItem destPath "directory" "" mode 0 0
+    StagingDirectory (StagingDirectoryOutput destPath mode mtimeSec mtimeNsec) ->
+        primMaterializeStagedWorkspaceItem destPath "directory" "" mode mtimeSec mtimeNsec
         | addErrorContext "Creating directory {destPath}"
 
 # Splits staging items into published (matched by filteredOutputPaths) and unpublished (the rest).
@@ -266,13 +292,23 @@ export def partitionStagingItems (filteredOutputPaths: List String) (stagingItem
     Pair publishedStagingItems unpublishedStagingItems
 
 # Store a prepared staged item's hash and metadata into the files DB.
+# Uses an explicit mtime_ns so the stored value matches the mtime that primMaterializeStagedWorkspaceItem
+# will set, avoiding stale-mtime cache misses on subsequent runs.
 export def storePreparedStagingItem (preparedItem: PreparedStagingItem): PreparedStagingItem =
     def item = preparedItem.getPreparedStagingItemItem
     def hash = preparedItem.getPreparedStagingItemHash
 
+    def mtimeNs = match item
+        StagingFile (StagingFileOutput _ _ _ mtimeSec mtimeNsec) ->
+            mtimeNsFromParts mtimeSec mtimeNsec
+        StagingSymlink (StagingSymlinkOutput _ _ mtimeSec mtimeNsec) ->
+            mtimeNsFromParts mtimeSec mtimeNsec
+        StagingDirectory (StagingDirectoryOutput _ _ mtimeSec mtimeNsec) ->
+            mtimeNsFromParts mtimeSec mtimeNsec
+
     def pathInfo =
         PathInfo (getStagingItemDestPath item) (getStagingItemPathType item) hash (getStagingItemMode item)
 
-    def _ = storePathInfo pathInfo
+    def _ = storePath mtimeNs pathInfo
 
     preparedItem

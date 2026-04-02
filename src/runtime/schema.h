@@ -1,7 +1,7 @@
 #ifndef WAKE_SCHEMA_H
 #define WAKE_SCHEMA_H
 
-#define SCHEMA_VERSION "11"
+#define SCHEMA_VERSION "10"
 
 // Connection-level pragmas that must be set on EVERY database connection.
 // These do not persist in the database file and must be reapplied each time.
@@ -33,8 +33,8 @@ inline const char* getWakeSchemaSQL() {
          "  file_id   integer primary key,"
          "  path      text    not null,"
          "  hash      text    not null,"
-         "  type      text    not null default 'file',"
-         "  mode      integer not null default 0,"
+         "  type      text    not null,"
+         "  mode      integer not null,"
          "  modified  integer not null);"
          "create unique index if not exists filenames on files(path);"
          "create table if not exists stats("

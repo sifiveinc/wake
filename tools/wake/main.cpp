@@ -49,7 +49,7 @@
 #include "parser/parser.h"
 #include "parser/syntax.h"
 #include "parser/wakefiles.h"
-#include "runtime/cas_prim.h"
+#include "runtime/cas_context.h"
 #include "runtime/config.h"
 #include "runtime/database.h"
 #include "runtime/job.h"
@@ -881,8 +881,9 @@ int main(int argc, char **argv) {
                     clo.batch);
   StringInfo info(clo.verbose, clo.debug, clo.quiet, VERSION_STR, wcl::make_canonical(wake_cwd),
                   cmdline);
-  CASContext cas_ctx;
-  cas_ctx.get_store(".");
+
+  CASContext cas_ctx(".");
+
   PrimMap pmap = prim_register_all(&info, &jobtable, &cas_ctx);
 
   bool isTreeBuilt = true;

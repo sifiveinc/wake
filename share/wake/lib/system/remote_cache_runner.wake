@@ -216,15 +216,15 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
 
         def symlinkStagingItems =
             outputSymlinks
-            | map (\(CacheSearchOutputSymlink path link) StagingSymlink (StagingSymlinkOutput link path))
+            | map (\(CacheSearchOutputSymlink path link) StagingSymlink (StagingSymlinkOutput link path 0 0))
 
         def publishedDirectoryStagingItems =
             publishedDirectories
-            | map (\(CacheSearchOutputDirectory path mode _) StagingDirectory (StagingDirectoryOutput path mode))
+            | map (\(CacheSearchOutputDirectory path mode _) StagingDirectory (StagingDirectoryOutput path mode 0 0))
 
         def hiddenDirectoryStagingItems =
             hiddenDirectories
-            | map (\(CacheSearchOutputDirectory path mode _) StagingDirectory (StagingDirectoryOutput path mode))
+            | map (\(CacheSearchOutputDirectory path mode _) StagingDirectory (StagingDirectoryOutput path mode 0 0))
 
         def stagingItems =
             fileStagingItems ++
@@ -280,7 +280,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         Pass (
             RunnerOutput
             inputs
-            (StagedOutputs outputs StagingAlreadyInWorkspace stagingItems None (\_ Unit))
+            (StagedOutputs outputs False stagingItems None (\_ Unit))
             cleanableOutputs
             predict
             None
@@ -386,7 +386,15 @@ def mkCacheAllowedRequest ((RunnerInput label cmd vis env dir stdin _res _prefix
 def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: String) (input: RunnerInput) (output: RunnerOutput): Result Unit Error =
     def stagedOutputs = output.getRunnerOutputOutputs
     def StagedOutputs filteredOutputPaths _ stagingItems _ _ = stagedOutputs
-    def isPublishedOutput (path: String): Boolean = exists (_ ==* path) filteredOutputPaths
+
+    def publishedOutputSet =
+        filteredOutputPaths
+        | map (\p p :-> Unit)
+        | listToMap scmp
+
+    def isPublishedOutput (path: String): Boolean = match (mlookup path publishedOutputSet)
+        Some _ -> True
+        None -> False
 
     def outputUploadsResult =
         def stagedOutputPaths =
@@ -418,7 +426,7 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
 
         def publishedSymlinkUpload (item: StagingItem): Option (Result CachePostRequestOutputSymlink Error) =
             match item
-                StagingSymlink (StagingSymlinkOutput destPath symlinkTarget) ->
+                StagingSymlink (StagingSymlinkOutput destPath symlinkTarget _ _) ->
                     if isPublishedOutput destPath then
                         Some (Pass (CachePostRequestOutputSymlink symlinkTarget destPath))
                     else
@@ -427,7 +435,7 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
 
         def publishedDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory =
             match item
-                StagingDirectory (StagingDirectoryOutput destPath mode) ->
+                StagingDirectory (StagingDirectoryOutput destPath mode _ _) ->
                     if isPublishedOutput destPath then
                         Some (CachePostRequestOutputDirectory destPath mode False)
                     else
@@ -436,7 +444,7 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
 
         def hiddenDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory =
             match item
-                StagingDirectory (StagingDirectoryOutput destPath mode) ->
+                StagingDirectory (StagingDirectoryOutput destPath mode _ _) ->
                     if isPublishedOutput destPath then
                         None
                     else

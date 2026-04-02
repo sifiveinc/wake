@@ -803,7 +803,7 @@ def asBytesDelimedByNull (parts: List String): List Integer =
     | map (\x unicodeToBytes x ++ (0,))
     | flatten
 
-# getPathAsJson (Path "foo" "asdf") = (JObject ...)
+# getPathAsJson (Path "foo" PathTypeRegularFile "asdf" 0644) = (JObject ...)
 def getPathAsJson path =
     JObject (
         "path" :-> JString path.getPathName,
@@ -1139,41 +1139,12 @@ def mkCacheSearchResponse (json: JValue): Result CacheSearchResponse Error =
     | Match
     | Pass
 
-def hashUsage =
-    Usage 0 0.0 0.1 0 0 0
-
 # RSC version of computing hashes for files, similar to Hashcode target in path.wake
 def rscHashFile (file: String): Result String Error =
-    # Try DB-stored hash first (covers outputs already finalized).
     def get f = prim "get_hash"
     def cached = get file
 
     if cached !=* "" then
         Pass cached
     else
-        # Fall back to shim job for files not yet in DB (e.g. downloaded blobs).
-        def hashPlan cmd =
-            Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
-            | addCasHashEnv
-
-        def hashJob =
-            hashPlan ("<hash>", file, Nil)
-            | setPlanLabel "rsc: compute hash for {file}"
-            | setPlanEcho logDebug
-            | runJobWith localRunner
-            | setJobInspectVisibilityHidden
-
-        require True = hashJob.isJobOk
-        else failWithError "rsc: Failed to compute hash for file {file}"
-
-        require Pass stdout = hashJob.getJobStdout
-        else failWithError "rsc: Failed to get stdout for hash job"
-
-        def hashLines =
-            stdout
-            | tokenize `\n`
-            | filter (_ !=* "")
-
-        match hashLines
-            hash, Nil -> Pass hash
-            _ -> failWithError "rsc: No hash found in output for file {file}"
+        failWithError "rsc: hash not found in DB for {file}"

@@ -81,29 +81,28 @@ export tuple RunnerInput =
 
 # The staged-output metadata returned by runners that stage outputs before job finalization.
 export tuple StagedOutputs =
-    # The fnOutputs-filtered published output list.
+    # The subset of StagingItems dest paths selected for publishing (CAS ingestion + hash/DB tracking).
+    # Used to partition StagingItems into published vs unpublished during job finalization.
     export FilteredOutputPaths: List String
-    # Whether this entire staged-output batch still needs workspace write-back during finalization.
-    export WorkspaceBehavior: StagingWorkspaceBehavior
+    # True if outputs still need to be written back to their final workspace paths during
+    # finalization. False if paths already exist in the workspace and staging is only for hashing/CAS ingestion.
+    export NeedsWorkspaceMaterialization: Boolean
     # The full staged output set returned by the runner.
     export StagingItems: List StagingItem
     # Optional staging root directory path (e.g. .build/staging/<id>).
     # Set this to opt into automatic cleanup: job.wake will rmdir it after finalization
     # once all staged files have been consumed. Leave as None if the runner does not use
     # a separate staging directory (e.g. RSC cache hits write directly to workspace).
+    # Runners that don't want intermediate files will still have to do cleanup themselves
+    # before this final rmdir cleanup.
     export StagingRoot: Option String
     # Callback invoked after finalization (CAS ingestion + workspace materialization).
     # Used by RSC to upload outputs from their permanent workspace locations.
     # Default: no-op.
     export PostFinalize: Unit => Unit
 
-export def stagedOutputsNeedWorkspaceMaterialization (StagedOutputs _ workspaceBehavior _ _ _): Boolean =
-    match workspaceBehavior
-        StagingNeedsWorkspaceMaterialization -> True
-        StagingAlreadyInWorkspace -> False
-
 export def emptyStagedOutputs: StagedOutputs =
-    StagedOutputs Nil StagingNeedsWorkspaceMaterialization Nil None (\_ Unit)
+    StagedOutputs Nil True Nil None (\_ Unit)
 
 # The result returned by a Runner after running a job
 export tuple RunnerOutput =
@@ -114,9 +113,9 @@ export tuple RunnerOutput =
     # otherwise. Non-published staged items are materialized directly to the workspace and only
     # tracked as cleanable outputs.
     export Outputs: StagedOutputs
-    # The list of files output by the job that should be deleted by wake --clean. May include files
-    # listed in Outputs as they will be removed later. The files in the list that are not in
-    # Outputs will not be hashed, published, or elevated to Path but will be deleted by wake --clean
+    # Files outside the staging pipeline that should be deleted by wake --clean — e.g. out-of-workspace
+    # installAs copies or RSC hidden directories. Must not include staging item dest paths (already
+    # tracked as published outputs) or staging source paths (consumed/moved during materialization).
     export CleanableOutputs: List String
     # The actual resource usage of the job that will be written to the database
     export Usage: Usage
@@ -207,12 +206,6 @@ def workspaceStageBase =
 # filteredOutputPaths: the published subset of allOutputPaths
 # baseCleanableOutputs: non-staging cleanables to preserve alongside helper artifacts
 def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String) (alreadyInWorkspace: Boolean): Result (Pair StagedOutputs (List String)) Error =
-    def workspaceBehavior =
-        if alreadyInWorkspace then
-            StagingAlreadyInWorkspace
-        else
-            StagingNeedsWorkspaceMaterialization
-
     # Normalize paths so string comparisons and wake-stage path lookups are consistent
     def normAllOutputPaths = map simplify allOutputPaths
     def normFilteredOutputPaths = map simplify filteredOutputPaths
@@ -223,7 +216,7 @@ def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: Li
     if empty normAllOutputPaths then
         Pass (
             Pair
-            (StagedOutputs normFilteredOutputPaths workspaceBehavior Nil None (\_ Unit))
+            (StagedOutputs normFilteredOutputPaths (!alreadyInWorkspace) Nil None (\_ Unit))
             baseCleanableOutputs
         )
     else
@@ -233,25 +226,28 @@ def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: Li
         def stageInputsLen = len normAllOutputPaths
         def stageInputsBytes = sum (map strlen normAllOutputPaths)
         def useStageStdinFile = stageInputsBytes >= 1900000 || stageInputsLen >= 12000
-        def stageStdinContent = catWith "\n" normAllOutputPaths
-        def stageStdinFilePath = ".build/tmp/workspace.stage.{hashString stageStdinContent}.stdin"
         def stageCommandBase = "{workspaceStageTool}", "--staging-base", workspaceStageBase, Nil
 
         require Pass stagePlanPair = match useStageStdinFile
             True ->
+                def stageStdinContent = catWith "\n" normAllOutputPaths
+
+                def stageStdinFilePath =
+                    ".build/tmp/workspace.stage.{str wakePid}.{hashString stageStdinContent}.stdin"
+
                 require Pass stdinFile = write stageStdinFilePath stageStdinContent
 
                 makeExecPlan (stageCommandBase ++ ("@", Nil)) (stdinFile,)
                 | setPlanStdin stdinFile.getPathName
                 | Pass
-                |< (\plan Pair plan (stdinFile.getPathName, Nil))
+                |< (\plan Pair plan (Some stageStdinFilePath))
             False ->
                 makeExecPlan (stageCommandBase ++ normAllOutputPaths) Nil
                 | Pass
-                |< (\plan Pair plan Nil)
+                |< (\plan Pair plan None)
         else failWithError "Failed to prepare workspace staging helper"
 
-        def Pair stagePlan helperOutputs = stagePlanPair
+        def Pair stagePlan maybeStageStdinFilePath = stagePlanPair
 
         def stageJob =
             stagePlan
@@ -273,6 +269,13 @@ def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: Li
         require Pass stdout = getJobStdout stageJob
         else failWithError "Failed to read workspace staging helper output"
 
+        # Clean up the temporary stdin file if we created one.
+        def unlink _ = prim "unlink"
+
+        def _ = match maybeStageStdinFilePath
+            Some stageStdinFilePath -> unlink stageStdinFilePath
+            None -> Unit
+
         require Pass (WorkspaceStagingResult stagingRoot stagingItems) =
             parseWorkspaceStagingResult stdout
         else failWithError "Failed to decode workspace staging helper output"
@@ -290,16 +293,17 @@ def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: Li
             Some root -> root, Nil
             None -> Nil
 
-        def cleanableOutputs = helperOutputs ++ baseCleanableOutputs ++ stagingRootOutputs
+        def cleanableOutputs = baseCleanableOutputs ++ stagingRootOutputs
 
         Pass (
             Pair
-            (StagedOutputs normFilteredOutputPaths workspaceBehavior stagingItems stagingRoot (\_ Unit))
+            (StagedOutputs normFilteredOutputPaths (!alreadyInWorkspace) stagingItems stagingRoot (\_ Unit))
             cleanableOutputs
         )
 
 # workspaceRunner: execute a normal workspace job, then stage its published outputs into a
-# per-invocation staging root for later job finalization.
+# per-invocation staging root for job finalization. Staging isolates outputs so they cannot
+# be modified between hash calculation/CAS insertion.
 export def workspaceRunner: Runner =
     def run (job: Job) ((RunnerInput label command visible environment directory stdin res prefix record isAtty fnInputs fnOutputs): RunnerInput): RunnerOutput =
         def publishedOutputPaths = fnOutputs Nil
@@ -326,15 +330,12 @@ export def workspaceRunner: Runner =
         def filteredInputs = localOutput.getRunnerOutputInputs
         def runnerUsage = localOutput.getRunnerOutputUsage
         def baseRunnerError = localOutput.getRunnerOutputRunnerError
-        def jobFailed = runnerUsage.getUsageStatus != 0
 
-        # Preserve the base command's status first. Only successful jobs replace raw workspace
-        # outputs with staged metadata.
+        # Preserve the base command's status. Stage outputs regardless of exit code so that
+        # getJobFailedOutputs can access them.
         match baseRunnerError
             Some err -> RunnerOutput filteredInputs emptyStagedOutputs Nil runnerUsage (Some err)
-            None if jobFailed -> RunnerOutput filteredInputs emptyStagedOutputs Nil runnerUsage None
             None ->
-                # Stage published outputs only after the real command succeeds.
                 match (stageWorkspaceOutputs publishedOutputPaths publishedOutputPaths publishedOutputPaths False)
                     Fail err ->
                         RunnerOutput filteredInputs emptyStagedOutputs Nil runnerUsage (Some err)
@@ -514,7 +515,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             Some "Non-zero exit status ({str runnerStatusCode}) for JSON runner on {specFile}".makeError
             | RunnerOutput Nil emptyStagedOutputs (specFile, Nil) runnerUsage
 
-        require Pass content = parseJSONFile (Path resultFile PathTypeRegularFile "BadHash")
+        require Pass content = parseJSONFile resultFile
         else
             Some "Failed to parse output {resultFile} for JSON runner".makeError
             | RunnerOutput Nil emptyStagedOutputs (specFile, Nil) runnerUsage
@@ -535,8 +536,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             | field "inbytes" (jsonUsage // `inbytes` | getJInteger)
             | field "outbytes" (jsonUsage // `outbytes` | getJInteger)
 
-        # Extract string from either a plain string or an object with "path" field
-        # This handles both old format (strings) and new format (objects with path/hash)
+        # Extract string from either a plain string or an object with "path" field.
         def extractPath (jval: JValue): Option String = match jval
             JString s -> Some s
             JObject fields ->
@@ -582,14 +582,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
 
                     Pass (
                         Pair
-                        (
-                            StagedOutputs
-                            filteredOutputPaths
-                            StagingNeedsWorkspaceMaterialization
-                            stagingItems
-                            jsonStagingRoot
-                            (\_ Unit)
-                        )
+                        (StagedOutputs filteredOutputPaths True stagingItems jsonStagingRoot (\_ Unit))
                         (specFile, resultFile, stagedOutputPaths)
                     )
                 Fail err -> Fail err
