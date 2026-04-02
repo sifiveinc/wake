@@ -136,7 +136,7 @@ def buildConfigToString = match _
 
 # helper function for common code between building a cargo binary and a cargo test binary
 # fnOutputsFilter must only match a single file otherwise this function will fail.
-def cargoBuildCommon (subcommand: String) (fnOutputsFilter: RegExp) (toolchain: CargoToolchain) (executable: CargoExecutable): Result Path Error =
+def cargoBuildCommon (subcommand: String) (binaryDir: Path) (fnOutputsFilter: RegExp) (toolchain: CargoToolchain) (executable: CargoExecutable): Result Path Error =
     def buildConfigToFlag = match _
         CargoBuildConfigRelease -> Some "--release"
         # Debug is the default, and cargo doesn't have a flag to explictly set it
@@ -185,7 +185,7 @@ def cargoBuildCommon (subcommand: String) (fnOutputsFilter: RegExp) (toolchain: 
         | rmap flatten
 
     def job =
-        makeExecPlan cmd (sources)
+        makeExecPlan cmd (binaryDir, sources)
         | setPlanLabel "cargo {subcommand}: {binaryName} [{buildConfigToString config}]"
         | setPlanDirectory root
         | setPlanFilterOutputs (matches fnOutputsFilter)
@@ -230,15 +230,19 @@ export def cargoBuildWith (toolchain: Result CargoToolchain Error) (executable: 
         | simplify
 
     if isTestBinary then
+        require Pass binaryDir = mkdir "{root}/target/{buildConfigToString config}/deps"
+
         require Pass regex =
-            stringToRegExp "{root}/target/{buildConfigToString config}/deps/{binaryName}-[a-z0-9]\{16\}"
+            stringToRegExp "{binaryDir.getPathName}/{binaryName}-[a-z0-9]\{16\}"
 
         Pass executable
         |> addCargoFlag "--no-run"
-        |> cargoBuildCommon "test" regex toolchain
+        |> cargoBuildCommon "test" binaryDir regex toolchain
     else
+        require Pass binaryDir = mkdir "{root}/target/{buildConfigToString config}"
+
         require Pass regex =
-            stringToRegExp "{root}/target/{buildConfigToString config}/{binaryName}"
+            stringToRegExp "{binaryDir.getPathName}/{binaryName}"
 
         executable
-        | cargoBuildCommon "build" regex toolchain
+        | cargoBuildCommon "build" binaryDir regex toolchain
