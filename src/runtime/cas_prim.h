@@ -1,5 +1,5 @@
 /*
- * Copyright 2026 SiFive, Inc.
+ * Copyright 2024 SiFive, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,33 +18,8 @@
 #ifndef CAS_PRIM_H
 #define CAS_PRIM_H
 
-#include <memory>
-#include <string>
-
-#include "cas/cas.h"
+#include "cas_context.h"
 #include "types/primfn.h"
-
-namespace cas {
-class Cas;
-}
-
-// Context for CAS operations, manages the Cas lifecycle
-class CASContext {
- public:
-  CASContext() = default;
-  ~CASContext() = default;
-
-  // Get or create the CAS store for a workspace
-  // Returns nullptr if CAS initialization fails
-  cas::Cas* get_store(const std::string& workspace);
-
-  // Check if CAS is available
-  bool has_store() const { return store_ != nullptr; }
-
- private:
-  std::unique_ptr<cas::Cas> store_;
-  std::string workspace_;
-};
 
 // Register CAS primitives with the Wake runtime
 void prim_register_cas(CASContext* ctx, PrimMap& pmap);

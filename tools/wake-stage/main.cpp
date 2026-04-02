@@ -217,7 +217,7 @@ std::vector<StageEntry> stage_outputs(const std::vector<std::string>& output_pat
           EntryType::Symlink,
           *target_result,
           0,
-          {0, 0},
+          st.st_mtim,
       });
     } else if (S_ISDIR(st.st_mode)) {
       entries.push_back(StageEntry{
@@ -225,7 +225,7 @@ std::vector<StageEntry> stage_outputs(const std::vector<std::string>& output_pat
           EntryType::Directory,
           "",
           static_cast<mode_t>(st.st_mode & 07777),
-          {0, 0},
+          st.st_mtim,
       });
     } else {
       throw std::runtime_error("unsupported output type for " + dest_path);
@@ -254,11 +254,13 @@ std::string render_json(const std::string& stage_root, const std::vector<StageEn
         break;
       case EntryType::Symlink:
         out << "\"type\":\"symlink\""
-            << ",\"target\":\"" << json_escape(entry.staging_path_or_target) << "\"";
+            << ",\"target\":\"" << json_escape(entry.staging_path_or_target) << "\""
+            << ",\"mtime_sec\":" << entry.mtime.tv_sec << ",\"mtime_nsec\":" << entry.mtime.tv_nsec;
         break;
       case EntryType::Directory:
         out << "\"type\":\"directory\""
-            << ",\"mode\":" << (entry.mode & 07777);
+            << ",\"mode\":" << (entry.mode & 07777) << ",\"mtime_sec\":" << entry.mtime.tv_sec
+            << ",\"mtime_nsec\":" << entry.mtime.tv_nsec;
         break;
     }
     out << "}";

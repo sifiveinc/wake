@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "cas_context.h"
 #include "tuple.h"
 #include "types/primfn.h"
 
@@ -121,7 +122,6 @@ Work *claim_hash(Heap &h, Value *value, Continuation *continuation);
 void dont_report_future_targets();
 
 struct JobTable;
-class CASContext;
 
 struct StringInfo {
   bool verbose;

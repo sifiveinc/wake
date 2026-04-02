@@ -104,6 +104,15 @@ def statTypeNumberToPathType (inodeType: Integer): PathType = match inodeType
     6 -> PathTypeSocket
     _ -> unreachable "stat returned invalid file type"
 
+def nanosPerSecond: Integer =
+    1_000_000_000
+
+export def mtimeNsFromParts (mtimeSec: Integer) (mtimeNsec: Integer): Integer =
+    mtimeSec * nanosPerSecond + mtimeNsec
+
+export def mtimeNsToParts (mtimeNs: Integer): Pair Integer Integer =
+    Pair (mtimeNs / nanosPerSecond) (mtimeNs % nanosPerSecond)
+
 # Returns the system Stat for a given path
 export target stat (path: Path): Result Stat Error =
     unsafe_stat path.getPathName
@@ -135,6 +144,7 @@ export def read (path: Path): Result String Error =
 # Ideally content would be part of RunnerInputCmd however this gets tracked exactly in the database
 # which means all writes would use 2x the total storage in the database.
 def writeRunner (content: String) =
+    # Used for internal staging dirs that we do not want Wake to track in the DB, unlike Wake's mkdir wrapper.
     def primStageMkdir (path: String): Result String Error =
         def raw mode path = prim "mkdir"
 
@@ -143,6 +153,11 @@ def writeRunner (content: String) =
 
     def primWrite (mode: Integer) (path: String) (content: String): Result String String =
         (\_ \_ \_ prim "write") mode path content
+
+    def primGetModtime (path: String): Integer =
+        def raw path = prim "get_modtime"
+
+        raw path
 
     def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ prefix predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
         # Command must be ("<write>", "-m", "{string mode}", "{string path}", Nil)
@@ -185,23 +200,24 @@ def writeRunner (content: String) =
         def stagedOutputSetResult = match writeTask
             Fail err -> Fail err
             Pass _ ->
-                def rawOutputPaths = (path, Nil)
-                def cleanableOutputs = (path, stagedFilePath, Nil)
-                def publishedOutputPaths = fnOutputs rawOutputPaths
-                def stagingItems = StagingFile (StagingFileOutput path stagedFilePath mode 0 0), Nil
+                def publishedOutputPaths = fnOutputs (path, Nil)
+                def mtimeNs = primGetModtime stagedFilePath
 
-                Pass (
-                    Pair
-                    (StagedOutputs publishedOutputPaths StagingNeedsWorkspaceMaterialization stagingItems None (\_ Unit))
-                    cleanableOutputs
-                )
+                require False = mtimeNs == -1
+                else Fail "write {path}: Failed to stat staged file {stagedFilePath}".makeError
+
+                def Pair mtimeSec mtimeNsec = mtimeNsToParts mtimeNs
+
+                def stagingItems =
+                    StagingFile (StagingFileOutput path stagedFilePath mode mtimeSec mtimeNsec), Nil
+
+                Pass (StagedOutputs publishedOutputPaths True stagingItems None (\_ Unit))
 
         # Wait for the virtual job to complete
         match (runnerError; stagedOutputSetResult)
             Some err; _ -> RunnerOutput fileInputs emptyStagedOutputs Nil usage (Some err)
             None; Fail err -> RunnerOutput fileInputs emptyStagedOutputs Nil usage (Some err)
-            None; Pass (Pair stagedOutputs cleanableOutputs) ->
-                RunnerOutput fileInputs stagedOutputs cleanableOutputs usage None
+            None; Pass stagedOutputs -> RunnerOutput fileInputs stagedOutputs Nil usage None
 
     makeRunner "write" run
 
@@ -282,9 +298,9 @@ export def installAs (dest: String) (file: Path): Result Path Error =
     def inputs = destDir, file, Nil
     def foutputs _ = sdest, Nil
 
-    if matches `/.*` sdest then
-        # Absolute destination: bypass workspace staging.
-        # wake-stage only supports workspace-relative paths; absolute install targets
+    if matches `/.*` sdest || matches `\.\./.*` sdest then
+        # Out-of-workspace destination: bypass workspace staging.
+        # wake-stage only supports workspace-relative paths; absolute or ../-escaped targets
         # don't belong in the CAS or hash DB.
         # TODO: Remove this bypass, and enforce installAs to deal with workspace file paths only.
         def job =
@@ -296,7 +312,7 @@ export def installAs (dest: String) (file: Path): Result Path Error =
         require True = job.isJobOk
         else failWithError "installAs to {sdest} failed"
 
-        Pass (Path sdest (file.getPathType) (file.getPathHash))
+        Pass (Path sdest (file.getPathType) (file.getPathHash) (file.getPathMode))
     else
         makeExecPlan cmd inputs
         | setPlanLabel "installAs: {dest} {file.getPathName}"
@@ -359,22 +375,16 @@ def mkdirRunner: Runner =
             | fnInputs
 
         def stagedOutputSetResult =
-            def cleanableOutputs = (path, Nil)
-            def publishedOutputPaths = fnOutputs cleanableOutputs
-            def stagingItems = StagingDirectory (StagingDirectoryOutput path mode), Nil
+            def publishedOutputPaths = fnOutputs (path, Nil)
+            def stagingItems = StagingDirectory (StagingDirectoryOutput path mode 0 0), Nil
 
-            Pass (
-                Pair
-                (StagedOutputs publishedOutputPaths StagingNeedsWorkspaceMaterialization stagingItems None (\_ Unit))
-                cleanableOutputs
-            )
+            Pass (StagedOutputs publishedOutputPaths True stagingItems None (\_ Unit))
 
         # Wait for the virtual job to complete
         match (runnerError; stagedOutputSetResult)
             Some err; _ -> RunnerOutput fileInputs emptyStagedOutputs Nil usage (Some err)
             None; Fail err -> RunnerOutput fileInputs emptyStagedOutputs Nil usage (Some err)
-            None; Pass (Pair stagedOutputs cleanableOutputs) ->
-                RunnerOutput fileInputs stagedOutputs cleanableOutputs usage None
+            None; Pass stagedOutputs -> RunnerOutput fileInputs stagedOutputs Nil usage None
 
     makeRunner "mkdir" run
 

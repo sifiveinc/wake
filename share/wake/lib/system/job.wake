@@ -126,7 +126,7 @@ export def primJobFinish (job: Job) (inputs: String) (outputs: String) (all_outp
 
 # Look up a job in the local database. Returns a completed Job handle with outputs already resolved
 # if it is already cached.
-export def primJobCache (jobKey: JobKey): Pair (List Job) (List (Pair String (Pair String String))) =
+export def primJobCache (jobKey: JobKey): Pair (List Job) (List (Pair String (Pair String (Pair String Integer)))) =
     def JobKey dir stdin env cmd signature visible isatty = jobKey
 
     (\_ \_ \_ \_ \_ \_ \_ prim "job_cache") dir stdin env cmd signature visible isatty
@@ -171,29 +171,30 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             run job (RunnerInput label cmd vis env dir stdin res prefix usage isatty finputs foutputs)
 
         def final _ =
-            def needsWorkspaceMaterialization = stagedOutputsNeedWorkspaceMaterialization outputs
+            def needsWorkspaceMaterialization =
+                outputs.getStagedOutputsNeedsWorkspaceMaterialization
 
             # Maybe materialize a prepared published item to the workspace.
-            def maybeMaterialize item hash =
+            def maybeMaterialize preparedItem =
                 if needsWorkspaceMaterialization then
                     # TODO: Remove the non-CAS staging-materialization branch once WAKE_CAS is the default.
                     if useCasHashes then
-                        materializeStagedItemFromCas item hash
+                        materializePreparedStagingItemFromCas preparedItem
                     else
-                        materializeStagedItemFromStaging item
+                        materializeStagedItemFromStaging preparedItem.getPreparedStagingItemItem
                 else
                     Pass Unit
 
             # For published items: optionally ingest to CAS, then materialize.
-            def ingestAndMaterialize (PreparedStagingItem item hash) =
+            def ingestAndMaterialize (preparedItem: PreparedStagingItem) =
                 require Pass _ =
                     # TODO: Remove the non-CAS no-ingest branch once WAKE_CAS is the default.
                     if useCasHashes then
-                        ingestStagedItemIntoCas item hash
+                        ingestPreparedStagingItemIntoCas preparedItem
                     else
                         Pass Unit
 
-                maybeMaterialize item hash
+                maybeMaterialize preparedItem
 
             # For unpublished items: materialize directly from staging.
             def materializeUnpublishedStagedItem (item: StagingItem): Result Unit Error =
@@ -212,57 +213,42 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 prepareStagingOutputs publishedStagingItems
                 | rmap (\preparedItems Triple preparedItems filteredOutputPaths unpublishedStagingItems)
 
-            def storedOutputsResult = match preprocessOutputsResult
-                Pass (Triple preparedItemsToStore _ _) ->
-                    Pass (map storePreparedStagingItem preparedItemsToStore)
-                Fail err -> Fail err
+            def storedOutputsResult =
+                require Pass (Triple preparedItemsToStore _ _) = preprocessOutputsResult
 
-            def ingestAndMaterializePublishedOutputsResult = match storedOutputsResult
-                Pass storedOutputsToIngest ->
-                    storedOutputsToIngest
-                    | map ingestAndMaterialize
-                    | findFail
-                Fail err -> Fail err
+                Pass (map storePreparedStagingItem preparedItemsToStore)
 
-            def materializeUnpublishedStagedItemsResult = match preprocessOutputsResult
-                Pass (Triple _ _ unpublishedStagingItems) ->
-                    unpublishedStagingItems
-                    | map materializeUnpublishedStagedItem
-                    | findFail
-                Fail err -> Fail err
+            def ingestAndMaterializePublishedOutputsResult =
+                require Pass storedOutputsToIngest = storedOutputsResult
 
-            def finalPublishedOutputs = match (
-                storedOutputsResult;
-                ingestAndMaterializePublishedOutputsResult;
-                materializeUnpublishedStagedItemsResult
-            )
-                Pass storedOutputs; Pass _; Pass _ -> storedOutputs
-                _; _; _ -> Nil
+                storedOutputsToIngest
+                | map ingestAndMaterialize
+                | findFail
 
-            def finalRunnerError = match (
-                runnerError;
-                preprocessOutputsResult;
-                storedOutputsResult;
-                ingestAndMaterializePublishedOutputsResult;
-                materializeUnpublishedStagedItemsResult
-            )
-                Some err; _; _; _; _ -> Some err
-                None; Fail err; _; _; _ -> Some err
-                None; Pass _; Fail err; _; _ -> Some err
-                None; Pass _; Pass _; Fail err; _ -> Some err
-                None; Pass _; Pass _; Pass _; Fail err -> Some err
-                None; Pass _; Pass _; Pass _; Pass _ -> None
+            def materializeUnpublishedStagedItemsResult =
+                require Pass (Triple _ _ unpublishedStagingItems) = preprocessOutputsResult
+
+                unpublishedStagingItems
+                | map materializeUnpublishedStagedItem
+                | findFail
+
+            def finalRunnerError: Option Error =
+                (
+                    runnerError,
+                    getFail preprocessOutputsResult,
+                    getFail storedOutputsResult,
+                    getFail ingestAndMaterializePublishedOutputsResult,
+                    getFail materializeUnpublishedStagedItemsResult,
+                    Nil
+                )
+                | find isSome
+                | omap getPairFirst
+                | getOrElse None
 
             def preparedOutputPaths =
-                finalPublishedOutputs
+                storedOutputsResult
+                | getWhenFail Nil
                 | map getPreparedStagingItemPathName
-
-            # Clean up the empty staging root directory now that all staged files are consumed.
-            def rmdir _ = prim "rmdir"
-
-            def _ = match outputs.getStagedOutputsStagingRoot
-                Some root -> rmdir root
-                None -> Unit
 
             # Invoke post-finalization callback (e.g. RSC upload from workspace dest paths).
             def _ = match finalRunnerError
@@ -270,6 +256,13 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 Some _ -> Unit
 
             def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError
+
+            # Clean up the empty staging root directory now that all staged files are consumed.
+            def rmdir _ = prim "rmdir"
+
+            def _ = match outputs.getStagedOutputsStagingRoot
+                Some root -> rmdir root
+                None -> Unit
 
             primJobFinish job inputs.implode preparedOutputPaths.implode cleanable.implode reality
 
@@ -281,7 +274,8 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
     def confirm abort last job =
         # notOk cannot be deadcode eliminated thanks to printlnLevel having effects
         def notOk (Pair name detail) =
-            def Pair _pathType hash = detail
+            def Pair _pathType hashAndMode = detail
+            def Pair hash _mode = hashAndMode
 
             if hashcode name ==* hash then
                 Unit
@@ -402,14 +396,15 @@ def tree job typ =
 
 def treeOk file =
     def Pair f detail = file
-    def Pair pathTypeString h = detail
+    def Pair pathTypeString hashAndMode = detail
+    def Pair h mode = hashAndMode
 
     match h
         "BadHash" -> failWithError "Could not hash {f}"
         _ ->
             require Pass pathType = pathTypeFromString pathTypeString
 
-            Pass (Path f pathType h)
+            Pass (Path f pathType h mode)
 
 def guardPath job = match _
     Fail e -> Fail e
