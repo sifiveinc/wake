@@ -38,6 +38,24 @@
 #include "cas/content_hash.h"
 
 static std::optional<std::string> do_hash(const char* file) {
+  struct stat st;
+  if (lstat(file, &st) != 0) {
+    std::cerr << "wake-hash: lstat(" << file << "): " << strerror(errno) << std::endl;
+    return {};
+  }
+
+  if (S_ISLNK(st.st_mode)) {
+    // For symlinks, hash the target string rather than following the link.
+    std::string target(8192, '\0');
+    ssize_t len = readlink(file, target.data(), target.size());
+    if (len < 0) {
+      std::cerr << "wake-hash: readlink(" << file << "): " << strerror(errno) << std::endl;
+      return {};
+    }
+    target.resize(len);
+    return cas::ContentHash::from_string(target).to_hex();
+  }
+
   auto result = cas::ContentHash::from_file(file);
   if (!result) {
     std::cerr << "wake-hash: read(" << file << "): " << strerror(result.error()) << std::endl;
