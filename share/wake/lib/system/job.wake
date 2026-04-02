@@ -124,8 +124,9 @@ export def primJobFinish (job: Job) (inputs: String) (outputs: String) (all_outp
     ibytes
     obytes
 
-# Look up a job in the local database. Returns a completed Job handle with outputs already resolved if it is already cached
-export def primJobCache (jobKey: JobKey): Pair (List Job) (List (Pair String String)) =
+# Look up a job in the local database. Returns a completed Job handle with outputs already resolved
+# if it is already cached.
+export def primJobCache (jobKey: JobKey): Pair (List Job) (List (Pair String (Pair String (Pair String Integer)))) =
     def JobKey dir stdin env cmd signature visible isatty = jobKey
 
     (\_ \_ \_ \_ \_ \_ \_ prim "job_cache") dir stdin env cmd signature visible isatty
@@ -170,14 +171,100 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             run job (RunnerInput label cmd vis env dir stdin res prefix usage isatty finputs foutputs)
 
         def final _ =
-            def hashedOutputs =
-                outputs
-                | computeHashes prefix
-                | implode
+            def needsWorkspaceMaterialization =
+                outputs.getStagedOutputsNeedsWorkspaceMaterialization
 
-            def _ = unsafe_primJobSetRunnerStatusMessage job runnerError
+            # Maybe materialize a prepared published item to the workspace.
+            def maybeMaterialize preparedItem =
+                if needsWorkspaceMaterialization then
+                    # TODO: Remove the non-CAS staging-materialization branch once WAKE_CAS is the default.
+                    if useCasHashes then
+                        materializePreparedStagingItemFromCas preparedItem
+                    else
+                        materializeStagedItemFromStaging preparedItem.getPreparedStagingItemItem
+                else
+                    Pass Unit
 
-            primJobFinish job inputs.implode hashedOutputs cleanable.implode reality
+            # For published items: optionally ingest to CAS, then materialize.
+            def ingestAndMaterialize (preparedItem: PreparedStagingItem) =
+                require Pass _ =
+                    # TODO: Remove the non-CAS no-ingest branch once WAKE_CAS is the default.
+                    if useCasHashes then
+                        ingestPreparedStagingItemIntoCas preparedItem
+                    else
+                        Pass Unit
+
+                maybeMaterialize preparedItem
+
+            # For unpublished items: materialize directly from staging.
+            def materializeUnpublishedStagedItem (item: StagingItem): Result Unit Error =
+                if needsWorkspaceMaterialization then
+                    materializeStagedItemFromStaging item
+                else
+                    Pass Unit
+
+            # Split outputs into published (CAS path) and unpublished (direct workspace path)
+            def preprocessOutputsResult =
+                def StagedOutputs filteredOutputPaths _ stagingItems _ _ = outputs
+
+                def Pair publishedStagingItems unpublishedStagingItems =
+                    partitionStagingItems filteredOutputPaths stagingItems
+
+                prepareStagingOutputs publishedStagingItems
+                | rmap (\preparedItems Triple preparedItems filteredOutputPaths unpublishedStagingItems)
+
+            def storedOutputsResult =
+                require Pass (Triple preparedItemsToStore _ _) = preprocessOutputsResult
+
+                Pass (map storePreparedStagingItem preparedItemsToStore)
+
+            def ingestAndMaterializePublishedOutputsResult =
+                require Pass storedOutputsToIngest = storedOutputsResult
+
+                storedOutputsToIngest
+                | map ingestAndMaterialize
+                | findFail
+
+            def materializeUnpublishedStagedItemsResult =
+                require Pass (Triple _ _ unpublishedStagingItems) = preprocessOutputsResult
+
+                unpublishedStagingItems
+                | map materializeUnpublishedStagedItem
+                | findFail
+
+            def finalRunnerError: Option Error =
+                (
+                    runnerError,
+                    getFail preprocessOutputsResult,
+                    getFail storedOutputsResult,
+                    getFail ingestAndMaterializePublishedOutputsResult,
+                    getFail materializeUnpublishedStagedItemsResult,
+                    Nil
+                )
+                | find isSome
+                | omap getPairFirst
+                | getOrElse None
+
+            def preparedOutputPaths =
+                storedOutputsResult
+                | getWhenFail Nil
+                | map getPreparedStagingItemPathName
+
+            # Invoke post-finalization callback (e.g. RSC upload from workspace dest paths).
+            def _ = match finalRunnerError
+                None -> outputs.getStagedOutputsPostFinalize Unit
+                Some _ -> Unit
+
+            def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError
+
+            # Clean up the empty staging root directory now that all staged files are consumed.
+            def rmdir _ = prim "rmdir"
+
+            def _ = match outputs.getStagedOutputsStagingRoot
+                Some root -> rmdir root
+                None -> Unit
+
+            primJobFinish job inputs.implode preparedOutputPaths.implode cleanable.implode reality
 
         # Make sure we don't hash files before the job has stopped running
         def _ = waitJobMerged final job
@@ -186,7 +273,10 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
 
     def confirm abort last job =
         # notOk cannot be deadcode eliminated thanks to printlnLevel having effects
-        def notOk (Pair name hash) =
+        def notOk (Pair name detail) =
+            def Pair _pathType hashAndMode = detail
+            def Pair hash _mode = hashAndMode
+
             if hashcode name ==* hash then
                 Unit
             # The panic will not be deadcode dropped, because it's an alternative return of the effect-ful notOk
@@ -305,11 +395,16 @@ def tree job typ =
     prim "job_tree" # 0=visible, 1=input, 2=output; blocks till finished
 
 def treeOk file =
-    def Pair f h = file
+    def Pair f detail = file
+    def Pair pathTypeString hashAndMode = detail
+    def Pair h mode = hashAndMode
 
     match h
         "BadHash" -> failWithError "Could not hash {f}"
-        _ -> Pass (Path f h)
+        _ ->
+            require Pass pathType = pathTypeFromString pathTypeString
+
+            Pass (Path f pathType h mode)
 
 def guardPath job = match _
     Fail e -> Fail e

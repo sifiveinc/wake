@@ -1417,30 +1417,42 @@ static PRIMFN(prim_job_create) {
 static size_t reserve_tree(const std::vector<FileReflection> &files) {
   size_t need = reserve_list(files.size());
   for (auto &i : files)
-    need += reserve_tuple2() + String::reserve(i.path.size()) + String::reserve(i.hash.size());
+    need += reserve_tuple2() * 3 + String::reserve(i.path.size()) + String::reserve(i.type.size()) +
+            String::reserve(i.hash.size()) + Integer::reserve(i.mode);
   return need;
 }
 
 static Value *claim_tree(Heap &h, const std::vector<FileReflection> &files) {
   std::vector<Value *> vals;
   vals.reserve(files.size());
-  for (auto &i : files)
-    vals.emplace_back(claim_tuple2(h, String::claim(h, i.path), String::claim(h, i.hash)));
+  for (auto &i : files) {
+    auto hash_and_mode = claim_tuple2(h, String::claim(h, i.hash), Integer::claim(h, i.mode));
+    auto detail = claim_tuple2(h, String::claim(h, i.type), hash_and_mode);
+    vals.emplace_back(claim_tuple2(h, String::claim(h, i.path), detail));
+  }
   return claim_list(h, vals.size(), vals.data());
 }
 
 static PRIMTYPE(type_job_cache) {
-  TypeVar spair;
+  TypeVar hash_and_mode;
+  TypeVar detail;
+  TypeVar file_reflection;
   TypeVar plist;
   TypeVar jlist;
   TypeVar pair;
-  Data::typePair.clone(spair);
+  Data::typePair.clone(hash_and_mode);
+  Data::typePair.clone(detail);
+  Data::typePair.clone(file_reflection);
   Data::typeList.clone(plist);
   Data::typeList.clone(jlist);
   Data::typePair.clone(pair);
-  spair[0].unify(Data::typeString);
-  spair[1].unify(Data::typeString);
-  plist[0].unify(spair);
+  hash_and_mode[0].unify(Data::typeString);
+  hash_and_mode[1].unify(Data::typeInteger);
+  detail[0].unify(Data::typeString);
+  detail[1].unify(hash_and_mode);
+  file_reflection[0].unify(Data::typeString);
+  file_reflection[1].unify(detail);
+  plist[0].unify(file_reflection);
   jlist[0].unify(Data::typeJob);
   pair[0].unify(jlist);
   pair[1].unify(plist);
@@ -1627,11 +1639,19 @@ static PRIMFN(prim_job_report_runner_output) {
 static PRIMTYPE(type_job_tree) {
   TypeVar list;
   TypeVar pair;
+  TypeVar detail;
+  TypeVar hash_and_mode;
   Data::typeList.clone(list);
   Data::typePair.clone(pair);
+  Data::typePair.clone(detail);
+  Data::typePair.clone(hash_and_mode);
   list[0].unify(pair);
   pair[0].unify(Data::typeString);
-  pair[1].unify(Data::typeString);
+  pair[1].unify(detail);
+  detail[0].unify(Data::typeString);
+  detail[1].unify(hash_and_mode);
+  hash_and_mode[0].unify(Data::typeString);
+  hash_and_mode[1].unify(Data::typeInteger);
   TypeVar result;
   Data::typeResult.clone(result);
   result[0].unify(list);
@@ -1745,17 +1765,26 @@ static PRIMFN(prim_job_tag) {
   RETURN(claim_unit(runtime.heap));
 }
 
+// add_hash: stores the hash and metadata for a file. mtime_ns == 0 means read from filesystem.
 static PRIMTYPE(type_add_hash) {
-  return args.size() == 2 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
-         out->unify(Data::typeString);
+  return args.size() == 5 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
+         args[2]->unify(Data::typeString) && args[3]->unify(Data::typeInteger) &&
+         args[4]->unify(Data::typeInteger) && out->unify(Data::typeString);
 }
 
 static PRIMFN(prim_add_hash) {
   JobTable *jobtable = static_cast<JobTable *>(data);
-  EXPECT(2);
+  EXPECT(5);
   STRING(file, 0);
-  STRING(hash, 1);
-  jobtable->imp->db->add_hash(file->as_str(), hash->as_str(), getmtime_ns(file->c_str()));
+  STRING(type, 1);
+  STRING(hash, 2);
+  INTEGER_MPZ(mode, 3);
+  INTEGER_MPZ(mtime_ns, 4);
+  long mode_bits = mpz_get_si(mode);
+  long mtime = mpz_get_si(mtime_ns);
+  long actual_mtime = (mtime != 0) ? mtime : getmtime_ns(file->c_str());
+  jobtable->imp->db->add_hash(file->as_str(), type->as_str(), hash->as_str(), mode_bits,
+                              actual_mtime);
   RETURN(args[0]);
 }
 
@@ -1769,6 +1798,32 @@ static PRIMFN(prim_get_hash) {
   STRING(file, 0);
   std::string hash = jobtable->imp->db->get_hash(file->as_str(), getmtime_ns(file->c_str()));
   RETURN(String::alloc(runtime.heap, hash));
+}
+
+static PRIMTYPE(type_get_cached_path) {
+  TypeVar outer, inner;
+  Data::typePair.clone(outer);
+  Data::typePair.clone(inner);
+  outer[0].unify(Data::typeString);
+  inner[0].unify(Data::typeString);
+  inner[1].unify(Data::typeInteger);
+  outer[1].unify(inner);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(outer);
+}
+
+static PRIMFN(prim_get_cached_path) {
+  JobTable *jobtable = static_cast<JobTable *>(data);
+  EXPECT(1);
+  STRING(file, 0);
+  auto cached_path = jobtable->imp->db->get_cached_path(file->as_str(), getmtime_ns(file->c_str()));
+  const std::string &hash = std::get<0>(cached_path);
+  const std::string &type = std::get<1>(cached_path);
+  long mode = std::get<2>(cached_path);
+  runtime.heap.reserve(reserve_tuple2() * 2 + String::reserve(type.size()) +
+                       String::reserve(hash.size()) + Integer::reserve(mode));
+  RETURN(claim_tuple2(runtime.heap, String::claim(runtime.heap, type),
+                      claim_tuple2(runtime.heap, String::claim(runtime.heap, hash),
+                                   Integer::claim(runtime.heap, mode))));
 }
 
 static PRIMTYPE(type_get_modtime) {
@@ -2068,6 +2123,8 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   // Get's the hash of a file if it was previouslly hashed in the database by a cached
   // job this session. Returns the empty string otherwise.
   prim_register(pmap, "get_hash", prim_get_hash, type_get_hash, PRIM_ORDERED, jobtable);
+  prim_register(pmap, "get_cached_path", prim_get_cached_path, type_get_cached_path, PRIM_ORDERED,
+                jobtable);
 
   // Get's the modtime of a file, super simple
   prim_register(pmap, "get_modtime", prim_get_modtime, type_get_modtime, PRIM_ORDERED);

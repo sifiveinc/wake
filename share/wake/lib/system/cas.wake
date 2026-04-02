@@ -1,0 +1,79 @@
+# Copyright 2026 SiFive, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You should have received a copy of LICENSE.Apache2 along with
+# this software. If not, you may obtain a copy at
+#
+#    https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+package wake
+
+export def useCasHashes = match (getenv "WAKE_CAS")
+    Some _ -> True
+    None -> False
+
+export def addCasHashEnv = match (getenv "WAKE_CAS")
+    Some value -> setPlanEnvVar "WAKE_CAS" value
+    None -> identity
+
+# Materialize an item from CAS to workspace.
+def primCasMaterializeItem (destPath: String) (itemType: String) (hashOrTarget: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
+    def raw destPath itemType hashOrTarget mode mtimeSec mtimeNsec = prim "cas_materialize_item"
+
+    raw destPath itemType hashOrTarget mode mtimeSec mtimeNsec
+    | rmapError makeError
+
+# Ingest a staged item after its hash has already been computed in Wake, storing its content in CAS
+# without writing anything back to the final workspace path.
+def primCasIngestStagedItem (destPath: String) (itemType: String) (stagingPathOrTarget: String) (hash: String): Result Unit Error =
+    def raw destPath itemType stagingPathOrTarget hash = prim "cas_ingest_staged_item"
+
+    raw destPath itemType stagingPathOrTarget hash
+    | rmapError makeError
+
+# Materialize a staged item directly into the workspace without hashing it or storing it in CAS.
+def primMaterializeStagedWorkspaceItem (destPath: String) (itemType: String) (stagingPathOrTarget: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
+    def raw destPath itemType stagingPathOrTarget mode mtimeSec mtimeNsec =
+        prim "materialize_staged_workspace_item"
+
+    raw destPath itemType stagingPathOrTarget mode mtimeSec mtimeNsec
+    | rmapError makeError
+
+# Ingest a published staged item into CAS after hashing.
+export def ingestPreparedStagingItemIntoCas (preparedItem: PreparedStagingItem): Result Unit Error =
+    def item = preparedItem.getPreparedStagingItemItem
+    def hash = preparedItem.getPreparedStagingItemHash
+
+    match item
+        StagingFile (StagingFileOutput destPath stagingPath _ _ _) ->
+            primCasIngestStagedItem destPath "file" stagingPath hash
+            | addErrorContext "Ingesting staged file {stagingPath} -> {destPath}"
+        StagingSymlink (StagingSymlinkOutput destPath symlinkTarget _ _) ->
+            primCasIngestStagedItem destPath "symlink" symlinkTarget hash
+            | addErrorContext "Ingesting staged symlink {destPath}"
+        StagingDirectory (StagingDirectoryOutput destPath _ _ _) ->
+            primCasIngestStagedItem destPath "directory" "" hash
+            | addErrorContext "Ingesting staged directory {destPath}"
+
+# Materialize a published staged item from CAS using its computed hash.
+export def materializePreparedStagingItemFromCas (preparedItem: PreparedStagingItem): Result Unit Error =
+    def item = preparedItem.getPreparedStagingItemItem
+    def hash = preparedItem.getPreparedStagingItemHash
+
+    match item
+        StagingFile (StagingFileOutput destPath _ mode mtimeSec mtimeNsec) ->
+            primCasMaterializeItem destPath "file" hash mode mtimeSec mtimeNsec
+            | addErrorContext "Materializing CAS file {destPath}"
+        StagingSymlink (StagingSymlinkOutput destPath _ mtimeSec mtimeNsec) ->
+            primCasMaterializeItem destPath "symlink" hash defaultSymlinkModeBits mtimeSec mtimeNsec
+            | addErrorContext "Materializing CAS symlink {destPath}"
+        StagingDirectory (StagingDirectoryOutput destPath mode mtimeSec mtimeNsec) ->
+            primCasMaterializeItem destPath "directory" "" mode mtimeSec mtimeNsec
+            | addErrorContext "Creating CAS directory {destPath}"

@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "cas_context.h"
 #include "tuple.h"
 #include "types/primfn.h"
 
@@ -145,6 +146,6 @@ void prim_register_json(PrimMap &pmap);
 void prim_register_job(JobTable *jobtable, PrimMap &pmap);
 void prim_register_sources(PrimMap &pmap);
 
-PrimMap prim_register_all(StringInfo *info, JobTable *jobtable);
+PrimMap prim_register_all(StringInfo *info, JobTable *jobtable, CASContext *cas_ctx);
 
 #endif

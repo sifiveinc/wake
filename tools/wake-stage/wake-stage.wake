@@ -18,5 +18,6 @@ package build_wake
 from wake import _
 from gcc_wake import _
 
-export target casLib variant =
-    src @here variant (blake2, wcl, util, Nil) Nil Nil
+target buildStage variant: Result (List Path) Error =
+    tool @here Nil variant "lib/wake/wake-stage" (json, wcl, util, Nil) Nil Nil
+
