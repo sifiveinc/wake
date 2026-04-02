@@ -755,9 +755,26 @@ def generateUUID Unit: Result String Error =
     uuidJob
     | getJobStdout
 
+# Writes the disable-cache sentinel directly because guardRemoteCacheDisabled needs it to be
+# visible immediately, not after staged-output finalization.
+def writeUntrackedTmpFile (pathStr: String) (content: String): Result Unit Error =
+    def mkdirRaw mode path = prim "mkdir"
+    def writeRaw mode path body = prim "write"
+
+    require Pass _ = mkdirRaw 0755 ".build"
+    else failWithError "Failed to create .build for temporary remote-cache state"
+
+    require Pass _ = mkdirRaw 0755 ".build/tmp"
+    else failWithError "Failed to create .build/tmp for temporary remote-cache state"
+
+    require Pass _ = writeRaw 0644 pathStr content
+    else failWithError "Failed to write temporary remote-cache state file {pathStr}"
+
+    Pass Unit
+
 def disableRemoteCache Unit: Result Unit Error =
     require Pass uuid = generateUUID Unit
-    require Pass _ = write disableCacheFilePath uuid
+    require Pass _ = writeUntrackedTmpFile disableCacheFilePath uuid
 
     Pass Unit
 
