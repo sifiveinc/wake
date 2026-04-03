@@ -86,15 +86,19 @@ bool daemon_client::connect(std::vector<visible_file> &visible, const std::strin
       std::string delayStr = std::to_string(exit_delay);
       const char *env[3] = {"PATH=/usr/bin:/bin:/usr/sbin:/sbin", 0, 0};
       if (getenv("DEBUG_FUSE_WAKE")) env[1] = "DEBUG_FUSE_WAKE=1";
-      // Pass --use-cas to enable CAS-first staging when WAKE_CAS env var is set
-      // TODO: Remove the non-CAS daemon launch path once WAKE_CAS is the default.
-      if (getenv("WAKE_CAS")) {
-        execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), "--use-cas",
-               nullptr, env);
-      } else {
-        execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), nullptr,
-               env);
+
+      // !!! XXX: Temporary guard for helping users combining this with transition-only wake code
+      // to ensure they don't accidentally use inappropriately.
+      if (!getenv("WAKE_CAS")) {
+        std::cerr << "For transition period, WAKE_CAS must be set to avoid mistaken use with "
+                     "transition-only user wake code."
+                  << std::endl;
+        exit(1);
       }
+
+      // CAS is now mandatory - always pass --use-cas
+      execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), "--use-cas",
+             nullptr, env);
       std::cerr << "execl " << executable << ": " << strerror(errno) << std::endl;
       exit(1);
     }
