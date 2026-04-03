@@ -1,0 +1,13 @@
+Fresh concurrent runs:
+==> result-a.txt <==
+A
+
+==> result-b.txt <==
+B
+
+Reuse:
+==> result-a.txt <==
+A
+
+==> result-b.txt <==
+B
