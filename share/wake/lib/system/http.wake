@@ -298,9 +298,8 @@ export def makeRequest (request: HttpRequest): Result HttpResponse Error =
         # Curl jobs don't use many resources, most time is spent waiting for a response
         | setPlanUsage (Usage 0 0.0 0.1 0 0 0)
         | setPlanEcho logDebug
-        # makeRequest is used for the RSC checks in defaultRunner, so use the fuseRunner at one
-        # layer closer to the system to avoid "illegal cyclic value" errors.
-        | runJobWith fuseRunner
+        # Use localRunner to help avoid potential high namespace overhead.
+        | runJobWith localRunner
         | setJobTag "http.method" "{method | methodToString}"
         | setJobTag "http.url" url
         | setJobInspectVisibilityHidden
@@ -333,9 +332,10 @@ export def makeBinaryRequest (request: HttpRequest): Result Path Error =
     # request instead. This won't create 'file output by many jobs' in a single invocation since
     # the function is a target, and across multiple invocations its fine as the job is set to
     # always rerun and we'd want to replace the file incase it changed on the remote.
-    require Pass _ = mkdir ".build/wake/stdlib/http"
-
-    def destination = ".build/wake/stdlib/http/binary.{request | format | hashString}"
+    # Per-process directory avoids conflicts when multiple wake processes share a workspace.
+    def wakePid: Integer = prim "pid"
+    def httpDir = ".build/wake-{str wakePid}/stdlib/http/"
+    def destination = "{httpDir}/binary.{request | format | hashString}"
 
     require Pass cmd = makeCurlCmd request ("--output", destination, Nil)
 
@@ -400,9 +400,8 @@ export def makeBinaryRequest (request: HttpRequest): Result Path Error =
         # Curl jobs don't use many resources, most time is spent waiting for a response
         | setPlanUsage (Usage 0 0.0 0.1 0 0 0)
         | setPlanEcho logDebug
-        # makeBinaryRequest is used for the RSC fetches in defaultRunner, so use the fuseRunner at
-        # one layer closer to the system to avoid "illegal cyclic value" errors.
-        | runJobWith fuseRunner
+        # Use localRunner to help avoid potential high namespace overhead.
+        | runJobWith localRunner
         | setJobTag "http.method" methodStr
         | setJobTag "http.url" url
         | setJobInspectVisibilityHidden
