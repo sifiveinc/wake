@@ -2,7 +2,7 @@
   "command": [
     "/bin/sh",
     "-c",
-    "touch link_file_src.txt\nln link_file_src.txt link_file_dst.txt\necho \"pass\" > link_file_src.txt\ncat link_file_dst.txt"
+    "set -e\ntouch link_file_src.txt\nln link_file_src.txt link_file_dst.txt\necho \"pass\" > link_file_src.txt\ncat link_file_dst.txt"
   ],
   "environment": [
     "USER=root",
