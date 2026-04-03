@@ -275,13 +275,13 @@ TEST(filepath_dir_range_basic) {
 
   auto touch_dir = [&](std::string entry) {
     std::string dir = "test_dir/" + entry;
-    mkdir(dir.c_str(), 0777);
+    ASSERT_TRUE(mkdir(dir.c_str(), 0777) >= 0);
     expected_type[entry] = wcl::file_type::directory;
   };
 
   auto touch_sym = [&](std::string entry) {
     std::string path = "test_dir/" + entry;
-    (void)symlink("touch", path.c_str());
+    ASSERT_TRUE(symlink("touch", path.c_str()) >= 0);
     expected_type[entry] = wcl::file_type::symlink;
   };
 

@@ -141,7 +141,7 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
 
 bool daemon_client::disconnect(std::string &result) {
   // Cause the daemon_output_path to be generated (this write will fail)
-  (void)!write(live_fd, "x", 1);  // the ! convinces older gcc that it's ok to ignore the write
+  std::ignore = write(live_fd, "x", 1);
   (void)fsync(live_fd);
 
   // Read the output file

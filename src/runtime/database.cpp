@@ -569,8 +569,15 @@ bool Database::try_acquire_build_lock(bool wait, bool tty) {
       // Successfully acquired lock
       char pid_str[32];
       snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
-      ::write(fd, pid_str, strlen(pid_str));
+      ssize_t written = ::write(fd, pid_str, strlen(pid_str));
       ::close(fd);
+
+      if (written < (ssize_t)strlen(pid_str)) {
+        std::cerr << "Failed to create build lock: "
+                  << (written < 0 ? strerror(errno) : "incomplete pid written") << std::endl;
+        unlink(lock_file);
+        return false;
+      }
 
       indicator.finish();
       build_lock_acquired = true;
