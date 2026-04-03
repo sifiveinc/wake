@@ -231,18 +231,14 @@ export def cargoBuildWith (toolchain: Result CargoToolchain Error) (executable: 
 
     if isTestBinary then
         require Pass binaryDir = mkdir "{root}/target/{buildConfigToString config}/deps"
-
-        require Pass regex =
-            stringToRegExp "{binaryDir.getPathName}/{binaryName}-[a-z0-9]\{16\}"
+        require Pass regex = stringToRegExp "{binaryDir.getPathName}/{binaryName}-[a-z0-9]\{16\}"
 
         Pass executable
         |> addCargoFlag "--no-run"
         |> cargoBuildCommon "test" binaryDir regex toolchain
     else
         require Pass binaryDir = mkdir "{root}/target/{buildConfigToString config}"
-
-        require Pass regex =
-            stringToRegExp "{binaryDir.getPathName}/{binaryName}"
+        require Pass regex = stringToRegExp "{binaryDir.getPathName}/{binaryName}"
 
         executable
         | cargoBuildCommon "build" binaryDir regex toolchain
