@@ -1,1 +1,1 @@
-Failed to load .wakeroot: .wakeroot must be a valid JSON object: Was expecting ID/STR, got a COMMA at string:2:1
+Failed to load .wakeroot: .wakeroot must be a valid JSON object: Unexpected symbol END at string:3:[1-0]
