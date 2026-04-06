@@ -113,6 +113,8 @@ inline size_t reserve_list(size_t elements) {
 Value *claim_unit(Heap &h);
 Value *claim_bool(Heap &h, bool x);
 Value *claim_tuple2(Heap &h, Value *first, Value *second);
+inline size_t reserve_tuple5() { return reserve_tuple2() * 4; }
+Value *claim_tuple5(Heap &h, Value *a, Value *b, Value *c, Value *d, Value *e);
 Value *claim_result(Heap &h, bool ok, Value *value);
 Value *claim_list(Heap &h, size_t elements, Value **values);
 

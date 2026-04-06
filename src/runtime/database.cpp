@@ -351,7 +351,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "select output from log where job_id=? and descriptor=? order by log_id";
   const char *sql_replay_log = "select descriptor, output from log where job_id=? order by log_id";
   const char *sql_get_tree =
-      "select f.path, f.hash, f.type, f.mode from filetree t, files f"
+      "select f.path, f.hash, f.type, f.mode, f.modified from filetree t, files f"
       " where t.job_id=? and t.access=? and f.file_id=t.file_id order by t.tree_id";
   const char *sql_add_stats =
       "insert into stats(hashcode, status, runtime, cputime, membytes, ibytes, obytes)"
@@ -923,8 +923,9 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     std::string hash = rip_column(imp->get_tree, 1);
     std::string type = rip_column(imp->get_tree, 2);
     long mode = sqlite3_column_int64(imp->get_tree, 3);
+    long modified = sqlite3_column_int64(imp->get_tree, 4);
     if (faccessat(AT_FDCWD, path.c_str(), R_OK, AT_SYMLINK_NOFOLLOW) != 0) out.found = false;
-    files.emplace_back(std::move(path), std::move(type), std::move(hash), mode);
+    files.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
 
@@ -1166,7 +1167,8 @@ std::vector<FileReflection> Database::get_tree(int kind, long job) {
     std::string hash = rip_column(imp->get_tree, 1);
     std::string type = rip_column(imp->get_tree, 2);
     long mode = sqlite3_column_int64(imp->get_tree, 3);
-    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode);
+    long modified = sqlite3_column_int64(imp->get_tree, 4);
+    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
   end_txn();
@@ -1563,7 +1565,8 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
     std::string hash = rip_column(db->imp->get_tree, 1);
     std::string type = rip_column(db->imp->get_tree, 2);
     long mode = sqlite3_column_int64(db->imp->get_tree, 3);
-    desc.visible.emplace_back(std::move(path), std::move(type), std::move(hash), mode);
+    long modified = sqlite3_column_int64(db->imp->get_tree, 4);
+    desc.visible.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
   }
   finish_stmt(why, db->imp->get_tree, db->imp->debugdb);
   // tags
@@ -1581,7 +1584,8 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
     std::string hash = rip_column(db->imp->get_tree, 1);
     std::string type = rip_column(db->imp->get_tree, 2);
     long mode = sqlite3_column_int64(db->imp->get_tree, 3);
-    desc.inputs.emplace_back(std::move(path), std::move(type), std::move(hash), mode);
+    long modified = sqlite3_column_int64(db->imp->get_tree, 4);
+    desc.inputs.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
   }
   finish_stmt(why, db->imp->get_tree, db->imp->debugdb);
 
@@ -1593,7 +1597,8 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
     std::string hash = rip_column(db->imp->get_tree, 1);
     std::string type = rip_column(db->imp->get_tree, 2);
     long mode = sqlite3_column_int64(db->imp->get_tree, 3);
-    desc.outputs.emplace_back(std::move(path), std::move(type), std::move(hash), mode);
+    long modified = sqlite3_column_int64(db->imp->get_tree, 4);
+    desc.outputs.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
   }
   finish_stmt(why, db->imp->get_tree, db->imp->debugdb);
 
