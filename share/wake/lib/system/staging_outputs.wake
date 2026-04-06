@@ -174,19 +174,22 @@ export def parseStagingFiles (content: JValue): Result (List StagingItem) Error 
             | findFail
 
 # Picks the staged filesystem paths that still need hashing from disk.
-def stagingHashInput (item: StagingItem): Option (Pair String String) = match item
-    StagingFile (StagingFileOutput destPath stagingPath _ _ _) -> Some (Pair destPath stagingPath)
-    StagingSymlink (StagingSymlinkOutput destPath _ _ _) -> Some (Pair destPath destPath)
+def stagingHashInput (item: StagingItem): Option (Triple String String Integer) = match item
+    StagingFile (StagingFileOutput destPath stagingPath _ mtimeSec mtimeNsec) ->
+        Some (Triple destPath stagingPath (mtimeNsFromParts mtimeSec mtimeNsec))
+    StagingSymlink (StagingSymlinkOutput destPath _ mtimeSec mtimeNsec) ->
+        Some (Triple destPath destPath (mtimeNsFromParts mtimeSec mtimeNsec))
     _ -> None
 
 # Converts staged metadata into PreparedStagingItem values by hashing staged files from their
 # staging paths and deriving hashes for symlinks/directories. Checks the dest-path hash cache
 # first to avoid re-hashing files whose content is already known (e.g. source files).
 export def prepareStagingOutputs (stagingItems: List StagingItem): Result (List PreparedStagingItem) Error =
-    # Check if the dest path already has a cached hash (and CAS blob, when in CAS mode).
-    def tryCachedFileHash (destPath: String): Option String = match (getCachedPathInfo destPath)
-        Pass (Some pathInfo) -> Some pathInfo.getPathInfoHash
-        _ -> None
+    # Check if the dest path already has a cached hash using the staging item's mtime.
+    def tryCachedFileHash (destPath: String) (mtimeNs: Integer): Option String =
+        match (getCachedPathInfo destPath mtimeNs)
+            Pass (Some pathInfo) -> Some pathInfo.getPathInfoHash
+            _ -> None
 
     def hashInputs =
         stagingItems
@@ -196,7 +199,7 @@ export def prepareStagingOutputs (stagingItems: List StagingItem): Result (List 
     def cachedByDest =
         hashInputs
         | mapPartial (
-            \(Pair destPath _) match (tryCachedFileHash destPath)
+            \(Triple destPath _ mtimeNs) match (tryCachedFileHash destPath mtimeNs)
                 Some hash -> Some (Pair destPath hash)
                 None -> None
         )
@@ -204,19 +207,19 @@ export def prepareStagingOutputs (stagingItems: List StagingItem): Result (List 
     def uncachedInputs =
         hashInputs
         | filter (
-            \(Pair destPath _) match (tryCachedFileHash destPath)
+            \(Triple destPath _ mtimeNs) match (tryCachedFileHash destPath mtimeNs)
                 Some _ -> False
                 None -> True
         )
 
     # Only hash files that missed the cache.
     def freshHashesResult: Result (List String) Error =
-        computeHashes (map getPairSecond uncachedInputs)
+        computeHashes (map getTripleSecond uncachedInputs)
 
     match freshHashesResult
         Fail err -> Fail err
         Pass freshHashes ->
-            def freshByDest = zip (map getPairFirst uncachedInputs) freshHashes
+            def freshByDest = zip (map getTripleFirst uncachedInputs) freshHashes
             def allHashesByDest = listToMap scmp (cachedByDest ++ freshByDest)
 
             def lookupFileHash (destPath: String): Result String Error =
@@ -307,8 +310,7 @@ export def storePreparedStagingItem (preparedItem: PreparedStagingItem): Prepare
             mtimeNsFromParts mtimeSec mtimeNsec
 
     def pathInfo =
-        PathInfo (getStagingItemDestPath item) (getStagingItemPathType item) hash (getStagingItemMode item)
-
-    def _ = storePath mtimeNs pathInfo
+        PathInfo (getStagingItemDestPath item) (getStagingItemPathType item) hash (getStagingItemMode item) mtimeNs
+    def _ = storePath pathInfo
 
     preparedItem

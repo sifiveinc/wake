@@ -31,8 +31,14 @@ struct FileReflection {
   std::string type;
   std::string hash;
   long mode;
-  FileReflection(std::string &&path_, std::string &&type_, std::string &&hash_, long mode_)
-      : path(std::move(path_)), type(std::move(type_)), hash(std::move(hash_)), mode(mode_) {}
+  long modified;  // mtime in nanoseconds
+  FileReflection(std::string &&path_, std::string &&type_, std::string &&hash_, long mode_,
+                 long modified_)
+      : path(std::move(path_)),
+        type(std::move(type_)),
+        hash(std::move(hash_)),
+        mode(mode_),
+        modified(modified_) {}
 };
 
 struct Usage {

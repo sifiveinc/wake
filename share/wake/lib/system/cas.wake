@@ -77,3 +77,14 @@ export def materializePreparedStagingItemFromCas (preparedItem: PreparedStagingI
         StagingDirectory (StagingDirectoryOutput destPath mode mtimeSec mtimeNsec) ->
             primCasMaterializeItem destPath "directory" "" mode mtimeSec mtimeNsec
             | addErrorContext "Creating CAS directory {destPath}"
+
+# Materialize a cached job output from CAS using its PathInfo metadata.
+export def materializeCachedItemFromCas (pathInfo: PathInfo): Result Unit Error =
+    def Pair mtimeSec mtimeNsec = mtimeNsToParts pathInfo.getPathInfoMtimeNs
+    def typeStr = pathTypeToString pathInfo.getPathInfoType
+    def hash = match pathInfo.getPathInfoType
+        PathTypeDirectory -> ""
+        _ -> pathInfo.getPathInfoHash
+
+    primCasMaterializeItem pathInfo.getPathInfoName typeStr hash pathInfo.getPathInfoMode mtimeSec mtimeNsec
+    | addErrorContext "Materializing cached output {pathInfo.getPathInfoName} from CAS"

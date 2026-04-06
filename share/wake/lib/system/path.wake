@@ -154,31 +154,19 @@ tuple PathInfo =
     Type: PathType
     Hash: String
     Mode: Integer
+    MtimeNs: Integer
 
 # We still use Path for directories even though hashing doesn't make a lot of sense.
 # The previous definition of `getPathHash` would return all zeros so we mimic that.
 def dirHash =
     "0000000000000000000000000000000000000000000000000000000000000000"
 
-# TODO: Simplify to return String instead of Path.
-export def getPathParent (path: Path): Path =
-    def parentName = simplify "{getPathName path}/.."
+export def getPathParent (path: Path): String =
+    simplify "{getPathName path}/.."
 
-    def parentMode = match (getCachedPathInfo parentName)
-        Pass (Some cachedPathInfo) -> match cachedPathInfo.getPathInfoType
-            PathTypeDirectory -> cachedPathInfo.getPathInfoMode
-            _ -> match (unsafe_stat parentName)
-                Pass (Stat PathTypeDirectory mode _) -> mode2bits mode
-                _ -> 0755
-        _ -> match (unsafe_stat parentName)
-            Pass (Stat PathTypeDirectory mode _) -> mode2bits mode
-            _ -> 0755
-
-    Path parentName PathTypeDirectory dirHash parentMode
-
-def getCachedPathInfo (file: String): Result (Option PathInfo) Error =
-    def get f = prim "get_cached_path"
-    def Pair pathTypeString (Pair hash mode) = get file
+def getCachedPathInfo (file: String) (mtimeNs: Integer): Result (Option PathInfo) Error =
+    def get f m = prim "get_cached_path"
+    def Pair pathTypeString (Pair hash mode) = get file mtimeNs
 
     if hash ==* "" then
         Pass None
@@ -186,13 +174,13 @@ def getCachedPathInfo (file: String): Result (Option PathInfo) Error =
         require Pass pathType = pathTypeFromString pathTypeString
         else failWithError "Failed to decode cached path type '{pathTypeString}' for {file}"
 
-        def cachedPathInfo = PathInfo file pathType hash mode
+        def cachedPathInfo = PathInfo file pathType hash mode mtimeNs
 
         Pass (Some cachedPathInfo)
 
-# Store path hash/metadata into the files DB. mtimeNs == 0 falls back to getmtime_ns(path).
+# Store path hash/metadata into the files DB. MtimeNs == 0 falls back to getmtime_ns(path).
 # The returned Path represents the now-recorded DB-backed path metadata.
-def storePath (mtimeNs: Integer) (pathInfo: PathInfo): Path =
+def storePath (pathInfo: PathInfo): Path =
     def addHash f t h m mns = prim "add_hash"
 
     def _ =
@@ -201,7 +189,7 @@ def storePath (mtimeNs: Integer) (pathInfo: PathInfo): Path =
         (pathTypeToString pathInfo.getPathInfoType)
         pathInfo.getPathInfoHash
         pathInfo.getPathInfoMode
-        mtimeNs
+        pathInfo.getPathInfoMtimeNs
 
     Path
     pathInfo.getPathInfoName

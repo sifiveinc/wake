@@ -126,7 +126,8 @@ export def primJobFinish (job: Job) (inputs: String) (outputs: String) (all_outp
 
 # Look up a job in the local database. Returns a completed Job handle with outputs already resolved
 # if it is already cached.
-export def primJobCache (jobKey: JobKey): Pair (List Job) (List (Pair String (Pair String (Pair String Integer)))) =
+# TODO: Clean up return type.
+export def primJobCache (jobKey: JobKey): Pair (List Job) (List (Pair String (Pair String (Pair String (Pair Integer Integer))))) =
     def JobKey dir stdin env cmd signature visible isatty = jobKey
 
     (\_ \_ \_ \_ \_ \_ \_ prim "job_cache") dir stdin env cmd signature visible isatty
@@ -273,9 +274,9 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
 
     def confirm abort last job =
         # notOk cannot be deadcode eliminated thanks to printlnLevel having effects
-        def notOk (Pair name detail) =
-            def Pair _pathType hashAndMode = detail
-            def Pair hash _mode = hashAndMode
+        def notOk pathInfo =
+            def name = pathInfo.getPathInfoName
+            def hash = pathInfo.getPathInfoHash
 
             if hashcode name ==* hash then
                 Unit
@@ -291,14 +292,41 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
 
         job
 
+    def materializeCachedOutputs (outputs: List PathInfo): Result Unit Error =
+        outputs
+        | map materializeCachedItemFromCas
+        | findFail
+        | rmap (\_ Unit)
+
     require True = keep
     else build Unit
 
     def cache = primJobCache jobKey
 
+    # TODO: Replace nested-Pair return from C++ claim_tree with a proper Wake tuple.
+    def parseCachedPathInfo (Pair name (Pair pathTypeString (Pair hash (Pair mode mtimeNs)))) =
+        require Pass pathType = pathTypeFromString pathTypeString
+        else failWithError "Failed to parse cached output type '{pathTypeString}' for {name}"
+
+        Pass (PathInfo name pathType hash mode mtimeNs)
+
+    require Pass cachedOutputs =
+        cache.getPairSecond
+        | map parseCachedPathInfo
+        | findFail
+    else build Unit
+
     match cache
-        Pair (job, _) last -> confirm True last job
-        Pair Nil last -> confirm False last (build Unit)
+        Pair (job, _) _ ->
+            if useCasHashes then
+                require Pass _ = materializeCachedOutputs cachedOutputs
+                else build Unit
+
+                confirm True cachedOutputs job
+            else
+                confirm True cachedOutputs job
+        Pair Nil _ ->
+            confirm False cachedOutputs (build Unit)
 
 # Only run if the first four arguments differ
 target runOnce cmd env dir stdin vis isatty run \ res usage finputs foutputs keep echo stdout stderr label =
@@ -396,8 +424,8 @@ def tree job typ =
 
 def treeOk file =
     def Pair f detail = file
-    def Pair pathTypeString hashAndMode = detail
-    def Pair h mode = hashAndMode
+    def Pair pathTypeString hashAndRest = detail
+    def Pair h (Pair mode _mtimeNs) = hashAndRest
 
     match h
         "BadHash" -> failWithError "Could not hash {f}"

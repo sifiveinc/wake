@@ -69,6 +69,10 @@ Value *claim_tuple2(Heap &h, Value *first, Value *second) {
   return out;
 }
 
+Value *claim_tuple5(Heap &h, Value *a, Value *b, Value *c, Value *d, Value *e) {
+  return claim_tuple2(h, a, claim_tuple2(h, b, claim_tuple2(h, c, claim_tuple2(h, d, e))));
+}
+
 Value *claim_result(Heap &h, bool ok, Value *value) {
   Record *out = Record::claim(h, &Result->members[ok ? 0 : 1], 1);
   out->at(0)->instant_fulfill(value);
