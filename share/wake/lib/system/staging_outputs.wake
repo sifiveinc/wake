@@ -174,11 +174,11 @@ export def parseStagingFiles (content: JValue): Result (List StagingItem) Error 
             | findFail
 
 # Picks the staged filesystem paths that still need hashing from disk.
+# Note: Symlinks are excluded here because their hashes are computed directly from the
+# target string.
 def stagingHashInput (item: StagingItem): Option (Triple String String Integer) = match item
     StagingFile (StagingFileOutput destPath stagingPath _ mtimeSec mtimeNsec) ->
         Some (Triple destPath stagingPath (mtimeNsFromParts mtimeSec mtimeNsec))
-    StagingSymlink (StagingSymlinkOutput destPath _ mtimeSec mtimeNsec) ->
-        Some (Triple destPath destPath (mtimeNsFromParts mtimeSec mtimeNsec))
     _ -> None
 
 # Converts staged metadata into PreparedStagingItem values by hashing staged files from their
@@ -233,10 +233,10 @@ export def prepareStagingOutputs (stagingItems: List StagingItem): Result (List 
                         match (lookupFileHash destPath)
                             Fail err -> Fail err
                             Pass hash -> Pass (PreparedStagingItem item hash)
-                    StagingSymlink (StagingSymlinkOutput destPath _ _ _) ->
-                        match (lookupFileHash destPath)
-                            Fail err -> Fail err
-                            Pass hash -> Pass (PreparedStagingItem item hash)
+                    StagingSymlink (StagingSymlinkOutput _ symlinkTarget _ _) ->
+                        # For symlinks, compute hash directly from the target string in the staging metadata.
+                        # In CAS mode, symlinks are tracked virtually and don't exist on disk until materialization.
+                        Pass (PreparedStagingItem item (hashString symlinkTarget))
                     StagingDirectory _ -> Pass (PreparedStagingItem item dirHash)
 
             stagingItems
