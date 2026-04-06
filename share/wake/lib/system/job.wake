@@ -325,8 +325,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 confirm True cachedOutputs job
             else
                 confirm True cachedOutputs job
-        Pair Nil _ ->
-            confirm False cachedOutputs (build Unit)
+        Pair Nil _ -> confirm False cachedOutputs (build Unit)
 
 # Only run if the first four arguments differ
 target runOnce cmd env dir stdin vis isatty run \ res usage finputs foutputs keep echo stdout stderr label =

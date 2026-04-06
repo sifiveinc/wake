@@ -310,7 +310,13 @@ export def storePreparedStagingItem (preparedItem: PreparedStagingItem): Prepare
             mtimeNsFromParts mtimeSec mtimeNsec
 
     def pathInfo =
-        PathInfo (getStagingItemDestPath item) (getStagingItemPathType item) hash (getStagingItemMode item) mtimeNs
+        PathInfo
+        (getStagingItemDestPath item)
+        (getStagingItemPathType item)
+        hash
+        (getStagingItemMode item)
+        mtimeNs
+
     def _ = storePath pathInfo
 
     preparedItem
