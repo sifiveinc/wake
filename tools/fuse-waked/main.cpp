@@ -875,6 +875,7 @@ static int wakefuse_readlink(const char *path, char *buf, size_t size) {
       size_t len = std::min(l->target.size(), size - 1);
       memcpy(buf, l->target.c_str(), len);
       buf[len] = '\0';
+      it->second.files_read.insert(std::move(key.second));
       return 0;
     }
   }
