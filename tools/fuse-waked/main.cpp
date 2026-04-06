@@ -359,6 +359,15 @@ void Job::parse() {
     if (!path.empty() && path[0] != '/') {
       files_visible.insert(path);
       visible_entries[path] = VisibleEntry{type, hash, mode};
+
+      // Add implicit parent directories for this path
+      for (size_t slash = path.find('/'); slash != std::string::npos; slash = path.find('/', slash + 1)) {
+        std::string parent = path.substr(0, slash);
+        if (visible_entries.find(parent) == visible_entries.end()) {
+          files_visible.insert(parent);
+          visible_entries[parent] = VisibleEntry{"directory", "", std::nullopt};
+        }
+      }
     }
   }
 }
@@ -735,6 +744,13 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
             stbuf->st_gid = getgid();
             return 0;
           }
+        } else if (type == "directory") {
+          memset(stbuf, 0, sizeof(*stbuf));
+          stbuf->st_mode = S_IFDIR | visible_mode_or(visible_it->second, 0755);
+          stbuf->st_nlink = 2;
+          stbuf->st_uid = getuid();
+          stbuf->st_gid = getgid();
+          return 0;
         }
       }
     }
@@ -811,9 +827,15 @@ static int wakefuse_access(const char *path, int mask) {
     auto visible_it = it->second.visible_entries.find(key.second);
     if (visible_it != it->second.visible_entries.end()) {
       const std::string &type = visible_it->second.type;
+      if (type == "directory") {
+        if (mask & W_OK) return -EACCES;
+        return 0;
+      }
+      if (type == "symlink") {
+        return 0;
+      }
       cas::ContentHash hash;
-      if (type != "symlink" && type != "directory" &&
-          parse_visible_hash(type, visible_it->second.hash, &hash)) {
+      if (parse_visible_hash(type, visible_it->second.hash, &hash)) {
         std::string blob_path = cas_blob_path(hash);
         if (blob_path.empty()) return -ENOENT;
         if (access(blob_path.c_str(), F_OK) == -1) return -errno;
@@ -970,8 +992,9 @@ static int wakefuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     }
   }
 
-  // For virtual directories (created by mkdir but not on disk), add . and ..
-  if (dfd == -1 && it->second.is_writeable(key.second)) {
+  // For virtual directories (created by mkdir or CAS-only visible dirs), add . and ..
+  if (dfd == -1 && (it->second.is_writeable(key.second) ||
+                    (g_use_cas && it->second.is_visible(key.second)))) {
     filler(buf, ".", 0, 0);
     filler(buf, "..", 0, 0);
     already_listed.insert(".");
@@ -1018,6 +1041,13 @@ static int wakefuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         already_listed.insert(name);
         filler(buf, name.c_str(), 0, 0);
       }
+    }
+  }
+
+  // Add visible entries (CAS-tracked files, symlinks, and directories)
+  if (g_use_cas) {
+    for (auto &ve : it->second.visible_entries) {
+      add_child_entry(ve.first);
     }
   }
 
