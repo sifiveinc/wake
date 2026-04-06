@@ -27,7 +27,9 @@
 
 struct visible_file {
   std::string path;
+  std::string type;
   std::string hash;
+  std::optional<int> mode;
 };
 
 struct daemon_client {

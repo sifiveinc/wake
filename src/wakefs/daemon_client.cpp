@@ -83,7 +83,8 @@ bool daemon_client::connect(std::vector<visible_file> &visible, const std::strin
       std::string delayStr = std::to_string(exit_delay);
       const char *env[3] = {"PATH=/usr/bin:/bin:/usr/sbin:/sbin", 0, 0};
       if (getenv("DEBUG_FUSE_WAKE")) env[1] = "DEBUG_FUSE_WAKE=1";
-
+      // Pass --use-cas to enable CAS-first staging when WAKE_CAS env var is set
+      // TODO: Remove the non-CAS daemon launch path once WAKE_CAS is the default.
       if (getenv("WAKE_CAS")) {
         execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), "--use-cas",
                nullptr, env);
@@ -135,13 +136,17 @@ bool daemon_client::connect(std::vector<visible_file> &visible, const std::strin
   // The fuse-waked process takes an input file containing visible files, json formatted.
   JAST for_daemon(JSON_OBJECT);
 
+  // Add CAS blobs directory
   for_daemon.add("cas_blobs_dir", cas_blobs_dir);
 
+  // Add visible files with path, type, hash, and mode.
   auto &vis = for_daemon.add("visible", JSON_ARRAY);
   for (auto &v : visible) {
     auto &obj = vis.add(JSON_OBJECT);
     obj.add("path", v.path);
+    obj.add("type", v.type);
     obj.add("hash", v.hash);
+    if (v.mode) obj.add("mode", static_cast<long long>(*v.mode));
   }
 
   std::ofstream ijson(visibles_path);
