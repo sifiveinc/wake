@@ -62,7 +62,7 @@
 static int linger_timeout;
 static std::set<std::string> hardlinks = {};
 
-// Staging directory for CAS (wakebox handles CAS storage)
+// Staging directory for CAS
 static std::string g_staging_dir;
 
 // Helper for std::visit with multiple lambdas
@@ -73,47 +73,40 @@ struct overloaded : Ts... {
 template <class... Ts>
 overloaded(Ts...) -> overloaded<Ts...>;
 
-// Type-specific data structures for staged items
-// Each type only contains the fields relevant to it
-
-// Regular file: has staging path, mode, and timestamps
+// Staged item types - written to .cas/staging/ during job execution, hashed by wakebox after
 struct StagedFileData {
-  std::string staging_path;  // Path in .cas/staging/{id}
-  mode_t mode;               // File permissions
-  struct timespec mtime;     // Modification timestamp
-  struct timespec atime;     // Access timestamp
+  std::string staging_path;
+  mode_t mode;
+  struct timespec mtime;
+  struct timespec atime;
 };
 
-// Symbolic link: has target path and mtime
 struct StagedSymlinkData {
-  std::string target;  // Symlink target path
-  struct timespec mtime;  // Modification timestamp
+  std::string target;
+  struct timespec mtime;
 };
 
-// Directory: has mode and mtime
 struct StagedDirectoryData {
-  mode_t mode;  // Directory permissions
-  struct timespec mtime;  // Modification timestamp
+  mode_t mode;
+  struct timespec mtime;
 };
 
 // Hardlink: references source file, shares staging_path for dedup
 struct StagedHardlinkData {
-  std::string staging_path;  // Same as source (deduplication key)
-  std::string source_path;   // Path to source file (for resolution)
-  mode_t mode;               // Copied from source
-  struct timespec mtime;     // Copied from source
-  struct timespec atime;     // Copied from source
+  std::string staging_path;
+  std::string source_path;
+  mode_t mode;
+  struct timespec mtime;
+  struct timespec atime;
 };
 
-// Main staged item structure using std::variant
-// TODO: Consider adding uid/gid tracking if needed. Currently we don't track ownership
-// because most build systems don't preserve it - outputs are owned by the build user.
-// If a tool requires chown() followed by stat() to return consistent values, we would
-// need to add uid_t uid and gid_t gid fields here.
+using StagedItemData =
+    std::variant<StagedFileData, StagedSymlinkData, StagedDirectoryData, StagedHardlinkData>;
+
 struct StagedItem {
-  std::string dest_path;  // Final destination path (relative to workspace)
-  std::string job_id;     // Job that owns this item
-  std::variant<StagedFileData, StagedSymlinkData, StagedDirectoryData, StagedHardlinkData> data;
+  std::string dest_path;
+  std::string job_id;
+  StagedItemData data;
 
   // Type query helpers
   bool is_file() const { return std::holds_alternative<StagedFileData>(data); }
@@ -145,26 +138,24 @@ struct StagedItem {
 
   // Get mode (valid for file, directory, and hardlink)
   mode_t mode() const {
-    return std::visit(
-        overloaded{
-            [](const StagedFileData &f) { return f.mode; },
-            [](const StagedSymlinkData &) { return static_cast<mode_t>(0777); },
-            [](const StagedDirectoryData &d) { return d.mode; },
-            [](const StagedHardlinkData &h) { return h.mode; },
-        },
-        data);
+    return std::visit(overloaded{
+                          [](const StagedFileData &f) { return f.mode; },
+                          [](const StagedSymlinkData &) { return static_cast<mode_t>(0777); },
+                          [](const StagedDirectoryData &d) { return d.mode; },
+                          [](const StagedHardlinkData &h) { return h.mode; },
+                      },
+                      data);
   }
 
   // Set mode (for chmod support)
   void set_mode(mode_t m) {
-    std::visit(
-        overloaded{
-            [m](StagedFileData &f) { f.mode = m; },
-            [](StagedSymlinkData &) {},  // Symlinks don't have mode
-            [m](StagedDirectoryData &d) { d.mode = m; },
-            [m](StagedHardlinkData &h) { h.mode = m; },
-        },
-        data);
+    std::visit(overloaded{
+                   [m](StagedFileData &f) { f.mode = m; },
+                   [](StagedSymlinkData &) {},  // Symlinks don't have mode
+                   [m](StagedDirectoryData &d) { d.mode = m; },
+                   [m](StagedHardlinkData &h) { h.mode = m; },
+               },
+               data);
   }
 
   // Get mtime
@@ -272,8 +263,8 @@ static uint64_t g_staging_counter = 0;
 // Path to CAS blobs directory for hash-based reads
 static std::string g_cas_blobs_dir;
 
-// Global flag to enable/disable CAS-first staging.
-// Default to legacy workspace writes; daemon_client passes --use-cas when WAKE_CAS is enabled.
+// Global flag to enable/disable CAS-first staging
+// When false, files are written directly to workspace
 // TODO: Remove the non-CAS workspace-write mode once WAKE_CAS is the default.
 static bool g_use_cas = false;
 
@@ -320,7 +311,6 @@ void Job::parse() {
     return;
   }
 
-  // Parse CAS blobs directory (update global if provided)
   std::string cas_dir = jast.get("cas_blobs_dir").value;
   if (!cas_dir.empty()) {
     g_cas_blobs_dir = cas_dir;
@@ -346,7 +336,8 @@ void Job::parse() {
       try {
         const std::string &mode_value = x.second.get("mode").value;
         if (!mode_value.empty()) mode = static_cast<mode_t>(std::stoul(mode_value, nullptr, 10));
-      } catch (const std::exception &) {}
+      } catch (const std::exception &) {
+      }
       if (type.empty()) {
         fprintf(stderr, "Visible entry object is missing required 'type' field\n");
         continue;
@@ -379,6 +370,9 @@ static std::string cas_blob_path(const cas::ContentHash &hash) {
   return g_cas_blobs_dir + "/" + hex.substr(0, 2) + "/" + hex.substr(2);
 }
 
+// Parse and validate a CAS content hash from a visible entry.
+// Returns false for directories (which don't have content hashes) or invalid hashes.
+// On success, populates content_hash with the parsed hash.
 static bool parse_visible_hash(const std::string &type, const std::string &hash,
                                cas::ContentHash *content_hash) {
   if (hash.empty() || type == "directory") return false;
@@ -389,10 +383,16 @@ static bool parse_visible_hash(const std::string &type, const std::string &hash,
   return true;
 }
 
+// Extract file permission bits (rwxrwxrwx) from a VisibleEntry.
+// If the entry has a mode set, use it; otherwise use the fallback mode.
+// Masks with 07777 to ensure only permission bits are returned (strips file type bits).
 static mode_t visible_mode_or(const Job::VisibleEntry &entry, mode_t fallback) {
   return static_cast<mode_t>(entry.mode.value_or(fallback) & 07777);
 }
 
+// Read the entire contents of a CAS blob into a string.
+// This is primarily used for reading symlink targets stored in CAS.
+// Returns true on success, false if the blob cannot be read.
 static bool read_cas_blob_bytes(const cas::ContentHash &hash, std::string *data) {
   std::ifstream ifs(cas_blob_path(hash), std::ios::binary);
   if (!ifs) return false;
@@ -454,33 +454,33 @@ void Job::dump(const std::string &job_id) {
         s << "\"type\":\"" << sf.type_name() << "\"";
 
         // Emit type-specific fields using std::visit
-        std::visit(
-            overloaded{
-                [&s](const StagedFileData &f) {
-                  s << ",\"staging_path\":\"" << json_escape(f.staging_path) << "\"";
-                  s << ",\"mode\":" << (f.mode & 07777);
-                  s << ",\"mtime_sec\":" << f.mtime.tv_sec;
-                  s << ",\"mtime_nsec\":" << f.mtime.tv_nsec;
-                },
-                [&s](const StagedSymlinkData &l) {
-                  s << ",\"target\":\"" << json_escape(l.target) << "\"";
-                  s << ",\"mtime_sec\":" << l.mtime.tv_sec;
-                  s << ",\"mtime_nsec\":" << l.mtime.tv_nsec;
-                },
-                [&s](const StagedDirectoryData &d) {
-                  s << ",\"mode\":" << (d.mode & 07777);
-                  s << ",\"mtime_sec\":" << d.mtime.tv_sec;
-                  s << ",\"mtime_nsec\":" << d.mtime.tv_nsec;
-                },
-                [&s](const StagedHardlinkData &h) {
-                  // Hardlink has same staging_path as source - client uses it as deduplication key
-                  s << ",\"staging_path\":\"" << json_escape(h.staging_path) << "\"";
-                  s << ",\"mode\":" << (h.mode & 07777);
-                  s << ",\"mtime_sec\":" << h.mtime.tv_sec;
-                  s << ",\"mtime_nsec\":" << h.mtime.tv_nsec;
-                },
-            },
-            sf.data);
+        std::visit(overloaded{
+                       [&s](const StagedFileData &f) {
+                         s << ",\"staging_path\":\"" << json_escape(f.staging_path) << "\"";
+                         s << ",\"mode\":" << (f.mode & 07777);
+                         s << ",\"mtime_sec\":" << f.mtime.tv_sec;
+                         s << ",\"mtime_nsec\":" << f.mtime.tv_nsec;
+                       },
+                       [&s](const StagedSymlinkData &l) {
+                         s << ",\"target\":\"" << json_escape(l.target) << "\"";
+                         s << ",\"mtime_sec\":" << l.mtime.tv_sec;
+                         s << ",\"mtime_nsec\":" << l.mtime.tv_nsec;
+                       },
+                       [&s](const StagedDirectoryData &d) {
+                         s << ",\"mode\":" << (d.mode & 07777);
+                         s << ",\"mtime_sec\":" << d.mtime.tv_sec;
+                         s << ",\"mtime_nsec\":" << d.mtime.tv_nsec;
+                       },
+                       [&s](const StagedHardlinkData &h) {
+                         // Hardlink has same staging_path as source - client uses it as
+                         // deduplication key
+                         s << ",\"staging_path\":\"" << json_escape(h.staging_path) << "\"";
+                         s << ",\"mode\":" << (h.mode & 07777);
+                         s << ",\"mtime_sec\":" << h.mtime.tv_sec;
+                         s << ",\"mtime_nsec\":" << h.mtime.tv_nsec;
+                       },
+                   },
+                   sf.data);
 
         s << "}";
         first = false;
@@ -521,17 +521,10 @@ bool Job::is_writeable(const std::string &path) {
 }
 
 bool Job::is_readable(const std::string &path) {
-  return is_visible(path) || is_writeable(path) ||
-         (staged_paths.find(path) != staged_paths.end());
+  return is_visible(path) || is_writeable(path) || (staged_paths.find(path) != staged_paths.end());
 }
 
 bool Job::should_erase() const { return 0 == uses && 0 == json_in_uses && 0 == json_out_uses; }
-
-// Clean up staged files for a job before erasing it from the jobs map
-// With nested map structure, this is O(1) - just erase the job's entry
-static void cleanup_staged_files_for_job(const std::string &job_id) {
-  g_staged_files.erase_job(job_id);
-}
 
 static std::pair<std::string, std::string> split_key(const char *path) {
   const char *end = strchr(path + 1, '/');
@@ -683,43 +676,42 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
     }
 
     // Fill stat buffer based on staged item type
-    return std::visit(
-        overloaded{
-            [stbuf](const StagedFileData &f) {
-              // Stat the actual staging file
-              int res = stat(f.staging_path.c_str(), stbuf);
-              if (res == -1) return -errno;
-              // Combine file type from staging file with tracked permissions
-              stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (f.mode & ~S_IFMT);
-              return 0;
-            },
-            [stbuf](const StagedSymlinkData &l) {
-              // Return synthetic symlink stat
-              memset(stbuf, 0, sizeof(*stbuf));
-              stbuf->st_mode = S_IFLNK | 0777;
-              stbuf->st_nlink = 1;
-              stbuf->st_size = l.target.size();
-              stbuf->st_uid = getuid();
-              stbuf->st_gid = getgid();
-              stbuf->st_mtim = l.mtime;
-              return 0;
-            },
-            [stbuf](const StagedDirectoryData &d) {
-              // Return synthetic directory stat
-              memset(stbuf, 0, sizeof(*stbuf));
-              stbuf->st_mode = S_IFDIR | (d.mode & 07777);
-              stbuf->st_nlink = 2;
-              stbuf->st_uid = getuid();
-              stbuf->st_gid = getgid();
-              stbuf->st_mtim = d.mtime;
-              return 0;
-            },
-            [](const StagedHardlinkData &) {
-              // Should not reach here - hardlinks are resolved above
-              return -ENOENT;
-            },
-        },
-        sf->data);
+    return std::visit(overloaded{
+                          [stbuf](const StagedFileData &f) {
+                            // Stat the actual staging file
+                            int res = stat(f.staging_path.c_str(), stbuf);
+                            if (res == -1) return -errno;
+                            // Combine file type from staging file with tracked permissions
+                            stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (f.mode & ~S_IFMT);
+                            return 0;
+                          },
+                          [stbuf](const StagedSymlinkData &l) {
+                            // Return synthetic symlink stat
+                            memset(stbuf, 0, sizeof(*stbuf));
+                            stbuf->st_mode = S_IFLNK | 0777;
+                            stbuf->st_nlink = 1;
+                            stbuf->st_size = l.target.size();
+                            stbuf->st_uid = getuid();
+                            stbuf->st_gid = getgid();
+                            stbuf->st_mtim = l.mtime;
+                            return 0;
+                          },
+                          [stbuf](const StagedDirectoryData &d) {
+                            // Return synthetic directory stat
+                            memset(stbuf, 0, sizeof(*stbuf));
+                            stbuf->st_mode = S_IFDIR | (d.mode & 07777);
+                            stbuf->st_nlink = 2;
+                            stbuf->st_uid = getuid();
+                            stbuf->st_gid = getgid();
+                            stbuf->st_mtim = d.mtime;
+                            return 0;
+                          },
+                          [](const StagedHardlinkData &) {
+                            // Should not reach here - hardlinks are resolved above
+                            return -ENOENT;
+                          },
+                      },
+                      sf->data);
   }
 
   if (g_use_cas) {
@@ -981,6 +973,9 @@ static int wakefuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         file += de->d_name;
 
         if (!it->second.is_readable(file)) {
+          // Allow '.' and '..' links in this directory.
+          // This directory was earlier checked as visible (for '.') and
+          // the parent of a readable directory should also be visible (for '..').
           std::string name(de->d_name);
           if (!(name == "." || name == "..")) continue;
         }
@@ -1003,47 +998,40 @@ static int wakefuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     already_listed.insert("..");
   }
 
+  // Helper to add first path component to directory listing
+  auto add_child_entry = [&](const std::string &path) {
+    // Case 1: Listing root directory (dir_prefix is empty)
+    // For path "a/b/c", extract "a" as the child entry
+    if (dir_prefix.empty()) {
+      size_t slash = path.find('/');
+      std::string name = (slash == std::string::npos) ? path : path.substr(0, slash);
+      if (!name.empty() && already_listed.insert(name).second) {
+        filler(buf, name.c_str(), 0, 0);
+      }
+      // Case 2: Listing subdirectory (dir_prefix is e.g. "a/b/")
+      // Check if path starts with dir_prefix, then extract next component
+      // For dir_prefix="a/b/" and path="a/b/c/d", extract "c"
+    } else if (path.size() > dir_prefix.size() &&
+               path.compare(0, dir_prefix.size(), dir_prefix) == 0) {
+      std::string rest = path.substr(dir_prefix.size());
+      size_t slash = rest.find('/');
+      std::string name = (slash == std::string::npos) ? rest : rest.substr(0, slash);
+      if (!name.empty() && already_listed.insert(name).second) {
+        filler(buf, name.c_str(), 0, 0);
+      }
+    }
+  };
+
   // Add staged files and virtual subdirectories that are children of this directory
   if (auto *job_staged = g_staged_files.get_job(key.first)) {
     for (auto &entry : *job_staged) {
-      const std::string &dest = entry.second.dest_path;
-      if (dir_prefix.empty()) {
-        size_t slash = dest.find('/');
-        std::string name = (slash == std::string::npos) ? dest : dest.substr(0, slash);
-        if (!name.empty() && already_listed.find(name) == already_listed.end()) {
-          already_listed.insert(name);
-          filler(buf, name.c_str(), 0, 0);
-        }
-      } else if (dest.size() > dir_prefix.size() && dest.compare(0, dir_prefix.size(), dir_prefix) == 0) {
-        std::string rest = dest.substr(dir_prefix.size());
-        size_t slash = rest.find('/');
-        std::string name = (slash == std::string::npos) ? rest : rest.substr(0, slash);
-        if (!name.empty() && already_listed.find(name) == already_listed.end()) {
-          already_listed.insert(name);
-          filler(buf, name.c_str(), 0, 0);
-        }
-      }
+      add_child_entry(entry.second.dest_path);
     }
   }
 
   // Add virtual subdirectories from files_wrote
   for (auto &path : it->second.files_wrote) {
-    if (dir_prefix.empty()) {
-      size_t slash = path.find('/');
-      std::string name = (slash == std::string::npos) ? path : path.substr(0, slash);
-      if (!name.empty() && already_listed.find(name) == already_listed.end()) {
-        already_listed.insert(name);
-        filler(buf, name.c_str(), 0, 0);
-      }
-    } else if (path.size() > dir_prefix.size() && path.compare(0, dir_prefix.size(), dir_prefix) == 0) {
-      std::string rest = path.substr(dir_prefix.size());
-      size_t slash = rest.find('/');
-      std::string name = (slash == std::string::npos) ? rest : rest.substr(0, slash);
-      if (!name.empty() && already_listed.find(name) == already_listed.end()) {
-        already_listed.insert(name);
-        filler(buf, name.c_str(), 0, 0);
-      }
-    }
+    add_child_entry(path);
   }
 
   // Add visible entries (CAS-tracked files, symlinks, and directories)
@@ -1133,7 +1121,7 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
     if (!cancel_exit()) {
       --job.uses;
       if (job.should_erase()) {
-        cleanup_staged_files_for_job(jobid);
+        g_staged_files.erase_job(jobid);
         context.jobs.erase(jobid);
       }
       return -EPERM;
@@ -1166,7 +1154,8 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
     }
 
     // Include PID to avoid collisions between concurrent wake processes
-    std::string staging_path = g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
+    std::string staging_path =
+        g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
     mode_t perm_bits = mode & 07777;
     int fd = open(staging_path.c_str(), O_CREAT | O_RDWR | O_TRUNC, perm_bits);
     if (fd == -1) return -errno;
@@ -1604,8 +1593,8 @@ static int wakefuse_link(const char *from, const char *to) {
       // staging path. This avoids races where one consumer (CAS ingestion or workspace
       // materialization) deletes the shared file before another can read it.
       // Uses reflink (copy-on-write) when the filesystem supports it.
-      std::string new_staging_path =
-          g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
+      std::string new_staging_path = g_staging_dir + "/" + std::to_string(getpid()) + "_" +
+                                     std::to_string(++g_staging_counter);
       auto copy_result =
           wcl::reflink_or_copy_file(src_staging_path, new_staging_path, src_mode & 07777);
       if (!copy_result) return -copy_result.error();
@@ -2117,7 +2106,7 @@ static int wakefuse_release(const char *path, struct fuse_file_info *fi) {
         return -EIO;
     }
     if ('f' != s.kind && s.job->second.should_erase()) {
-      cleanup_staged_files_for_job(s.job->first);
+      g_staged_files.erase_job(s.job->first);
       context.jobs.erase(s.job);
     }
     if (context.should_exit()) schedule_exit();

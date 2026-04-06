@@ -72,7 +72,8 @@ bool json_as_struct(const std::string &json, json_args &result) {
       try {
         const std::string &mode = x.second.get("mode").value;
         if (!mode.empty()) vf.mode = std::stoi(mode);
-      } catch (const std::exception &) {}
+      } catch (const std::exception &) {
+      }
       if (vf.type.empty()) {
         std::cerr << "Visible entry object is missing required 'type' field\n";
         return false;
@@ -147,7 +148,8 @@ int execve_wrapper(const std::vector<std::string> &command,
 
 static bool collect_result_metadata(const std::string daemon_output, const struct timeval &start,
                                     const struct timeval &stop, const pid_t pid, const int status,
-                                    const RUsage &rusage, bool timed_out, std::string &result_json) {
+                                    const RUsage &rusage, bool timed_out,
+                                    std::string &result_json) {
   JAST from_daemon;
   std::stringstream ss;
   if (!JAST::parse(daemon_output, ss, from_daemon)) {

@@ -28,9 +28,9 @@
 // Represents a visible file with its path, type, and content hash for CAS-based reads.
 struct visible_file {
   std::string path;
-  std::string type;  // "file", "directory", "symlink", ...
-  std::string hash;  // Content hash for CAS lookup; empty means read from workspace
-  std::optional<int> mode;  // Permission bits when available
+  std::string type;
+  std::string hash;
+  std::optional<int> mode;
 };
 
 struct daemon_client {
