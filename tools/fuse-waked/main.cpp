@@ -352,7 +352,8 @@ void Job::parse() {
       visible_entries[path] = VisibleEntry{type, hash, mode};
 
       // Add implicit parent directories for this path
-      for (size_t slash = path.find('/'); slash != std::string::npos; slash = path.find('/', slash + 1)) {
+      for (size_t slash = path.find('/'); slash != std::string::npos;
+           slash = path.find('/', slash + 1)) {
         std::string parent = path.substr(0, slash);
         if (visible_entries.find(parent) == visible_entries.end()) {
           files_visible.insert(parent);
@@ -891,6 +892,7 @@ static int wakefuse_readlink(const char *path, char *buf, size_t size) {
           size_t len = std::min(target.size(), size - 1);
           memcpy(buf, target.c_str(), len);
           buf[len] = '\0';
+          it->second.files_read.insert(std::move(key.second));
           return 0;
         }
       }
@@ -988,8 +990,8 @@ static int wakefuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
   }
 
   // For virtual directories (created by mkdir or CAS-only visible dirs), add . and ..
-  if (dfd == -1 && (it->second.is_writeable(key.second) ||
-                    (g_use_cas && it->second.is_visible(key.second)))) {
+  if (dfd == -1 &&
+      (it->second.is_writeable(key.second) || (g_use_cas && it->second.is_visible(key.second)))) {
     filler(buf, ".", 0, 0);
     filler(buf, "..", 0, 0);
     already_listed.insert(".");
