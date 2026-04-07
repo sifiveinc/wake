@@ -251,6 +251,7 @@ def finalizeJob job inputs outputs cleanable reality runnerError =
             hash,
             pathTypeToString (getStagingItemPathType item),
             str (getStagingItemMode item),
+            str (getStagingItemMtimeNs item),
         )
 
     def preparedOutputStrings = map pstr preparedOutputStagingItems
@@ -270,6 +271,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             p.getPathHash,
             pathTypeToString p.getPathType,
             str p.getPathMode,
+            str p.getPathMtimeNs,
         )
 
     def visKey =
@@ -430,14 +432,14 @@ def tree job typ =
 def treeOk file =
     def Pair f detail = file
     def Pair pathTypeString hashAndRest = detail
-    def Pair h (Pair mode _mtimeNs) = hashAndRest
+    def Pair h (Pair mode mtimeNs) = hashAndRest
 
     match h
         "BadHash" -> failWithError "Could not hash {f}"
         _ ->
             require Pass pathType = pathTypeFromString pathTypeString
 
-            Pass (Path f pathType h mode)
+            Pass (Path f pathType h mode mtimeNs)
 
 def guardPath job = match _
     Fail e -> Fail e
