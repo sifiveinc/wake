@@ -63,11 +63,12 @@ bool json_as_struct(const std::string &json, json_args &result) {
   for (auto &x : jast.get("visible").children) {
     visible_file vf;
     if (x.second.kind == JSON_OBJECT) {
-      // New format: {"path": "...", "type": "...", "hash": "...", "mode": ...}
+      // New format: {"path": "...", "type": "...", "hash": "...", "mode": ..., "mtime": ...}
       vf.path = x.second.get("path").value;
       vf.type = x.second.get("type").value;
       vf.hash = x.second.get("hash").value;
       const std::string &mode_value = x.second.get("mode").value;
+      const std::string &mtime_value = x.second.get("mtime").value;
 
       if (vf.path.empty()) {
         std::cerr << "Visible entry missing 'path'\n";
@@ -90,6 +91,19 @@ bool json_as_struct(const std::string &json, json_args &result) {
         return false;
       }
 
+      if (mtime_value.empty()) {
+        std::cerr << "Visible entry '" << vf.path << "' missing 'mtime'\n";
+        return false;
+      }
+
+      try {
+        vf.mtime = std::stol(mtime_value);
+      } catch (const std::exception &e) {
+        std::cerr << "Visible entry '" << vf.path << "' has invalid 'mtime' value '" << mtime_value
+                  << "': " << e.what() << "\n";
+        return false;
+      }
+
       if (vf.type != "directory" && vf.hash.empty()) {
         std::cerr << "Visible entry '" << vf.path << "' (type '" << vf.type
                   << "') missing 'hash'\n";
@@ -101,6 +115,7 @@ bool json_as_struct(const std::string &json, json_args &result) {
       vf.type = "";
       vf.hash = "";  // Empty hash means read from workspace
       vf.mode.reset();
+      vf.mtime = 0;
     }
     result.visible.push_back(vf);
   }

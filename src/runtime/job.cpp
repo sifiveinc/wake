@@ -1775,7 +1775,7 @@ static PRIMFN(prim_job_tag) {
   RETURN(claim_unit(runtime.heap));
 }
 
-// add_hash: stores the hash and metadata for a file. mtime_ns == 0 means read from filesystem.
+// add_hash: stores the hash and metadata for a file.
 static PRIMTYPE(type_add_hash) {
   return args.size() == 5 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
          args[2]->unify(Data::typeString) && args[3]->unify(Data::typeInteger) &&
@@ -1789,12 +1789,11 @@ static PRIMFN(prim_add_hash) {
   STRING(type, 1);
   STRING(hash, 2);
   INTEGER_MPZ(mode, 3);
-  INTEGER_MPZ(mtime_ns, 4);
+  INTEGER_MPZ(modified, 4);
   long mode_bits = mpz_get_si(mode);
-  long mtime = mpz_get_si(mtime_ns);
-  long actual_mtime = (mtime != 0) ? mtime : getmtime_ns(file->c_str());
+  long modified_ns = mpz_get_si(modified);
   jobtable->imp->db->add_hash(file->as_str(), type->as_str(), hash->as_str(), mode_bits,
-                              actual_mtime);
+                              modified_ns);
   RETURN(args[0]);
 }
 

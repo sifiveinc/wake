@@ -1,0 +1,13 @@
+Fresh concurrent runs:
+==> result-a.txt <==
+Wed Jan  1 00:00:00 UTC 2020
+
+==> result-b.txt <==
+Fri Jan  1 00:00:00 UTC 1999
+
+Reuse:
+==> result-a.txt <==
+Wed Jan  1 00:00:00 UTC 2020
+
+==> result-b.txt <==
+Fri Jan  1 00:00:00 UTC 1999

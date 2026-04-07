@@ -67,7 +67,6 @@ struct Database::detail {
   sqlite3_stmt *insert_tree_file_id;
   sqlite3_stmt *insert_log;
   sqlite3_stmt *insert_file;
-  sqlite3_stmt *update_file;
   sqlite3_stmt *get_log;
   sqlite3_stmt *replay_log;
   sqlite3_stmt *get_tree;
@@ -124,7 +123,6 @@ struct Database::detail {
         insert_tree_file_id(0),
         insert_log(0),
         insert_file(0),
-        update_file(0),
         get_log(0),
         replay_log(0),
         get_tree(0),
@@ -354,7 +352,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " values(?, ?, ?, ?, ?, ?, ?, ?, ?)";
   const char *sql_insert_tree =
       "insert into filetree(access, job_id, file_id)"
-      " values(?, ?, (select file_id from files where path=? and hash=? and type=? and mode=?))";
+      " values(?, ?,"
+      "        (select file_id from files where path=? and hash=? and type=?"
+      "                                         and mode=? and modified=?))";
   const char *sql_insert_tree_file_id =
       "insert into filetree(access, job_id, file_id)"
       " values(?, ?, ?)";
@@ -363,8 +363,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " values(?, ?, ?, ?)";
   const char *sql_insert_file =
       "insert or ignore into files(hash, type, mode, modified, path) values (?, ?, ?, ?, ?)";
-  const char *sql_update_file =
-      "update files set modified=? where hash=? and type=? and mode=? and path=?";
   const char *sql_get_log =
       "select output from log where job_id=? and descriptor=? order by log_id";
   const char *sql_replay_log = "select descriptor, output from log where job_id=? order by log_id";
@@ -408,9 +406,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "  and j2.job_id<>?2"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=j2.job_id) <= ?1"
       ")";
-  const char *sql_fetch_hash = "select hash from files where path=? and modified=?";
+  const char *sql_fetch_hash = "select hash from files where path=? and modified=? limit 1";
   const char *sql_fetch_cached_path =
-      "select hash, type, mode from files where path=? and modified=?";
+      "select hash, type, mode from files where path=? and modified=? limit 1";
   const char *sql_delete_jobs =
       "delete from jobs where keep=0"
       "  and not exists (select 1 from filetree where"
@@ -502,7 +500,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_insert_tree_file_id, insert_tree_file_id);
   PREPARE(sql_insert_log, insert_log);
   PREPARE(sql_insert_file, insert_file);
-  PREPARE(sql_update_file, update_file);
   PREPARE(sql_get_log, get_log);
   PREPARE(sql_replay_log, replay_log);
   PREPARE(sql_get_tree, get_tree);
@@ -570,7 +567,6 @@ void Database::close() {
   FINALIZE(insert_tree_file_id);
   FINALIZE(insert_log);
   FINALIZE(insert_file);
-  FINALIZE(update_file);
   FINALIZE(get_log);
   FINALIZE(replay_log);
   FINALIZE(get_tree);
@@ -928,10 +924,13 @@ struct PathInfo {
   std::string_view hash;
   std::string_view type;
   long mode;
+  long modified;
 
-  bool operator==(const PathInfo &b) const {
+  // Compare, ignoring mtime.
+  bool same_identity(const PathInfo &b) const {
     return path == b.path && hash == b.hash && type == b.type && mode == b.mode;
   }
+  bool operator==(const PathInfo &b) const { return same_identity(b) && modified == b.modified; }
   bool operator!=(const PathInfo &b) const { return !(*this == b); }
 };
 }  // end namespace
@@ -965,11 +964,21 @@ static bool foreach_pathinfo(std::string_view s, F &&f) {
     if (m_end == std::string_view::npos || m_end == m_start) return false;
 
     long mode;
-    auto [_, ec] = std::from_chars(s.data() + m_start, s.data() + m_end, mode);
-    if (ec != std::errc()) return false;
+    if (auto [_, ec] = std::from_chars(s.data() + m_start, s.data() + m_end, mode);
+        ec != std::errc())
+      return false;
+
+    size_t mod_start = m_end + 1;
+    size_t mod_end = s.find('\0', mod_start);
+    if (mod_end == std::string_view::npos || mod_end == mod_start) return false;
+
+    long modified;
+    if (auto [_, ec] = std::from_chars(s.data() + mod_start, s.data() + mod_end, modified);
+        ec != std::errc())
+      return false;
 
     const PathInfo pi{s.substr(pos, p_end - pos), s.substr(h_start, h_end - h_start),
-                      s.substr(t_start, t_end - t_start), mode};
+                      s.substr(t_start, t_end - t_start), mode, modified};
 
     if constexpr (!std::is_void_v<R>) {
       if (!std::invoke(f, pi)) return false;
@@ -977,7 +986,7 @@ static bool foreach_pathinfo(std::string_view s, F &&f) {
       std::invoke(f, pi);
     }
 
-    pos = m_end + 1;
+    pos = mod_end + 1;
   }
 
   return true;
@@ -1047,10 +1056,10 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
       auto hash = rip_column(imp->get_tree, 1);
       auto type = rip_column(imp->get_tree, 2);
       long mode = sqlite3_column_int64(imp->get_tree, 3);
-      PathInfo vis{path, hash, type, mode};
+      PathInfo vis{path, hash, type, mode, /*modified=*/0};
 
       auto it = vis_hashes->find(path);
-      if (it == vis_hashes->end() || it->second != vis) {
+      if (it == vis_hashes->end() || !it->second.same_identity(vis)) {
         finish_stmt(why, imp->get_tree, imp->debugdb);
         return false;
       }
@@ -1184,6 +1193,7 @@ void Database::insert_job(const std::string &directory, const std::string &comma
     bind_string(why, imp->insert_tree, 4, pi.hash);
     bind_string(why, imp->insert_tree, 5, pi.type);
     bind_integer(why, imp->insert_tree, 6, pi.mode);
+    bind_integer(why, imp->insert_tree, 7, pi.modified);
     single_step(why, imp->insert_tree, imp->debugdb);
   });
 
@@ -1292,6 +1302,7 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
     bind_string(why, imp->insert_tree, 4, output.hash);
     bind_string(why, imp->insert_tree, 5, output.type);
     bind_integer(why, imp->insert_tree, 6, output.mode);
+    bind_integer(why, imp->insert_tree, 7, output.modified);
     single_step(why, imp->insert_tree, imp->debugdb);
   }
 
@@ -1483,12 +1494,6 @@ void Database::add_hash(const std::string &file, const std::string &type, const 
                         long mode, long modified) {
   const char *why = "Could not insert a hash";
   begin_rw_txn();
-  bind_integer(why, imp->update_file, 1, modified);
-  bind_string(why, imp->update_file, 2, hash);
-  bind_string(why, imp->update_file, 3, type);
-  bind_integer(why, imp->update_file, 4, mode);
-  bind_string(why, imp->update_file, 5, file);
-  single_step(why, imp->update_file, imp->debugdb);
   bind_string(why, imp->insert_file, 1, hash);
   bind_string(why, imp->insert_file, 2, type);
   bind_integer(why, imp->insert_file, 3, mode);
