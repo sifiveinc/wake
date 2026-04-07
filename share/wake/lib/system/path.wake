@@ -289,36 +289,6 @@ def hashUsage =
     defaultUsage
     | setUsageCPUtime 0.1
 
-target hashcode (f: String): String =
-    def get f = prim "get_hash"
-    def reuse = get f
-
-    if reuse !=* "" then
-        reuse
-    else
-        def hashPlan cmd =
-            Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
-            | addCasHashEnv
-
-        def job =
-            # "<hash>" is a magic string which triggers main.cpp to hash the file rather than read
-            # the "command" as an actual command.
-            hashPlan ("<hash>", f, Nil)
-            | setPlanLabel "hash: {f}"
-            | setPlanEcho logDebug
-            | runJobWith localRunner
-            | setJobInspectVisibilityHidden
-
-        def hashLines =
-            job.getJobStdout
-            | getWhenFail ""
-            | tokenize `\n`
-            | filter (_ !=* "")
-
-        match job.isJobOk hashLines
-            True (x, Nil) -> x
-            _ _ -> "BadHash"
-
 # Allow an untracked file to be removed via `wake --clean`
 export target markFileCleanable (filepath: String): Result Unit Error =
     def hashPlan cmd =
