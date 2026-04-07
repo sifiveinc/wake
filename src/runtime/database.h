@@ -200,7 +200,7 @@ struct Database {
   bool clear_jobs_if_safe(std::function<void(std::vector<std::string>)> delete_files);
 
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
-                long mode, long modified);
+                long mode);
 
   std::string get_hash(const std::string &file, long modified);
   std::tuple<std::string, std::string, long> get_cached_path(const std::string &file,
