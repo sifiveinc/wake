@@ -204,8 +204,9 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 else
                     Pass Unit
 
-            # Split outputs into published (CAS path) and unpublished (direct workspace path)
-            def preprocessOutputsResult =
+            # Split outputs into published (CAS path) and unpublished (direct workspace path),
+            # and prepare hashes for the published subset.
+            def preparedOutputsResult =
                 def StagedOutputs filteredOutputPaths _ stagingItems _ _ = outputs
 
                 def Pair publishedStagingItems unpublishedStagingItems =
@@ -214,31 +215,40 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 prepareStagingOutputs publishedStagingItems
                 | rmap (\preparedItems Triple preparedItems filteredOutputPaths unpublishedStagingItems)
 
+            # Store published outputs in the DB first
             def storedOutputsResult =
-                require Pass (Triple preparedItemsToStore _ _) = preprocessOutputsResult
+                require Pass (Triple preparedItemsToStore _ _) = preparedOutputsResult
 
                 Pass (map storePreparedStagingItem preparedItemsToStore)
 
-            def ingestAndMaterializePublishedOutputsResult =
-                require Pass storedOutputsToIngest = storedOutputsResult
+            # Materialize published outputs after they have been stored in the DB.
+            def materializedPublishedOutputsResult =
+                require Pass storedOutputsToMaterialize = storedOutputsResult
 
-                storedOutputsToIngest
+                storedOutputsToMaterialize
                 | map ingestAndMaterialize
                 | findFail
 
             def materializeUnpublishedStagedItemsResult =
-                require Pass (Triple _ _ unpublishedStagingItems) = preprocessOutputsResult
+                require Pass (Triple _ _ unpublishedStagingItems) = preparedOutputsResult
 
                 unpublishedStagingItems
                 | map materializeUnpublishedStagedItem
                 | findFail
 
+            def workspaceOutputsReeadyResult =
+                require Pass _ = materializedPublishedOutputsResult
+                require Pass _ = materializeUnpublishedStagedItemsResult
+                require Pass storedOutputs = storedOutputsResult
+
+                Pass storedOutputs
+
             def finalRunnerError: Option Error =
                 (
                     runnerError,
-                    getFail preprocessOutputsResult,
+                    getFail preparedOutputsResult,
                     getFail storedOutputsResult,
-                    getFail ingestAndMaterializePublishedOutputsResult,
+                    getFail materializedPublishedOutputsResult,
                     getFail materializeUnpublishedStagedItemsResult,
                     Nil
                 )
@@ -247,14 +257,20 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 | getOrElse None
 
             def preparedOutputPaths =
-                storedOutputsResult
+                workspaceOutputsReeadyResult
                 | getWhenFail Nil
                 | map getPreparedStagingItemPathName
 
-            # Invoke post-finalization callback (e.g. RSC upload from workspace dest paths).
-            def _ = match finalRunnerError
-                None -> outputs.getStagedOutputsPostFinalize Unit
-                Some _ -> Unit
+            # Invoke post-finalization callback (e.g. RSC upload from workspace dest paths)
+            # only after all materialization work has completed.
+            def postFinalizeResult =
+                require Pass _ = workspaceOutputsReeadyResult
+
+                match finalRunnerError
+                    None -> Pass (outputs.getStagedOutputsPostFinalize Unit)
+                    Some _ -> Pass Unit
+
+            require Pass _ = postFinalizeResult
 
             def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError
 
