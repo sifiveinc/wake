@@ -205,7 +205,7 @@ def workspaceStageBase =
 # allOutputPaths: every output path that should be represented in staging
 # filteredOutputPaths: the published subset of allOutputPaths
 # baseCleanableOutputs: non-staging cleanables to preserve alongside helper artifacts
-def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String) (alreadyInWorkspace: Boolean): Result (Pair StagedOutputs (List String)) Error =
+export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String) (alreadyInWorkspace: Boolean): Result (Pair StagedOutputs (List String)) Error =
     # Normalize paths so string comparisons and wake-stage path lookups are consistent
     def normAllOutputPaths = map simplify allOutputPaths
     def normFilteredOutputPaths = map simplify filteredOutputPaths
