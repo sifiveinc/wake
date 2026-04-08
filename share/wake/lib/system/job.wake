@@ -236,7 +236,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 | map materializeUnpublishedStagedItem
                 | findFail
 
-            def workspaceOutputsReeadyResult =
+            def workspaceOutputsReadyResult =
                 require Pass _ = materializedPublishedOutputsResult
                 require Pass _ = materializeUnpublishedStagedItemsResult
                 require Pass storedOutputs = storedOutputsResult
@@ -257,31 +257,35 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                 | getOrElse None
 
             def preparedOutputPaths =
-                workspaceOutputsReeadyResult
+                workspaceOutputsReadyResult
                 | getWhenFail Nil
                 | map getPreparedStagingItemPathName
 
             # Invoke post-finalization callback (e.g. RSC upload from workspace dest paths)
             # only after all materialization work has completed.
             def postFinalizeResult =
-                require Pass _ = workspaceOutputsReeadyResult
+                require Pass _ = workspaceOutputsReadyResult
 
                 match finalRunnerError
                     None -> Pass (outputs.getStagedOutputsPostFinalize Unit)
                     Some _ -> Pass Unit
 
-            require Pass _ = postFinalizeResult
-
-            def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError
-
             # Clean up the empty staging root directory now that all staged files are consumed.
-            def rmdir _ = prim "rmdir"
+            def cleanupStagingRoot _ =
+                def rmdir _ = prim "rmdir"
 
-            def _ = match outputs.getStagedOutputsStagingRoot
-                Some root -> rmdir root
-                None -> Unit
+                match outputs.getStagedOutputsStagingRoot
+                    Some root -> rmdir root
+                    None -> Unit
 
-            primJobFinish job inputs.implode preparedOutputPaths.implode cleanable.implode reality
+            # Force post-finalization effects before publishing the job outputs.
+            def cleanableForFinish =
+                cleanable
+                | tap (\_ postFinalizeResult | getWhenFail Unit)
+                | tap (\_ unsafe_primJobSetRunnerStatusMessage job finalRunnerError)
+                | tap cleanupStagingRoot
+
+            primJobFinish job inputs.implode preparedOutputPaths.implode cleanableForFinish.implode reality
 
         # Make sure we don't hash files before the job has stopped running
         def _ = waitJobMerged final job
