@@ -1,0 +1,18 @@
+export def goX Unit =
+    require Pass in = mkdir "x"
+    makeExecPlan ("sh", "-c", "mkdir -p x/y; touch x/y/foo.txt; sleep 2; mv x/y x/z; rm -rf x/z", Nil) (in, Nil)
+    | setPlanLabel "job x"
+    | runJobWith fuseRunner
+    | getJobStdout
+
+export def goY Unit =
+    require Pass in = mkdir "x"
+    makeExecPlan ("sh", "-c", "mkdir x/y; touch x/y/bar.txt; sleep 5; mkdir x/y; touch x/y/bar.txt", Nil) (in, Nil)
+    | setPlanLabel "job y"
+    | runJobWith fuseRunner
+    | getJobStdout
+
+export def test Unit =
+    def x = goX Unit
+    def y = goY Unit
+    Pass (Pair x y)
