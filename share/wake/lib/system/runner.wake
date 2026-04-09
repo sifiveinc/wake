@@ -211,7 +211,9 @@ export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPa
     def normFilteredOutputPaths = map simplify filteredOutputPaths
 
     require True = subset scmp normFilteredOutputPaths normAllOutputPaths
-    else failWithError "Published outputs must be a subset of staged workspace outputs"
+    else
+        def missing = subtract scmp normFilteredOutputPaths normAllOutputPaths
+        failWithError "Published outputs not present in staged workspace outputs: {catWith ", " missing}"
 
     if empty normAllOutputPaths then
         Pass (
@@ -595,29 +597,44 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         def filteredOutputPaths = fnOutputs jsonOutputs
         def defaultCleanableOutputs = specFile, resultFile, jsonOutputs
 
+        # `fnOutputs` is not always a pure filter over `jsonOutputs`. Runners that use
+        # `TrackingDisabled` (e.g. `bindmount`) tell wakebox not to record writes, so
+        # `jsonOutputs` comes back empty even when the job produced files. Such runners
+        # rely on `fnOutputs` to discover its outputs from disk after the job exits, so
+        # `filteredOutputPaths` may legitimately contain paths that are not in
+        # `jsonOutputs`. Take the union of both so the staging logic sees every path the
+        # job actually produced.
+        def allStagedOutputs =
+            (jsonOutputs ++ filteredOutputPaths)
+            | distinctBy scmp
+
         # TODO: Remove the non-CAS post-staging branch once WAKE_CAS is the default.
         def outputSetResult = match useCasHashes
             True -> match (parseStagingFiles content)
                 Pass stagingItems ->
-                    def stagedOutputPaths =
-                        stagingItems
-                        | map getStagingItemDestPath
+                    # If the runner reported no staged items but `fnOutputs` discovered
+                    # outputs on disk (the TrackingDisabled case), CAS cannot ingest from
+                    # the empty `staging_files` set. Fall back to the workspace-staging
+                    # path so the discovered outputs are picked up from the workspace.
+                    if empty stagingItems && ! empty filteredOutputPaths then
+                        stageWorkspaceOutputs allStagedOutputs filteredOutputPaths defaultCleanableOutputs False
+                    else
+                        def stagedOutputPaths =
+                            stagingItems
+                            | map getStagingItemDestPath
 
-                    require True = empty filteredOutputPaths || ! empty stagingItems
-                    else failWithError "Missing staging_files metadata for CAS outputs"
+                        def jsonStagingRoot =
+                            content // `staging_root`
+                            | getJString
 
-                    def jsonStagingRoot =
-                        content // `staging_root`
-                        | getJString
-
-                    Pass (
-                        Pair
-                        (StagedOutputs filteredOutputPaths True stagingItems jsonStagingRoot (\_ Unit))
-                        (specFile, resultFile, stagedOutputPaths)
-                    )
+                        Pass (
+                            Pair
+                            (StagedOutputs filteredOutputPaths True stagingItems jsonStagingRoot (\_ Unit))
+                            (specFile, resultFile, stagedOutputPaths)
+                        )
                 Fail err -> Fail err
             False ->
-                stageWorkspaceOutputs jsonOutputs filteredOutputPaths defaultCleanableOutputs False
+                stageWorkspaceOutputs allStagedOutputs filteredOutputPaths defaultCleanableOutputs False
 
         match (jobUsageResult; outputSetResult)
             Pass jobUsage; Pass (Pair stagedOutputs cleanableOutputs) ->
