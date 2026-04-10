@@ -401,6 +401,15 @@ static void cleanup_stale_staging(const std::string &staging_dir) {
 }
 
 int main(int argc, char **argv) {
+  // !!! XXX: Temporary guard for helping users combining this with transition-only wake code
+  // to ensure they don't accidentally use inappropriately.
+  if (!getenv("WAKE_CAS")) {
+    std::cerr << "For transition period, WAKE_CAS must be set to avoid mistaken use with "
+                 "transition-only user wake code."
+              << std::endl;
+    return 1;
+  }
+
   // Make sure we always get core dumps but don't fail
   // if that fails for some reason.
   struct rlimit core_lim;
