@@ -334,7 +334,10 @@ export def makeBinaryRequest (request: HttpRequest): Result Path Error =
     # always rerun and we'd want to replace the file incase it changed on the remote.
     # Per-process directory avoids conflicts when multiple wake processes share a workspace.
     def wakePid: Integer = prim "pid"
-    def httpDir = ".build/wake-{str wakePid}/stdlib/http/"
+    def httpDir = ".build/wake-{str wakePid}/stdlib/http"
+
+    require Pass httpDirPath = mkdir httpDir
+
     def destination = "{httpDir}/binary.{request | format | hashString}"
 
     require Pass cmd = makeCurlCmd request ("--output", destination, Nil)
@@ -369,7 +372,7 @@ export def makeBinaryRequest (request: HttpRequest): Result Path Error =
         """
 
     def cleanupJob =
-        makeShellPlan cleanupScript Nil
+        makeShellPlan cleanupScript (httpDirPath, Nil)
         | setPlanLabel "http: rm {destination}"
         | setPlanStdout logNever
         | setPlanStderr logNever
