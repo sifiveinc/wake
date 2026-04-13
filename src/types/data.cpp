@@ -27,6 +27,7 @@ TypeVar Data::typeDouble("Double@builtin", 0);
 TypeVar Data::typeRegExp("RegExp@builtin", 0);
 TypeVar Data::typeJob("Job@builtin", 0);
 TypeVar Data::typeTarget("Target@builtin", 0);
+TypeVar Data::typeTime("Time@builtin", 0);
 
 TypeVar Data::typeBoolean("Boolean@wake", 0);
 TypeVar Data::typeOrder("Order@wake", 0);

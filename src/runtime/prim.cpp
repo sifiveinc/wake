@@ -205,6 +205,7 @@ PrimMap prim_register_all(StringInfo *info, JobTable *jobtable, CASContext *cas_
   prim_register_json(pmap);
   prim_register_job(jobtable, pmap);
   prim_register_sources(pmap);
+  prim_register_time(pmap);
   if (cas_ctx) {
     prim_register_cas(cas_ctx, pmap);
   }

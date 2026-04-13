@@ -1,0 +1,129 @@
+# Copyright 2026 SiFive, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You should have received a copy of LICENSE.Apache2 along with
+# this software. If not, you may obtain a copy at
+#
+#    https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+package time
+
+# Time Library
+#
+# The Time type is a built-in type representing a point in time since the Unix epoch
+# with nanosecond precision.
+#
+# Format strings use strftime syntax with additional sub-second specifiers:
+#   %f     - nanoseconds since last whole second (9 digits, zero-padded)
+#   %.f    - decimal fraction with leading dot, trailing zeros trimmed
+#   %.Nf   - decimal fraction with leading dot, fixed N digits (N = 1-9)
+#   %Nf    - fractional digits without dot, fixed N digits (N = 1-9)
+#
+# Examples:
+#   "%H:%M:%S%.3f"  => "08:15:07.026"    (milliseconds)
+#   "%H:%M:%S%.6f"  => "08:15:07.026490" (microseconds)
+#   "%H:%M:%S%3f"   => "08:15:07026"     (millis, no dot)
+#   "%H:%M:%S%.f"   => "08:15:07.02649"  (trimmed)
+
+# getTime: Get the current system time.
+#
+# Returns a Time value representing the current time since the Unix epoch
+# with nanosecond precision.
+#
+# Example:
+#   def now = getTime Unit
+export def getTime (_: a): Time =
+    prim "get_time"
+
+# formatTime: Format a Time value as a string in UTC.
+#
+# Converts a Time value to a human-readable string using strftime format
+# specifiers with sub-second support as %f. The output is always in UTC.
+#
+# Arguments:
+#   format - strftime format string
+#   time   - Time value to format
+#
+# Example:
+#   def now = getTime Unit
+#   formatTime "%Y-%m-%d" now                    # "2026-03-10"
+#   formatTime "%Y-%m-%d %H:%M:%S" now           # "2026-03-10 08:15:07"
+#   formatTime "%Y-%m-%d %H:%M:%S.%.3f" now      # "2026-03-10 08:15:07.026"
+export def formatTime (format: String) (time: Time): String =
+    (\f \t prim "format_time") format time
+
+# getTimeISO: Get the current time as an ISO 8601 string in UTC.
+#
+# Example:
+#   getTimeISO Unit  # "2026-03-10T08:15:07Z"
+export def getTimeISO (_: a): String =
+    formatTime '%Y-%m-%dT%H:%M:%SZ' (getTime Unit)
+
+# timeToNanoseconds: Convert a Time to nanoseconds since the Unix epoch.
+#
+# Example:
+#   def nanos = timeToNanoseconds (getTime Unit)
+export def timeToNanoseconds (time: Time): Integer =
+    (\t prim "time_to_nanos") time
+
+# timeToMilliseconds: Convert a Time to milliseconds since the Unix epoch.
+#
+# Example:
+#   def millis = timeToMilliseconds (getTime Unit)
+export def timeToMilliseconds (time: Time): Double =
+    dint (timeToNanoseconds time) /. 1.0e6
+
+# timeToSeconds: Convert a Time to seconds since the Unix epoch.
+#
+# Example:
+#   def secs = timeToSeconds (getTime Unit)
+export def timeToSeconds (time: Time): Double =
+    dint (timeToNanoseconds time) /. 1.0e9
+
+# printTimeLnLevel: Print a message with a timestamp prefix at a given log level.
+#
+# The timestamp is formatted using strftime format specifiers in the specified
+# timezone. Use "UTC" for UTC output, or an IANA timezone name. Empty string
+# uses the local machine timezone.
+#
+# Arguments:
+#   format   - strftime format string for the timestamp
+#   timezone - IANA timezone name (e.g., "UTC", "America/Los_Angeles")
+#   time     - Time value to format
+#   logLevel - LogLevel to print at
+#   message  - message to print
+#
+# Example:
+#   printTimeLnLevel "%H:%M:%S" "UTC" (getTime Unit) logWarning "something happened"
+#   printTimeLnLevel "%H:%M:%S" "America/Los_Angeles" (getTime Unit) logReport "hello"
+export def printTimeLnLevel (format: String) (timezone: String) (time: Time) (logLevel: LogLevel) (message: String): Unit =
+    def LogLevel name = logLevel
+
+    (\f \tz \t \s \m prim "time_print") format timezone time name "{message}\n"
+
+# printTsLn: Print a local-timezone ISO 8601 timestamped message at report level.
+#
+# Output: [2026-04-07T01:15:07-0700] message
+#
+# Example:
+#   printTsLn (getTime Unit) "build started"
+export def printTsLn (time: Time) (message: String): Unit =
+    printTimeLnLevel '[%Y-%m-%dT%H:%M:%S%.3f%z]' '' time logReport message
+
+# printCurrentTsLn: Print a local-timezone ISO 8601 timestamped message at report level.
+# Automatically captures the current time.
+#
+# Output: [2026-04-07T01:15:07-0700] message
+#
+# Example:
+#   printCurrentTsLn "build started"
+export def printCurrentTsLn (message: String): Unit =
+    printTsLn (getTime Unit) message
+

@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <iomanip>
 #include <sstream>
 
 #include "optimizer/ssa.h"
@@ -275,6 +276,34 @@ std::string Double::str(int format, int precision) const {
       return out;
     }
   }
+  return s.str();
+}
+
+Time *Time::claim(Heap &h, int64_t nanos) {
+  Time *out = new (h.claim(reserve())) Time(nanos);
+  HeapAgeTracker::setAge(out, 0);
+  return out;
+}
+
+Time *Time::alloc(Heap &h, int64_t nanos) {
+  Time *out = new (h.alloc(reserve())) Time(nanos);
+  HeapAgeTracker::setAge(out, 0);
+  return out;
+}
+
+RootPointer<Time> Time::literal(Heap &h, int64_t nanos) {
+  h.guarantee(reserve());
+  Time *out = claim(h, nanos);
+  return h.root(out);
+}
+
+void Time::format(std::ostream &os, FormatState &state) const { os << str(); }
+
+Hash Time::shallow_hash() const { return Hash(&nanoseconds, sizeof(nanoseconds)) ^ TYPE_TIME; }
+
+std::string Time::str() const {
+  std::stringstream s;
+  s << nanoseconds;
   return s.str();
 }
 
