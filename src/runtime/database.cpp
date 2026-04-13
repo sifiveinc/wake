@@ -378,9 +378,10 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "j2.job_id<>?2)";
   const char *sql_fetch_hash = "select hash from files where path=? and modified=?";
   const char *sql_delete_jobs =
-      "delete from jobs where job_id in"
-      " (select job_id from jobs where keep=0 and use_id<>? except select job_id from filetree "
-      "where access=2)";
+      " delete from jobs where keep=0 and use_id<>? "
+      " and not exists (select 1 from filetree where "
+      "                 filetree.job_id=jobs.job_id and "
+      "                 filetree.access=2)";
   const char *sql_delete_dups =
       "delete from stats where stat_id in"
       " (select stat_id from (select hashcode, count(*) as num, max(stat_id) as keep from stats "
