@@ -78,3 +78,11 @@ from builtin export type RegExp
 #
 # Jobs are created via the `runJob` API.
 from builtin export type Job
+
+# The Time type is a builtin of the wake language itself.
+#
+# A Time object represents a point in time with nanosecond
+# precision, stored as nanoseconds since the Unix epoch
+# (January 1, 1970 00:00:00 UTC).
+#
+from builtin export type Time
