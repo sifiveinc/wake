@@ -235,6 +235,9 @@ export def computeHashes (files: List String): Result (List String) Error =
 
     def job =
         plan
+        | setPlanLabel "hash: {str toHashLen} paths"
+        | setPlanEcho logDebug
+        # localRunner is required to avoid an infinite loop through makeJSONRunner/writeImp.
         | runJobWith localRunner
         | setJobInspectVisibilityHidden
 
@@ -285,6 +288,8 @@ target hashcode (f: String): String =
             | addCasHashEnv
 
         def job =
+            # "<hash>" is a magic string which triggers main.cpp to hash the file rather than read
+            # the "command" as an actual command.
             hashPlan ("<hash>", f, Nil)
             | setPlanLabel "hash: {f}"
             | setPlanEcho logDebug

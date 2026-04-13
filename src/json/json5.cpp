@@ -24,6 +24,7 @@
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <utility>
 
 #include "wcl/tracing.h"
 
@@ -158,8 +159,9 @@ void JsonSubscriber::receive(const wcl::log::Event &e) {
   ss << out << std::endl;
   std::string line = ss.str();
 
+  // These writes are only used for logging so we don't care if they fail.
   if (line.size() > 4095) {
-    (void)write(to_append.get(), warning_msg.data(), warning_msg.size());
+    std::ignore = write(to_append.get(), warning_msg.data(), warning_msg.size());
   }
-  (void)write(to_append.get(), line.data(), line.size());
+  std::ignore = write(to_append.get(), line.data(), line.size());
 }

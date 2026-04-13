@@ -170,7 +170,7 @@ void hide_internal_jobs(std::vector<std::vector<std::string>> &out) {
 
 void query_runs(Database &db) {
   const auto runs = db.get_runs();
-  for (const auto run : runs) {
+  for (const auto &run : runs) {
     std::cout << run.time.as_string() << " " << run.cmdline << std::endl;
   }
 }
