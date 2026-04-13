@@ -1,0 +1,4 @@
+=== Run 1: symlink ===
+Pass "readlink=target\n hash=874c10b404c95b0d503ef6afb0fb228aaa313a6195a64075843f405eb8449444"
+=== Run 2: file ===
+Pass "readlink=target\n hash=874c10b404c95b0d503ef6afb0fb228aaa313a6195a64075843f405eb8449444"
