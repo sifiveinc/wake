@@ -279,13 +279,16 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
                     None -> Unit
 
             # Force post-finalization effects before publishing the job outputs.
-            def cleanableForFinish =
-                cleanable
-                | tap (\_ postFinalizeResult | getWhenFail Unit)
-                | tap (\_ unsafe_primJobSetRunnerStatusMessage job finalRunnerError)
-                | tap cleanupStagingRoot
+            def pfResult = match postFinalizeResult
+                Pass _ -> Unit
+                Fail err ->
+                    def _ = printlnLevel logWarning "PostFinalize callback failed: {err.getErrorCause}"
+                    Unit
 
-            primJobFinish job inputs.implode preparedOutputPaths.implode cleanableForFinish.implode reality
+            def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError
+            def clResult = wait (\_ cleanupStagingRoot cleanable) pfResult
+
+            wait (\_ primJobFinish job inputs.implode preparedOutputPaths.implode cleanable.implode reality) clResult
 
         # Make sure we don't hash files before the job has stopped running
         def _ = waitJobMerged final job
