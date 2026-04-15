@@ -215,6 +215,8 @@ static PRIMFN(prim_cas_materialize_item) {
 
     // Atomically create symlink via temp+rename
     std::string temp_path = make_temp_path(dest_str);
+    time_t mtime_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
+    long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
 
     if (symlink(target_result->c_str(), temp_path.c_str()) != 0) {
       std::string msg = "Failed to create symlink " + dest_str + ": " + strerror(errno);
@@ -222,6 +224,8 @@ static PRIMFN(prim_cas_materialize_item) {
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));
     }
+
+    (void)apply_mtime(temp_path, mtime_sec, mtime_nsec, AT_SYMLINK_NOFOLLOW);
 
     if (auto msg = atomic_replace(temp_path, dest_str, "symlink")) {
       runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
@@ -253,6 +257,16 @@ static PRIMFN(prim_cas_materialize_item) {
         auto err = String::claim(runtime.heap, *msg);
         RETURN(claim_result(runtime.heap, false, err));
       }
+    }
+
+    time_t mtime_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
+    long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
+    if (!apply_mtime(dest_str, mtime_sec, mtime_nsec, 0)) {
+      std::string msg =
+          "Failed to update timestamps for directory " + dest_str + ": " + strerror(errno);
+      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+      auto err = String::claim(runtime.heap, msg);
+      RETURN(claim_result(runtime.heap, false, err));
     }
 
   } else {
