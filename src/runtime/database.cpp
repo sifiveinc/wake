@@ -826,7 +826,7 @@ void Database::vacuum(bool incremental) {
   auto *err = fail ? fail : "unknown error";
   auto *kind = incremental ? "incremental" : "full";
   if (ret != SQLITE_OK)
-    std::cerr << "Could not recover space (" << kind << "):" << err << std::endl;
+    std::cerr << "Could not recover space (" << kind << "): " << err << std::endl;
   sqlite3_free(fail);
 }
 
