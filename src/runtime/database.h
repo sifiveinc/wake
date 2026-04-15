@@ -125,11 +125,16 @@ struct Database {
   void prepare(const std::string &cmdline);  // prepare for job execution
   void clean();                              // finished execution; sweep stale jobs
 
+  // Reclaim space on disk from deleted records.
+  // If not incremental, will lock DB exclusively for duration.
+  // Recommend a blocking checkpoint after full.
+  void vacuum(bool incremental = true);
+
   // Force SQLite WAL checkpoint to sync changes to main database file
   // Needed to prevent WAL from growing unbounded during long builds
   // and ensure data is persisted to the main database file
   //
-  // blocking=true: RESTART mode, waits for all readers to finish
+  // blocking=true: TRUNCATE mode, waits for all readers to finish and truncates log file
   // blocking=false: PASSIVE mode, non-blocking sync attempt
   void checkpoint(bool blocking = false);
 

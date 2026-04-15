@@ -625,6 +625,12 @@ int main(int argc, char **argv) {
       }
     }
 
+    // Full vacuum, we likely just deleted most of the database.
+    db.vacuum(/*incremental=*/false);
+
+    // Blocking checkpoint, truncate the log file.
+    db.checkpoint(/*blocking=*/true);
+
     // Since the log is append only, we should clean it up from time to time.
     // TODO: this is just "unlink_no_fail". Those functions should be moved to
     // a more generic library
