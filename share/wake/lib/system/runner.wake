@@ -640,9 +640,9 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             Pass jobUsage; Pass (Pair stagedOutputs cleanableOutputs) ->
                 None
                 | RunnerOutput filteredInputs stagedOutputs cleanableOutputs jobUsage
-            Pass _; Fail err ->
+            Pass jobUsage; Fail err ->
                 Some err
-                | RunnerOutput filteredInputs emptyStagedOutputs defaultCleanableOutputs runnerUsage
+                | RunnerOutput filteredInputs emptyStagedOutputs defaultCleanableOutputs jobUsage
             Fail msg; _ ->
                 Some msg.makeError
                 | RunnerOutput filteredInputs emptyStagedOutputs defaultCleanableOutputs runnerUsage
