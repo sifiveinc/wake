@@ -890,6 +890,12 @@ static void launch(JobTable *jobtable) {
     sigaddset(&set, SIGCHLD);
     sigprocmask(SIG_UNBLOCK, &set, 0);
     pid_t pid = wake_spawn(cmdline[0], cmdline, environ);
+    if (pid == -1) {
+      status_get_generic_stream(STREAM_ERROR)
+          << "error launching job using command line '" << cmdline[0] << "': " << strerror(errno)
+          << std::endl;
+      exit(1);
+    }
     sigprocmask(SIG_BLOCK, &set, 0);
 
     delete[] cmdline;
