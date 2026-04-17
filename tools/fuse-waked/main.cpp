@@ -351,13 +351,19 @@ void Job::parse() {
       files_visible.insert(path);
       visible_entries[path] = VisibleEntry{type, hash, mode};
 
-      // Add implicit parent directories for this path
-      for (size_t slash = path.find('/'); slash != std::string::npos;
-           slash = path.find('/', slash + 1)) {
-        std::string parent = path.substr(0, slash);
-        if (visible_entries.find(parent) == visible_entries.end()) {
-          files_visible.insert(parent);
-          visible_entries[parent] = VisibleEntry{"directory", "", std::nullopt};
+      // Add implicit parent directories for this path.
+      // Only needed in CAS mode where the filesystem is virtualized and parent
+      // directories may not exist on disk.  In legacy mode the real filesystem
+      // already contains these directories, and adding them to files_visible
+      // causes wakefuse_mkdir to return EEXIST before the directory is created.
+      if (g_use_cas) {
+        for (size_t slash = path.find('/'); slash != std::string::npos;
+             slash = path.find('/', slash + 1)) {
+          std::string parent = path.substr(0, slash);
+          if (visible_entries.find(parent) == visible_entries.end()) {
+            files_visible.insert(parent);
+            visible_entries[parent] = VisibleEntry{"directory", "", std::nullopt};
+          }
         }
       }
     }
@@ -1222,8 +1228,15 @@ static int wakefuse_mkdir(const char *path, mode_t mode) {
   } else {
     // TODO: Remove the direct-to-workspace mkdir path once WAKE_CAS is the default.
     // Legacy mode: create directory in workspace
-    if (!it->second.is_writeable(key.second)) (void)deep_unlink(context.rootfd, key.second.c_str());
-    int res = mkdirat(context.rootfd, key.second.c_str(), mode);
+    int res = unlinkat(context.rootfd, key.second.c_str(), 0);
+    if (res == -1 && errno != EPERM && errno != ENOENT && errno != EISDIR) return -errno;
+
+    res = mkdirat(context.rootfd, key.second.c_str(), mode);
+
+    // If a directory already exists, change permissions and claim it
+    if (res == -1 && (errno == EEXIST || errno == EISDIR))
+      res = fchmodat(context.rootfd, key.second.c_str(), mode, 0);
+
     if (res == -1) return -errno;
   }
 
