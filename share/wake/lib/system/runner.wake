@@ -205,7 +205,7 @@ def workspaceStageBase =
 # allOutputPaths: every output path that should be represented in staging
 # filteredOutputPaths: the published subset of allOutputPaths
 # baseCleanableOutputs: non-staging cleanables to preserve alongside helper artifacts
-export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String) (alreadyInWorkspace: Boolean): Result (Pair StagedOutputs (List String)) Error =
+export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String): Result (Pair StagedOutputs (List String)) Error =
     # Normalize paths so string comparisons and wake-stage path lookups are consistent
     def normAllOutputPaths = map simplify allOutputPaths
     def normFilteredOutputPaths = map simplify filteredOutputPaths
@@ -218,7 +218,7 @@ export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPa
     if empty normAllOutputPaths then
         Pass (
             Pair
-            (StagedOutputs normFilteredOutputPaths (!alreadyInWorkspace) Nil None (\_ Unit))
+            (StagedOutputs normFilteredOutputPaths False Nil None (\_ Unit))
             baseCleanableOutputs
         )
     else
@@ -295,11 +295,13 @@ export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPa
             Some root -> root, Nil
             None -> Nil
 
-        def cleanableOutputs = baseCleanableOutputs ++ stagingRootOutputs
+        def cleanableOutputs =
+            (baseCleanableOutputs ++ stagedOutputPaths ++ stagingRootOutputs)
+            | distinctBy scmp
 
         Pass (
             Pair
-            (StagedOutputs normFilteredOutputPaths (!alreadyInWorkspace) stagingItems stagingRoot (\_ Unit))
+            (StagedOutputs normFilteredOutputPaths False stagingItems stagingRoot (\_ Unit))
             cleanableOutputs
         )
 
@@ -338,7 +340,7 @@ export def workspaceRunner: Runner =
         match baseRunnerError
             Some err -> RunnerOutput filteredInputs emptyStagedOutputs Nil runnerUsage (Some err)
             None ->
-                match (stageWorkspaceOutputs publishedOutputPaths publishedOutputPaths publishedOutputPaths False)
+                match (stageWorkspaceOutputs publishedOutputPaths publishedOutputPaths publishedOutputPaths)
                     Fail err ->
                         RunnerOutput filteredInputs emptyStagedOutputs Nil runnerUsage (Some err)
                     Pass (Pair stagedOutputs cleanableOutputs) ->
@@ -370,7 +372,7 @@ export def virtualRunner: Runner =
 
         def stagedOutputSetResult = match runnerError
             Some _ -> Pass (Pair emptyStagedOutputs cleanable)
-            None -> stageWorkspaceOutputs fileOutputs fileOutputs cleanable True
+            None -> stageWorkspaceOutputs fileOutputs fileOutputs cleanable
 
         # Wait for the job to complete
         def return _ = match (runnerError; stagedOutputSetResult)
@@ -617,7 +619,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                     # the empty `staging_files` set. Fall back to the workspace-staging
                     # path so the discovered outputs are picked up from the workspace.
                     if empty stagingItems && ! empty filteredOutputPaths then
-                        stageWorkspaceOutputs allStagedOutputs filteredOutputPaths defaultCleanableOutputs False
+                        stageWorkspaceOutputs allStagedOutputs filteredOutputPaths defaultCleanableOutputs
                     else
                         def stagedOutputPaths =
                             stagingItems
@@ -634,7 +636,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                         )
                 Fail err -> Fail err
             False ->
-                stageWorkspaceOutputs allStagedOutputs filteredOutputPaths defaultCleanableOutputs False
+                stageWorkspaceOutputs allStagedOutputs filteredOutputPaths defaultCleanableOutputs
 
         match (jobUsageResult; outputSetResult)
             Pass jobUsage; Pass (Pair stagedOutputs cleanableOutputs) ->
