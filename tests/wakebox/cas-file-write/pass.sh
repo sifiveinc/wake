@@ -3,31 +3,21 @@
 # Verifies that:
 # 1. Files can be created and written to
 # 2. File content can be read back immediately
-# 3. staging_files output contains the file with proper metadata
+# 3. staging_files output contains the file with type "file" and a staging_path
+set -eu
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
 export WAKE_CAS=1
 
-trap 'rm -f test_output.txt' EXIT
+STATS_FILE=$(mktemp)
+trap 'rm -f test_output.txt "$STATS_FILE"' EXIT
 
-OUTPUT=$(${1}/wakebox -p input.json 2>&1)
-EXIT_CODE=$?
+OUTPUT=$(${1}/wakebox -o "$STATS_FILE" -p input.json 2>&1)
 
-if [ "$EXIT_CODE" != "0" ]; then
-    echo "FAIL: Command failed with exit code $EXIT_CODE"
-    echo "Output:"
-    echo "$OUTPUT"
-    exit 1
-fi
+echo "$OUTPUT" | grep -q "hello world" || { echo "FAIL: expected 'hello world' in output"; echo "$OUTPUT"; exit 1; }
 
-# Check that content was written and readable
-if echo "$OUTPUT" | grep -q "hello world"; then
-    echo "PASS: File write and read test succeeded"
-    exit 0
-else
-    echo "FAIL: Could not read expected content 'hello world'"
-    echo "Output:"
-    echo "$OUTPUT"
-    exit 1
-fi
+grep -q '"test_output.txt"' "$STATS_FILE" || { echo "FAIL: test_output.txt missing from staging_files"; cat "$STATS_FILE"; exit 1; }
+grep -q '"type":"file"'     "$STATS_FILE" || { echo "FAIL: test_output.txt type is not file"; cat "$STATS_FILE"; exit 1; }
+grep -q '"staging_path"'    "$STATS_FILE" || { echo "FAIL: staging_path missing from staging_files"; cat "$STATS_FILE"; exit 1; }
 
+echo "PASS"

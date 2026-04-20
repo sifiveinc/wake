@@ -5,7 +5,8 @@
 # Verifies that:
 # 1. File can be overwritten multiple times
 # 2. Each read returns the current content
-# 3. Final content is correct
+# 3. Final content is correct (last cat returns "version 3", not an earlier write)
+set -eu
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
 export WAKE_CAS=1
@@ -13,25 +14,12 @@ export WAKE_CAS=1
 trap 'rm -f overwrite.txt' EXIT
 
 OUTPUT=$(${1}/wakebox -p input.json 2>&1)
-EXIT_CODE=$?
 
-if [ "$EXIT_CODE" != "0" ]; then
-    echo "FAIL: Command failed with exit code $EXIT_CODE"
-    echo "Output:"
-    echo "$OUTPUT"
-    exit 1
-fi
+for v in "version 1" "version 2" "version 3"; do
+    echo "$OUTPUT" | grep -q "$v" || { echo "FAIL: '$v' missing from output"; echo "$OUTPUT"; exit 1; }
+done
 
-# Check that we see version 1, 2, and 3 in output (showing progression)
-if echo "$OUTPUT" | grep -q "version 1" && \
-   echo "$OUTPUT" | grep -q "version 2" && \
-   echo "$OUTPUT" | grep -q "version 3"; then
-    echo "PASS: File overwrite test succeeded"
-    exit 0
-else
-    echo "FAIL: File overwrite test failed"
-    echo "Output:"
-    echo "$OUTPUT"
-    exit 1
-fi
+LAST=$(echo "$OUTPUT" | tail -1)
+[ "$LAST" = "version 3" ] || { echo "FAIL: final content is '$LAST', expected 'version 3'"; exit 1; }
 
+echo "PASS"
