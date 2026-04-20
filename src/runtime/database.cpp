@@ -1101,18 +1101,6 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
 
   end_txn();  // End RO transaction
 
-  // Confirm all outputs still exist
-  // TODO: Does this make sense? If in files table should be in CAS...
-  if (out.found) {
-    for (const auto &file : files) {
-      if (faccessat(AT_FDCWD, file.path.c_str(), R_OK, AT_SYMLINK_NOFOLLOW) != 0) {
-        files.clear();
-        out.found = false;
-        return out;
-      }
-    }
-  }
-
   // Only grab write lock if plan to actually use this!
   begin_rw_txn();
 
