@@ -67,6 +67,7 @@ struct Database::detail {
   sqlite3_stmt *insert_tree_file_id;
   sqlite3_stmt *insert_log;
   sqlite3_stmt *insert_file;
+  sqlite3_stmt *claim_file;
   sqlite3_stmt *get_log;
   sqlite3_stmt *replay_log;
   sqlite3_stmt *get_tree;
@@ -121,6 +122,7 @@ struct Database::detail {
         insert_tree_file_id(0),
         insert_log(0),
         insert_file(0),
+        claim_file(0),
         get_log(0),
         replay_log(0),
         get_tree(0),
@@ -363,6 +365,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " values(?, ?, ?, ?)";
   const char *sql_insert_file =
       "insert or ignore into files(hash, type, mode, path) values (?, ?, ?, ?)";
+  const char *sql_claim_file =
+      "insert or ignore into run_files(run_id, file_id)"
+      " values(?, (select file_id from files where path=? and hash=? and type=? and mode=?))";
   const char *sql_get_log =
       "select output from log where job_id=? and descriptor=? order by log_id";
   const char *sql_replay_log = "select descriptor, output from log where job_id=? order by log_id";
@@ -497,6 +502,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_insert_tree_file_id, insert_tree_file_id);
   PREPARE(sql_insert_log, insert_log);
   PREPARE(sql_insert_file, insert_file);
+  PREPARE(sql_claim_file, claim_file);
   PREPARE(sql_get_log, get_log);
   PREPARE(sql_replay_log, replay_log);
   PREPARE(sql_get_tree, get_tree);
@@ -562,6 +568,7 @@ void Database::close() {
   FINALIZE(insert_tree_file_id);
   FINALIZE(insert_log);
   FINALIZE(insert_file);
+  FINALIZE(claim_file);
   FINALIZE(get_log);
   FINALIZE(replay_log);
   FINALIZE(get_tree);
@@ -1502,6 +1509,14 @@ void Database::add_hash(const std::string &file, const std::string &type, const 
   bind_integer(why, imp->insert_file, 3, mode);
   bind_string(why, imp->insert_file, 4, file);
   single_step(why, imp->insert_file, imp->debugdb);
+
+  bind_integer(why, imp->claim_file, 1, imp->run_id);
+  bind_string(why, imp->claim_file, 2, file);
+  bind_string(why, imp->claim_file, 3, hash);
+  bind_string(why, imp->claim_file, 4, type);
+  bind_integer(why, imp->claim_file, 5, mode);
+  single_step(why, imp->claim_file, imp->debugdb);
+
   end_txn();
 }
 
