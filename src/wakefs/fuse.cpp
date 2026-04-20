@@ -63,16 +63,25 @@ bool json_as_struct(const std::string &json, json_args &result) {
   for (auto &x : jast.get("visible").children) {
     visible_file vf;
     if (x.second.kind == JSON_OBJECT) {
-      vf.path = x.second.get("path").value;
-      vf.type = x.second.get("type").value;
-      vf.hash = x.second.get("hash").value;
+      // New format: {"path": "...", "type": "...", "hash": "...", "mode": ...}
+      vf.path                         = x.second.get("path").value;
+      vf.type                         = x.second.get("type").value;
+      vf.hash                         = x.second.get("hash").value;
+      const std::string &mode_value   = x.second.get("mode").value;
+
+      if (vf.path.empty())       { std::cerr << "Visible entry missing 'path'\n"; return false; }
+      if (vf.type.empty())       { std::cerr << "Visible entry '" << vf.path << "' missing 'type'\n"; return false; }
+      if (mode_value.empty())    { std::cerr << "Visible entry '" << vf.path << "' missing 'mode'\n"; return false; }
+
       try {
-        const std::string &mode = x.second.get("mode").value;
-        if (!mode.empty()) vf.mode = std::stoi(mode);
-      } catch (const std::exception &) {
+        vf.mode = std::stoi(mode_value);
+      } catch (const std::exception &e) {
+        std::cerr << "Visible entry '" << vf.path << "' has invalid 'mode' value '" << mode_value << "': " << e.what() << "\n";
+        return false;
       }
-      if (vf.type.empty()) {
-        std::cerr << "Visible entry object is missing required 'type' field\n";
+
+      if (vf.type != "directory" && vf.hash.empty()) {
+        std::cerr << "Visible entry '" << vf.path << "' (type '" << vf.type << "') missing 'hash'\n";
         return false;
       }
     } else {

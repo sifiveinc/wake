@@ -44,8 +44,11 @@ constexpr int maxClientConnectWaitMs = 60 * 1000;
 // The user-id and group-id are used so that fuse daemons with different uid:gid pairs
 // running within the same build can co-exist without trying to share. The kernel
 // prevents cross-user sharing when the 'allow_other' fuse mount option is not used.
+// CAS and non-CAS daemons use distinct mount paths so they never share state if both modes
+// are in use simultaneously within the same directory.
 const std::string mount_path_id(const std::string &base_dir) {
-  return base_dir + "/.fuse/" + std::to_string(getuid()) + "." + std::to_string(getgid());
+  std::string suffix = getenv("WAKE_CAS") ? ".cas" : "";
+  return base_dir + "/.fuse/" + std::to_string(getuid()) + "." + std::to_string(getgid()) + suffix;
 }
 
 daemon_client::daemon_client(const std::string &base_dir)
@@ -146,7 +149,7 @@ bool daemon_client::connect(std::vector<visible_file> &visible, const std::strin
     obj.add("path", v.path);
     obj.add("type", v.type);
     obj.add("hash", v.hash);
-    if (v.mode) obj.add("mode", static_cast<long long>(*v.mode));
+    obj.add("mode", static_cast<long long>(*v.mode));
   }
 
   std::ofstream ijson(visibles_path);

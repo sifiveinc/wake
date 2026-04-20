@@ -4,6 +4,7 @@
 # 1. Multiple levels of directories can be created
 # 2. Files at each level are accessible
 # 3. Directory traversal (find) works correctly
+set -eu
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
 export WAKE_CAS=1
@@ -11,28 +12,10 @@ export WAKE_CAS=1
 trap 'rm -rf a root.txt' EXIT
 
 OUTPUT=$(${1}/wakebox -p input.json 2>&1)
-EXIT_CODE=$?
 
-if [ "$EXIT_CODE" != "0" ]; then
-    echo "FAIL: Command failed with exit code $EXIT_CODE"
-    echo "Output:"
-    echo "$OUTPUT"
-    exit 1
-fi
+for level in level0 level1 level2 level3 level4; do
+    echo "$OUTPUT" | grep -q "$level" || { echo "FAIL: $level missing from output"; echo "$OUTPUT"; exit 1; }
+done
+echo "$OUTPUT" | grep -q "a/b/c/d/file4.txt" || { echo "FAIL: nested path missing from output"; echo "$OUTPUT"; exit 1; }
 
-# Check that all levels are readable and find works
-if echo "$OUTPUT" | grep -q "level0" && \
-   echo "$OUTPUT" | grep -q "level1" && \
-   echo "$OUTPUT" | grep -q "level2" && \
-   echo "$OUTPUT" | grep -q "level3" && \
-   echo "$OUTPUT" | grep -q "level4" && \
-   echo "$OUTPUT" | grep -q "a/b/c/d/file4.txt"; then
-    echo "PASS: Nested directory test succeeded"
-    exit 0
-else
-    echo "FAIL: Nested directory test failed"
-    echo "Output:"
-    echo "$OUTPUT"
-    exit 1
-fi
-
+echo "PASS"
