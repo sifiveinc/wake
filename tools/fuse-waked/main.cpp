@@ -1301,17 +1301,16 @@ static void handle_exit(int sig) {
   // Reap prior attempts
   if (pid != -1) {
     int status = 0;
-    do {
+    while (true) {
       int ret = waitpid(pid, &status, 0);
       if (ret == -1) {
-        if (errno == EINTR) {
-          continue;
-        } else {
-          fprintf(stderr, "waitpid(%d): %s\n", pid, strerror(errno));
-          break;
-        }
+        if (errno == EINTR) continue;
+        status = 0;
+        fprintf(stderr, "waitpid(%d): %s\n", pid, strerror(errno));
+        break;
       }
-    } while (WIFSTOPPED(status));
+      if (!WIFSTOPPED(status)) break;
+    }
     pid = -1;
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == 42) {
