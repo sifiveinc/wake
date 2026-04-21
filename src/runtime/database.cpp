@@ -854,6 +854,24 @@ static void release_lock(int fd) {
   fcntl(fd, F_SETLK, &fl);
 }
 
+static bool write_pid_fd(int fd) {
+  static_assert(sizeof(pid_t) <= sizeof(long), "pid_t must fit in long");
+  char buf[32];
+  int len = snprintf(buf, sizeof(buf), "%ld\n", (long)getpid());
+  if (len <= 0 || len >= (int)sizeof(buf)) {
+    return false;
+  }
+  for (int off = 0; off < len;) {
+    auto n = write(fd, buf + off, len - off);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      return false;
+    }
+    off += n;
+  }
+  return true;
+}
+
 void Database::prepare(const std::string &cmdline) {
   struct timespec now;
   clock_gettime(CLOCK_REALTIME, &now);
@@ -876,6 +894,12 @@ void Database::prepare(const std::string &cmdline) {
               << std::endl;
     exit(1);
   }
+  if (!write_pid_fd(imp->run_lock_fd)) {
+    std::cerr << "error: failed to write pid to run lock '" << our_lock_path
+              << "': " << strerror(errno) << std::endl;
+    exit(1);
+  }
+
   if (!acquire_lock(imp->run_lock_fd, true)) {
     std::cerr << "error: failed to acquire run lock: " << strerror(errno) << std::endl;
     unlink(our_lock_path.c_str());
