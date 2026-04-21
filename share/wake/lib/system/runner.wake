@@ -217,14 +217,11 @@ export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPa
     require True = subset scmp normFilteredOutputPaths normAllOutputPaths
     else
         def missing = subtract scmp normFilteredOutputPaths normAllOutputPaths
+
         failWithError "Published outputs not present in staged workspace outputs: {catWith ", " missing}"
 
     if empty normAllOutputPaths then
-        Pass (
-            Pair
-            (StagedOutputs normFilteredOutputPaths False Nil None (\_ Unit))
-            baseCleanableOutputs
-        )
+        Pass (Pair (StagedOutputs normFilteredOutputPaths False Nil None (\_ Unit)) baseCleanableOutputs)
     else
         require True = access workspaceStageTool xOK
         else failWithError "workspace staging helper {workspaceStageTool} is not executable"
@@ -459,15 +456,18 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                 PathTypeDirectory -> True
                 PathTypeSymlink -> True
                 _ -> False
-            else failWithError "Visible path {p.getPathName} has unsupported transport type {pathTypeToString p.getPathType}"
+            else
+                failWithError "Visible path {p.getPathName} has unsupported transport type {pathTypeToString p.getPathType}"
 
-            Pass (JObject (
-                "path" :-> JString p.getPathName,
-                "type" :-> JString (pathTypeToString p.getPathType),
-                "hash" :-> JString p.getPathHash,
-                "mode" :-> JInteger p.getPathMode,
-                Nil
-            ))
+            Pass (
+                JObject (
+                    "path" :-> JString p.getPathName,
+                    "type" :-> JString (pathTypeToString p.getPathType),
+                    "hash" :-> JString p.getPathHash,
+                    "mode" :-> JInteger p.getPathMode,
+                    Nil
+                )
+            )
 
         def visibleJsonResult =
             visible
@@ -479,6 +479,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             def runnerError =
                 visibleJsonResult
                 | getWhenPass "Failed to encode visible inputs with cached modes".makeError
+
             def _ = markJobSetupFailure job runnerError
 
             RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some runnerError)
