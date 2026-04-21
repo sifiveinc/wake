@@ -25,7 +25,6 @@
 
 #include "namespace.h"
 
-// Represents a visible file with its path, type, and content hash for CAS-based reads.
 struct visible_file {
   std::string path;
   std::string type;

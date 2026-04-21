@@ -92,7 +92,8 @@ bool daemon_client::connect(std::vector<visible_file> &visible, const std::strin
         execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), "--use-cas",
                nullptr, env);
       } else {
-        execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), nullptr, env);
+        execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), nullptr,
+               env);
       }
       std::cerr << "execl " << executable << ": " << strerror(errno) << std::endl;
       exit(1);

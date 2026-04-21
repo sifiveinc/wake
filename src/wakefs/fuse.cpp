@@ -60,8 +60,6 @@ bool json_as_struct(const std::string &json, json_args &result) {
 
   for (auto &x : jast.get("environment").children) result.environment.push_back(x.second.value);
 
-  // Parse visible files - supports both new format (objects with path/type/hash/mode) and legacy
-  // string entries.
   for (auto &x : jast.get("visible").children) {
     visible_file vf;
     if (x.second.kind == JSON_OBJECT) {
@@ -291,9 +289,7 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     }
 
     if (timeout_pid == 0) {
-#ifdef __linux__
       prctl(PR_SET_NAME, "wb-timer", 0, 0, 0);
-#endif
       sleep(*args.command_timeout);
       exit(124);
     }
