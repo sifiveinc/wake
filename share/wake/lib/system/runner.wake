@@ -496,7 +496,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                 "isolate-network" :-> JBoolean False,
                 "isolate-pids" :-> JBoolean False,
                 "mount-ops" :-> JArray (JObject ("type" :-> JString "workspace", "destination" :-> JString ".", Nil), Nil),
-                "cas-blobs-dir" :-> JString ".cas/blobs",
+                "cas-dir" :-> JString primCasDir,
                 "usage" :-> JObject (
                     "status" :-> JInteger jobStatus,
                     "runtime" :-> JDouble runtime,

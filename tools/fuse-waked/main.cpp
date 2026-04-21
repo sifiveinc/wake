@@ -52,6 +52,7 @@
 #include "compat/utimens.h"
 #include "json/json5.h"
 #include "util/execpath.h"
+#include "util/mkdir_parents.h"
 #include "util/unlink.h"
 #include "wcl/file_ops.h"
 
@@ -321,11 +322,25 @@ void Job::parse() {
     return;
   }
 
-  std::string cas_dir = jast.get("cas_blobs_dir").value;
+  std::string cas_dir = jast.get("cas_dir").value;
   if (!cas_dir.empty()) {
-    g_cas_blobs_dir = cas_dir;
+    g_cas_blobs_dir = cas_dir + "/blobs";
+    g_staging_dir = cas_dir + "/staging";
   } else if (g_cas_blobs_dir.empty()) {
-    g_cas_blobs_dir = ".cas/blobs";
+    g_cas_blobs_dir = ".build/cas/blobs";
+    g_staging_dir = ".build/cas/staging";
+  }
+  if (g_use_cas) {
+    int err = mkdir_with_parents(g_cas_blobs_dir, 0755);
+    if (err != 0) {
+      fprintf(stderr, "fuse-waked: failed to create CAS blobs directory '%s': %s\n",
+              g_cas_blobs_dir.c_str(), strerror(err));
+    }
+    err = mkdir_with_parents(g_staging_dir, 0755);
+    if (err != 0) {
+      fprintf(stderr, "fuse-waked: failed to create CAS staging directory '%s': %s\n",
+              g_staging_dir.c_str(), strerror(err));
+    }
   }
 
   // We only need to make the relative paths visible; absolute paths are already
@@ -2422,20 +2437,6 @@ int main(int argc, char *argv[]) {
   if (context.rootfd == -1) {
     perror("open .");
     goto term;
-  }
-
-  // Initialize staging directory for CAS (only if CAS is enabled)
-  // TODO: Remove the non-CAS startup path once WAKE_CAS is the default.
-  if (g_use_cas) {
-    g_staging_dir = ".cas/staging";
-    if (mkdir(".cas", 0755) == -1 && errno != EEXIST) {
-      perror("mkdir .cas");
-      goto term;
-    }
-    if (mkdir(g_staging_dir.c_str(), 0755) == -1 && errno != EEXIST) {
-      perror("mkdir .cas/staging");
-      goto term;
-    }
   }
 
   madedir = mkdir(path.c_str(), 0775) == 0;
