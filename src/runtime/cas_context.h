@@ -24,17 +24,18 @@
 
 #include "cas/cas.h"
 
-// Runtime-owned CAS store handle for a single workspace.
+// Runtime-owned CAS store handle.
 class CASContext {
  public:
-  explicit CASContext(std::string workspace) : workspace_(std::move(workspace)) {
-    std::string cas_root = workspace_ + "/.cas";
-    auto store_result = cas::Cas::open(cas_root);
+  explicit CASContext(std::string cas_root) : cas_root_(std::move(cas_root)) {
+    auto store_result = cas::Cas::open(cas_root_);
     if (store_result) {
       store_ = std::make_unique<cas::Cas>(std::move(*store_result));
     }
   }
   ~CASContext() = default;
+
+  const std::string& root() const { return cas_root_; }
 
   cas::Cas* get_store() const { return store_.get(); }
 
@@ -42,7 +43,7 @@ class CASContext {
 
  private:
   std::unique_ptr<cas::Cas> store_;
-  std::string workspace_;
+  std::string cas_root_;
 };
 
 #endif

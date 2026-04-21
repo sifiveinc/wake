@@ -23,6 +23,10 @@ export def addCasHashEnv = match (getenv "WAKE_CAS")
     Some value -> setPlanEnvVar "WAKE_CAS" value
     None -> identity
 
+# Location of the cas root directory set in Wake's runtime.
+export def primCasDir: String =
+    prim "cas_dir"
+
 # Materialize an item from CAS to workspace.
 def primCasMaterializeItem (destPath: String) (itemType: String) (hashOrTarget: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
     def raw destPath itemType hashOrTarget mode mtimeSec mtimeNsec = prim "cas_materialize_item"

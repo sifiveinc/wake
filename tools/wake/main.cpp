@@ -929,7 +929,8 @@ int main(int argc, char **argv) {
   StringInfo info(clo.verbose, clo.debug, clo.quiet, VERSION_STR, wcl::make_canonical(wake_cwd),
                   cmdline);
 
-  CASContext cas_ctx(".");
+  const std::string cas_dir = ".build/cas";
+  CASContext cas_ctx(cas_dir);
 
   PrimMap pmap = prim_register_all(&info, &jobtable, &cas_ctx);
 

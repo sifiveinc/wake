@@ -124,6 +124,17 @@ static std::optional<std::string> ensure_parent_dirs(const std::string& dest) {
 
 }  // namespace
 
+// prim "cas_dir" -> String
+// Returns the CAS root directory as configured in tools/wake/main.cpp.
+// Blobs live at {cas_dir}/blobs and staging at {cas_dir}/staging.
+static PRIMTYPE(type_cas_dir) { return args.size() == 0 && out->unify(Data::typeString); }
+
+static PRIMFN(prim_cas_dir) {
+  EXPECT(0);
+  auto* ctx = static_cast<CASContext*>(data);
+  RETURN(String::alloc(runtime.heap, ctx->root()));
+}
+
 // prim "cas_materialize_item" destPath type hashOrTarget mode mtimeSec mtimeNsec -> Result Unit
 // Error Materialize an item from CAS to workspace (files already in CAS) or create
 // symlink/directory.
@@ -518,6 +529,7 @@ static PRIMFN(prim_cas_ingest_staged_item) {
 // ============================================================================
 
 void prim_register_cas(CASContext* ctx, PrimMap& pmap) {
+  prim_register(pmap, "cas_dir", prim_cas_dir, type_cas_dir, PRIM_PURE, ctx);
   prim_register(pmap, "cas_materialize_item", prim_cas_materialize_item, type_cas_materialize_item,
                 PRIM_IMPURE, ctx);
   prim_register(pmap, "materialize_staged_workspace_item", prim_materialize_staged_workspace_item,
