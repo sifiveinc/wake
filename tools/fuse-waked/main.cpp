@@ -154,10 +154,10 @@ struct StagedItem {
                    [m](StagedFileData &f) { f.mode = m; },
                    [](StagedSymlinkData &) {},  // Symlinks don't have mode
                    [m](StagedDirectoryData &d) { d.mode = m; },
-                  // Known limitation: hardlink mode is tracked per-entry rather than shared across all names
-                  // pointing to the same staged file. A chmod on one hardlink path will not update sibling
-                  // hardlink entries, diverging from POSIX inode semantics.
-                  // TODO: Add robust hardlink support
+                   // Known limitation: hardlink mode is tracked per-entry rather than shared across
+                   // all names pointing to the same staged file. A chmod on one hardlink path will
+                   // not update sibling hardlink entries, diverging from POSIX inode semantics.
+                   // TODO: Add robust hardlink support
                    [m](StagedHardlinkData &h) { h.mode = m; },
                },
                data);
@@ -188,9 +188,9 @@ struct StagedItem {
       l->mtime = mt;
     } else if (auto *d = std::get_if<StagedDirectoryData>(&data)) {
       d->mtime = mt;
-    // Known limitation: same as set_mode — timestamps are tracked per-entry, so an utimens on
-    // one hardlink path does not update sibling hardlink entries.
-    // TODO: Add robust hardlink support
+      // Known limitation: same as set_mode — timestamps are tracked per-entry, so an utimens on
+      // one hardlink path does not update sibling hardlink entries.
+      // TODO: Add robust hardlink support
     } else if (auto *h = std::get_if<StagedHardlinkData>(&data)) {
       h->atime = at;
       h->mtime = mt;
@@ -355,26 +355,36 @@ void Job::parse() {
 
     if (x.second.kind == JSON_OBJECT) {
       // New format: {"path": "...", "type": "...", "hash": "...", "mode": ...}
-      path                          = x.second.get("path").value;
-      type                          = x.second.get("type").value;
-      const std::string &hash       = x.second.get("hash").value;
+      path = x.second.get("path").value;
+      type = x.second.get("type").value;
+      const std::string &hash = x.second.get("hash").value;
       const std::string &mode_value = x.second.get("mode").value;
 
-      if (path.empty())       { fprintf(stderr, "Visible entry missing 'path'\n"); continue; }
-      if (type.empty())       { fprintf(stderr, "Visible entry '%s' missing 'type'\n", path.c_str()); continue; }
-      if (mode_value.empty()) { fprintf(stderr, "Visible entry '%s' missing 'mode'\n", path.c_str()); continue; }
+      if (path.empty()) {
+        fprintf(stderr, "Visible entry missing 'path'\n");
+        continue;
+      }
+      if (type.empty()) {
+        fprintf(stderr, "Visible entry '%s' missing 'type'\n", path.c_str());
+        continue;
+      }
+      if (mode_value.empty()) {
+        fprintf(stderr, "Visible entry '%s' missing 'mode'\n", path.c_str());
+        continue;
+      }
 
       try {
         mode = static_cast<mode_t>(std::stoul(mode_value, nullptr, 10));
       } catch (const std::exception &e) {
-        fprintf(stderr, "Visible entry '%s' has invalid 'mode' value '%s': %s\n",
-                path.c_str(), mode_value.c_str(), e.what());
+        fprintf(stderr, "Visible entry '%s' has invalid 'mode' value '%s': %s\n", path.c_str(),
+                mode_value.c_str(), e.what());
         continue;
       }
 
       if (type != "directory") {
         if (hash.empty()) {
-          fprintf(stderr, "Visible entry '%s' (type '%s') missing 'hash'\n", path.c_str(), type.c_str());
+          fprintf(stderr, "Visible entry '%s' (type '%s') missing 'hash'\n", path.c_str(),
+                  type.c_str());
           continue;
         }
         auto result = cas::ContentHash::from_hex(hash);
@@ -417,7 +427,6 @@ static std::string cas_blob_path(const cas::ContentHash &hash) {
   assert(hex.size() >= 2);
   return g_cas_blobs_dir + "/" + hex.substr(0, 2) + "/" + hex.substr(2);
 }
-
 
 // Extract file mode bits (07777) from a VisibleEntry, falling back to the given mode.
 // Masks with 07777 to strip the file type bits from st_mode before use.
@@ -928,7 +937,7 @@ static int wakefuse_readlink(const char *path, char *buf, size_t size) {
     }
   }
 
-   // TODO: Remove workspace fallback once CAS is on by default
+  // TODO: Remove workspace fallback once CAS is on by default
   int res = readlinkat(context.rootfd, key.second.c_str(), buf, size - 1);
   if (res == -1) return -errno;
 
@@ -1631,8 +1640,8 @@ static int wakefuse_link(const char *from, const char *to) {
       // Uses reflink (copy-on-write) when the filesystem supports it.
       std::string new_staging_path = g_staging_dir + "/" + std::to_string(getpid()) + "_" +
                                      std::to_string(++g_staging_counter);
-      auto copy_result =
-          wcl::reflink_or_copy_file(std::string(*src_staging_path), new_staging_path, src_mode & 07777);
+      auto copy_result = wcl::reflink_or_copy_file(std::string(*src_staging_path), new_staging_path,
+                                                   src_mode & 07777);
       if (!copy_result) return -copy_result.error();
 
       StagedItem sf;
