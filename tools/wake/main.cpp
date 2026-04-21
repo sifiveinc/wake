@@ -23,7 +23,6 @@
 #include <inttypes.h>
 #include <signal.h>
 #include <stdlib.h>
-#include <sys/file.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -603,9 +602,13 @@ int main(int argc, char **argv) {
       if (sweep_fd != -1) {
         // Try to get an exclusive lock, NON-BLOCKING. If another process is already
         // sweeping, we simply skip.
-        if (flock(sweep_fd, LOCK_EX | LOCK_NB) == 0) {
+        struct flock fl = {};
+        fl.l_type = F_WRLCK;
+        fl.l_whence = SEEK_SET;
+        fl.l_start = 0;
+        fl.l_len = 0;
+        if (fcntl(sweep_fd, F_SETLK, &fl) == 0) {
           cleanup_stale_staging(".build/staging");
-          flock(sweep_fd, LOCK_UN);
         }
         close(sweep_fd);
       }
