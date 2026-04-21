@@ -213,7 +213,7 @@ export def computeHashes (files: List String): Result (List String) Error =
     def useStdinFile = toHashFileBytes >= 1900000 || toHashLen >= 12000
 
     def hashPlan cmd vis =
-        Plan "" cmd vis Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+        Plan "hash: {str toHashLen} paths" cmd vis Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
         | addCasHashEnv
 
     require Pass (Pair plan maybeStdinFilePath) = match useStdinFile
@@ -235,8 +235,6 @@ export def computeHashes (files: List String): Result (List String) Error =
 
     def job =
         plan
-        | setPlanLabel "hash: {str toHashLen} paths"
-        | setPlanEcho logDebug
         # localRunner is required to avoid an infinite loop through makeJSONRunner/writeImp.
         | runJobWith localRunner
         | setJobInspectVisibilityHidden
