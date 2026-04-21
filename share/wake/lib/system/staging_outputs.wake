@@ -230,17 +230,16 @@ export def prepareStagingOutputs (stagingItems: List StagingItem): Result (List 
             Some hash -> Pass hash
             None -> failWithError "Missing hash for staged file {destPath}"
 
-    def processStagingItem (item: StagingItem): Result PreparedStagingItem Error =
-        match item
-            StagingFile (StagingFileOutput destPath _ _ _ _) ->
-                require Pass hash = lookupFileHash destPath
+    def processStagingItem (item: StagingItem): Result PreparedStagingItem Error = match item
+        StagingFile (StagingFileOutput destPath _ _ _ _) ->
+            require Pass hash = lookupFileHash destPath
 
-                Pass (PreparedStagingItem item hash)
-            StagingSymlink (StagingSymlinkOutput _ symlinkTarget _ _) ->
-                # For symlinks, compute hash directly from the target string in the staging metadata.
-                # In CAS mode, symlinks are tracked virtually and don't exist on disk until materialization.
-                Pass (PreparedStagingItem item (hashString symlinkTarget))
-            StagingDirectory _ -> Pass (PreparedStagingItem item dirHash)
+            Pass (PreparedStagingItem item hash)
+        StagingSymlink (StagingSymlinkOutput _ symlinkTarget _ _) ->
+            # For symlinks, compute hash directly from the target string in the staging metadata.
+            # In CAS mode, symlinks are tracked virtually and don't exist on disk until materialization.
+            Pass (PreparedStagingItem item (hashString symlinkTarget))
+        StagingDirectory _ -> Pass (PreparedStagingItem item dirHash)
 
     stagingItems
     | map processStagingItem

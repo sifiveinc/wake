@@ -189,6 +189,7 @@ def materializeJobOutputs (outputs: StagedOutputs): Result (List PreparedStaging
         partitionStagingItems filteredOutputPaths stagingItems
 
     require Pass preparedItems = prepareStagingOutputs publishedStagingItems
+
     # Store published outputs in the DB first
     def storedItems = map storePreparedStagingItem preparedItems
 
@@ -243,12 +244,15 @@ def finalizeJob job inputs outputs cleanable reality runnerError =
         Pass _ -> Unit
         Fail err ->
             def _ = printlnLevel logWarning "PostFinalize callback failed: {err.getErrorCause}"
+
             Unit
 
     def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError
     def clResult = wait (\_ cleanupStagingRoot cleanable) pfResult
 
-    wait (\_ primJobFinish job inputs.implode preparedOutputPaths.implode cleanable.implode reality) clResult
+    wait
+    (\_ primJobFinish job inputs.implode preparedOutputPaths.implode cleanable.implode reality)
+    clResult
 
 def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo stdout stderr label isatty: Job =
     def hash = jobSignature cmd res finputs foutputs keep
@@ -276,8 +280,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
         def RunnerOutput inputs outputs cleanable reality runnerError =
             run job (RunnerInput label cmd vis env dir stdin res prefix usage isatty finputs foutputs)
 
-        def final _ =
-            finalizeJob job inputs outputs cleanable reality runnerError
+        def final _ = finalizeJob job inputs outputs cleanable reality runnerError
 
         # Make sure we don't hash files before the job has stopped running
         def _ = waitJobMerged final job

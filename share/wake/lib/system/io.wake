@@ -178,7 +178,8 @@ def writeRunner (content: String) =
             Some "write {path}: Invalid mode ({strOctal mode})".makeError
             | RunnerOutput Nil emptyStagedOutputs Nil emptyUsage
 
-        def stagedFilePath = "{workspaceStageBase}/direct/write.{prefix}.{hashString "{path}\n{content}"}"
+        def stagedFilePath =
+            "{workspaceStageBase}/direct/write.{prefix}.{hashString "{path}\n{content}"}"
 
         def writeTask =
             require Pass _ = primStageMkdir ".build"
