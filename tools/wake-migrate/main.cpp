@@ -140,22 +140,6 @@ static bool has_column(sqlite3* db, const char* table, const char* column) {
   return found;
 }
 
-static std::string infer_file_type_from_path_or_hash(const std::string& path,
-                                                     const std::string& hash) {
-  struct stat st;
-  if (!path.empty() && lstat(path.c_str(), &st) == 0) {
-    if (S_ISDIR(st.st_mode)) return "directory";
-    if (S_ISLNK(st.st_mode)) return "symlink";
-    return "file";
-  }
-
-  if (hash == "0000000000000000000000000000000000000000000000000000000000000000") {
-    return "directory";
-  }
-
-  return "file";
-}
-
 struct Migration {
   int from_version;
   int to_version;
@@ -250,50 +234,16 @@ static std::vector<Migration> get_migrations() {
        },
        "Convert runner_status from INTEGER to TEXT"},
 
-      // Version 9 -> 10: Add file type to files table
+      // Version 9 -> 10: Not supported. The schema changes to the files table require a fresh
+      // database. Users must delete wake.db and let wake recreate it.
       {9, 10,
-       [](sqlite3* db) -> bool {
-         if (!has_column(db, "files", "type")) {
-           const char* sql = "ALTER TABLE files ADD COLUMN type TEXT NOT NULL DEFAULT 'file';";
-           if (!exec_sql(db, sql)) return false;
-         }
-
-         sqlite3_stmt* select_stmt = nullptr;
-         sqlite3_stmt* update_stmt = nullptr;
-
-         if (sqlite3_prepare_v2(db, "SELECT path, hash FROM files;", -1, &select_stmt, nullptr) !=
-             SQLITE_OK)
-           return false;
-
-         if (sqlite3_prepare_v2(db, "UPDATE files SET type=? WHERE path=?;", -1, &update_stmt,
-                                nullptr) != SQLITE_OK) {
-           sqlite3_finalize(select_stmt);
-           return false;
-         }
-
-         bool ok = true;
-         while (sqlite3_step(select_stmt) == SQLITE_ROW) {
-           const unsigned char* path_txt = sqlite3_column_text(select_stmt, 0);
-           const unsigned char* hash_txt = sqlite3_column_text(select_stmt, 1);
-           std::string path = path_txt ? reinterpret_cast<const char*>(path_txt) : std::string();
-           std::string hash = hash_txt ? reinterpret_cast<const char*>(hash_txt) : std::string();
-           std::string type = infer_file_type_from_path_or_hash(path, hash);
-
-           sqlite3_bind_text(update_stmt, 1, type.c_str(), -1, SQLITE_TRANSIENT);
-           sqlite3_bind_text(update_stmt, 2, path.c_str(), -1, SQLITE_TRANSIENT);
-           if (sqlite3_step(update_stmt) != SQLITE_DONE) {
-             ok = false;
-             break;
-           }
-           sqlite3_reset(update_stmt);
-           sqlite3_clear_bindings(update_stmt);
-         }
-
-         sqlite3_finalize(update_stmt);
-         sqlite3_finalize(select_stmt);
-         return ok;
+       [](sqlite3*) -> bool {
+         std::cerr << "Migration from version 9 to 10 is not supported.\n"
+                   << "Please delete wake.db and run wake again to create a fresh database."
+                   << std::endl;
+         return false;
        },
-       "Add files.type column"},
+       "Migration to version 10 is not supported"},
 
   };
 }
