@@ -64,24 +64,35 @@ bool json_as_struct(const std::string &json, json_args &result) {
     visible_file vf;
     if (x.second.kind == JSON_OBJECT) {
       // New format: {"path": "...", "type": "...", "hash": "...", "mode": ...}
-      vf.path                         = x.second.get("path").value;
-      vf.type                         = x.second.get("type").value;
-      vf.hash                         = x.second.get("hash").value;
-      const std::string &mode_value   = x.second.get("mode").value;
+      vf.path = x.second.get("path").value;
+      vf.type = x.second.get("type").value;
+      vf.hash = x.second.get("hash").value;
+      const std::string &mode_value = x.second.get("mode").value;
 
-      if (vf.path.empty())       { std::cerr << "Visible entry missing 'path'\n"; return false; }
-      if (vf.type.empty())       { std::cerr << "Visible entry '" << vf.path << "' missing 'type'\n"; return false; }
-      if (mode_value.empty())    { std::cerr << "Visible entry '" << vf.path << "' missing 'mode'\n"; return false; }
+      if (vf.path.empty()) {
+        std::cerr << "Visible entry missing 'path'\n";
+        return false;
+      }
+      if (vf.type.empty()) {
+        std::cerr << "Visible entry '" << vf.path << "' missing 'type'\n";
+        return false;
+      }
+      if (mode_value.empty()) {
+        std::cerr << "Visible entry '" << vf.path << "' missing 'mode'\n";
+        return false;
+      }
 
       try {
         vf.mode = std::stoi(mode_value);
       } catch (const std::exception &e) {
-        std::cerr << "Visible entry '" << vf.path << "' has invalid 'mode' value '" << mode_value << "': " << e.what() << "\n";
+        std::cerr << "Visible entry '" << vf.path << "' has invalid 'mode' value '" << mode_value
+                  << "': " << e.what() << "\n";
         return false;
       }
 
       if (vf.type != "directory" && vf.hash.empty()) {
-        std::cerr << "Visible entry '" << vf.path << "' (type '" << vf.type << "') missing 'hash'\n";
+        std::cerr << "Visible entry '" << vf.path << "' (type '" << vf.type
+                  << "') missing 'hash'\n";
         return false;
       }
     } else {

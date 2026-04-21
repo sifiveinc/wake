@@ -67,7 +67,8 @@ struct json_args {
   std::vector<visible_file> visible;  // Visible files with path, type, hash, and mode
   std::string directory;
   std::string stdin_file;
-  std::string cas_dir;  // Root of the CAS layout; blobs at {cas_dir}/blobs, staging at {cas_dir}/staging.
+  std::string
+      cas_dir;  // Root of the CAS layout; blobs at {cas_dir}/blobs, staging at {cas_dir}/staging.
 
   std::string hostname;
   std::string domainname;
