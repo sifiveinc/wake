@@ -197,7 +197,7 @@ def workspaceStageTool =
     "{wakePath}/../lib/wake/wake-stage"
 
 def workspaceStageBase =
-    ".build/staging"
+    ".build/staging/{str wakePid}"
 
 # Stages a declared workspace-output list with wake-stage and returns the full staged output
 # metadata plus any helper paths that should be cleaned later.
