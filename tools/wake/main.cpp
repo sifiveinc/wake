@@ -370,7 +370,6 @@ static void cleanup_stale_staging(const std::string &staging_dir) {
   }
 }
 
-
 int main(int argc, char **argv) {
   // Make sure we always get core dumps but don't fail
   // if that fails for some reason.
@@ -597,8 +596,7 @@ int main(int argc, char **argv) {
     std::error_code ec;
     std::filesystem::create_directories(".build/staging", ec);
     if (!ec) {
-      int sweep_fd =
-          open(".build/staging/.sweep.lock", O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+      int sweep_fd = open(".build/staging/.sweep.lock", O_RDWR | O_CREAT | O_CLOEXEC, 0666);
       if (sweep_fd != -1) {
         // Try to get an exclusive lock, NON-BLOCKING. If another process is already
         // sweeping, we simply skip.

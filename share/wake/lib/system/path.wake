@@ -213,7 +213,22 @@ export def computeHashes (files: List String): Result (List String) Error =
     def useStdinFile = toHashFileBytes >= 1900000 || toHashLen >= 12000
 
     def hashPlan cmd vis =
-        Plan "hash: {str toHashLen} paths" cmd vis Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+        Plan
+        "hash: {str toHashLen} paths"
+        cmd
+        vis
+        Nil
+        "."
+        ""
+        logNever
+        logError
+        logDebug
+        ReRun
+        Nil
+        hashUsage
+        identity
+        identity
+        False
         | addCasHashEnv
 
     require Pass (Pair plan maybeStdinFilePath) = match useStdinFile
