@@ -261,6 +261,18 @@ export def materializeStagedItemFromStaging (item: StagingItem): Result Unit Err
         primMaterializeStagedWorkspaceItem destPath "directory" "" mode mtimeSec mtimeNsec
         | addErrorContext "Creating directory {destPath}"
 
+# Unlink the staging source for a StagingFile. Used on the NeedsWorkspaceMaterialization=False
+# path where nothing else consumes the staging copy. Symlink and directory items carry no
+# on-disk staging source, so they are no-ops.
+export def unlinkStagingSourceIfFile (item: StagingItem): Result Unit Error =
+    def unlink _ = prim "unlink"
+
+    match item
+        StagingFile (StagingFileOutput _ stagingPath _ _ _) -> match (unlink stagingPath)
+            Unit -> Pass Unit
+        StagingSymlink _ -> Pass Unit
+        StagingDirectory _ -> Pass Unit
+
 # Splits staging items into published (matched by filteredOutputPaths) and unpublished (the rest).
 export def partitionStagingItems (filteredOutputPaths: List String) (stagingItems: List StagingItem): Pair (List StagingItem) (List StagingItem) =
     def stagingItemByDestPath =
