@@ -217,14 +217,11 @@ export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPa
     require True = subset scmp normFilteredOutputPaths normAllOutputPaths
     else
         def missing = subtract scmp normFilteredOutputPaths normAllOutputPaths
+
         failWithError "Published outputs not present in staged workspace outputs: {catWith ", " missing}"
 
     if empty normAllOutputPaths then
-        Pass (
-            Pair
-            (StagedOutputs normFilteredOutputPaths False Nil None (\_ Unit))
-            baseCleanableOutputs
-        )
+        Pass (Pair (StagedOutputs normFilteredOutputPaths False Nil None (\_ Unit)) baseCleanableOutputs)
     else
         require True = access workspaceStageTool xOK
         else failWithError "workspace staging helper {workspaceStageTool} is not executable"
