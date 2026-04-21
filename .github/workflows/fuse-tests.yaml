@@ -1,0 +1,40 @@
+name: "FUSE Tests"
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/fuse-tests.yaml
+      - docker/**
+      - test-suite/**
+      - tools/fuse-waked/**
+jobs:
+  xfstests:
+    runs-on: ubuntu-22.04
+    name: xfstests
+    steps:
+      - name: Clone wake
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build xfstests Docker image
+        run: docker build -t wake-xfstests -f docker/Dockerfile.xfstests .
+
+      - name: Run xfstests
+        run: docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined wake-xfstests
+
+  pjdfstest:
+    runs-on: ubuntu-22.04
+    name: pjdfstest
+    steps:
+      - name: Clone wake
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build pjdfstest Docker image
+        run: docker build -t wake-pjdfstest -f docker/Dockerfile.pjdfstest .
+
+      - name: Run pjdfstest
+        run: docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined wake-pjdfstest
