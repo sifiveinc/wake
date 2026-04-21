@@ -94,10 +94,10 @@ bool json_as_struct(const std::string &json, json_args &result) {
     result.visible.push_back(vf);
   }
 
-  // Parse CAS blobs directory with default
-  result.cas_blobs_dir = jast.get("cas-blobs-dir").value;
-  if (result.cas_blobs_dir.empty()) {
-    result.cas_blobs_dir = ".cas/blobs";
+  // Parse CAS root directory (layout: {cas_dir}/blobs, {cas_dir}/staging)
+  result.cas_dir = jast.get("cas-dir").value;
+  if (result.cas_dir.empty()) {
+    result.cas_dir = ".build/cas";
   }
 
   JAST timeout_entry = jast.get("command-timeout");
@@ -199,7 +199,7 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     return false;
   }
 
-  if (!args.daemon.connect(args.visible, args.cas_blobs_dir, args.isolate_pids)) return false;
+  if (!args.daemon.connect(args.visible, args.cas_dir, args.isolate_pids)) return false;
 
   struct timeval start;
   gettimeofday(&start, 0);

@@ -51,7 +51,7 @@ struct daemon_client {
 
   daemon_client(const std::string &base_dir);
 
-  bool connect(std::vector<visible_file> &visible, const std::string &cas_blobs_dir,
+  bool connect(std::vector<visible_file> &visible, const std::string &cas_dir,
                bool close_live_file);
   bool disconnect(std::string &result);
 
@@ -64,10 +64,10 @@ struct json_args {
   std::vector<std::string> command;
   std::optional<int> command_timeout;  // timeout in seconds.
   std::vector<std::string> environment;
-  std::vector<visible_file> visible;
+  std::vector<visible_file> visible;  // Visible files with path, type, hash, and mode
   std::string directory;
   std::string stdin_file;
-  std::string cas_blobs_dir;
+  std::string cas_dir;  // Root of the CAS layout; blobs at {cas_dir}/blobs, staging at {cas_dir}/staging.
 
   std::string hostname;
   std::string domainname;
