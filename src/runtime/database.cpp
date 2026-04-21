@@ -906,8 +906,43 @@ void Database::prepare(const std::string &cmdline) {
   }
   end_txn();
 
-  // Query incomplete runs (separate txn; snapshot doesn't need to match above).
-  why = "Could not query incomplete runs";
+  // Reap any dead runs (our run_id is automatically excluded).
+  reap_dead_runs();
+
+  begin_ro_txn();
+  why = "Could not compute GC watermark";
+  if (sqlite3_step(imp->get_gc_watermark) == SQLITE_ROW) {
+    imp->gc_watermark = sqlite3_column_int64(imp->get_gc_watermark, 0);
+  } else {
+    std::cerr << "warning: unable to compute GC watermark" << std::endl;
+    imp->gc_watermark = 0;
+  }
+  finish_stmt(why, imp->get_gc_watermark, imp->debugdb);
+
+  end_txn();
+}
+
+void Database::finish_run() {
+  auto ts = gettime_ns();
+
+  const char *why = "Could not set run end_time";
+  begin_rw_txn();
+  bind_integer(why, imp->set_run_end_time, 1, ts);
+  bind_integer(why, imp->set_run_end_time, 2, imp->run_id);
+  single_step(why, imp->set_run_end_time, imp->debugdb);
+  end_txn();
+
+  // Remove our own lock file - we're done with this run
+  if (imp->run_lock_fd >= 0) {
+    unlink(run_lock_path(imp->run_id).c_str());
+  }
+}
+
+void Database::reap_dead_runs() {
+  auto ts = gettime_ns();
+
+  // Query incomplete runs, excluding our own (imp->run_id is 0 if no run).
+  auto *why = "Could not query incomplete runs";
   std::vector<std::pair<long, int64_t>> incomplete_runs;  // (run_id, start_time)
   begin_ro_txn();
   while (sqlite3_step(imp->get_incomplete_runs) == SQLITE_ROW) {
@@ -961,34 +996,6 @@ void Database::prepare(const std::string &cmdline) {
       single_step(why, imp->set_run_end_time, imp->debugdb);
     }
     end_txn();
-  }
-
-  begin_ro_txn();
-  why = "Could not compute GC watermark";
-  if (sqlite3_step(imp->get_gc_watermark) == SQLITE_ROW) {
-    imp->gc_watermark = sqlite3_column_int64(imp->get_gc_watermark, 0);
-  } else {
-    std::cerr << "warning: unable to compute GC watermark" << std::endl;
-    imp->gc_watermark = 0;
-  }
-  finish_stmt(why, imp->get_gc_watermark, imp->debugdb);
-
-  end_txn();
-}
-
-void Database::finish_run() {
-  auto ts = gettime_ns();
-
-  const char *why = "Could not set run end_time";
-  begin_rw_txn();
-  bind_integer(why, imp->set_run_end_time, 1, ts);
-  bind_integer(why, imp->set_run_end_time, 2, imp->run_id);
-  single_step(why, imp->set_run_end_time, imp->debugdb);
-  end_txn();
-
-  // Remove our own lock file - we're done with this run
-  if (imp->run_lock_fd >= 0) {
-    unlink(run_lock_path(imp->run_id).c_str());
   }
 }
 
