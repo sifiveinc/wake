@@ -774,8 +774,8 @@ def writeUntrackedTmpFile (pathStr: String) (content: String): Result Unit Error
     Pass Unit
 
 def disableRemoteCache Unit: Result Unit Error =
-    require Pass uuid = generateID Unit
-    require Pass _ = writeUntrackedTmpFile disableCacheFilePath uuid
+    require Pass runId = generateID Unit
+    require Pass _ = writeUntrackedTmpFile disableCacheFilePath runId
 
     Pass Unit
 

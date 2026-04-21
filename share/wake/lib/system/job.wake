@@ -145,6 +145,111 @@ def implode strings =
 def jobSignature cmd res fni fno keep =
     primHash5 cmd res fni fno keep
 
+# Process staged outputs: partition into published/unpublished, prepare hashes, store in the DB,
+# ingest published items into CAS, and materialize all items to the workspace.
+# Returns the list of stored PreparedStagingItems on success.
+def materializeJobOutputs (outputs: StagedOutputs): Result (List PreparedStagingItem) Error =
+    def needsWorkspaceMaterialization = outputs.getStagedOutputsNeedsWorkspaceMaterialization
+
+    def maybeMaterialize preparedItem =
+        def item = preparedItem.getPreparedStagingItemItem
+
+        if needsWorkspaceMaterialization then
+            # TODO: Remove the non-CAS staging-materialization branch once WAKE_CAS is the default.
+            if useCasHashes then
+                materializePreparedStagingItemFromCas preparedItem
+            else
+                materializeStagedItemFromStaging item
+        else
+            # cleanup the StagingFile as it's no longer needed.
+            unlinkStagingSourceIfFile item
+
+    def ingestAndMaterialize (preparedItem: PreparedStagingItem) =
+        require Pass _ =
+            # TODO: Remove the non-CAS no-ingest branch once WAKE_CAS is the default.
+            if useCasHashes then
+                ingestPreparedStagingItemIntoCas preparedItem
+            else
+                Pass Unit
+
+        maybeMaterialize preparedItem
+
+    def materializeUnpublishedStagedItem (item: StagingItem): Result Unit Error =
+        if needsWorkspaceMaterialization then
+            materializeStagedItemFromStaging item
+        else
+            # cleanup the StagingFile as it's no longer needed.
+            unlinkStagingSourceIfFile item
+
+    def StagedOutputs filteredOutputPaths _ stagingItems _ _ = outputs
+
+    # Split outputs into published (CAS path) and unpublished (direct workspace path),
+    # and prepare hashes for the published subset.
+    def Pair publishedStagingItems unpublishedStagingItems =
+        partitionStagingItems filteredOutputPaths stagingItems
+
+    require Pass preparedItems = prepareStagingOutputs publishedStagingItems
+    # Store published outputs in the DB first
+    def storedItems = map storePreparedStagingItem preparedItems
+
+    # Materialize published outputs after they have been stored in the DB.
+    require Pass _ =
+        storedItems
+        | map ingestAndMaterialize
+        | findFail
+
+    require Pass _ =
+        unpublishedStagingItems
+        | map materializeUnpublishedStagedItem
+        | findFail
+
+    Pass storedItems
+
+# Finalize a completed job: collect any runner/output errors, invoke the post-finalize callback,
+# clean up the staging root, and call primJobFinish to publish the job's outputs.
+def finalizeJob job inputs outputs cleanable reality runnerError =
+    def workspaceOutputsReadyResult = materializeJobOutputs outputs
+
+    def finalRunnerError: Option Error =
+        (runnerError, getFail workspaceOutputsReadyResult, Nil)
+        | find isSome
+        | omap getPairFirst
+        | getOrElse None
+
+    def preparedOutputPaths =
+        workspaceOutputsReadyResult
+        | getWhenFail Nil
+        | map getPreparedStagingItemPathName
+
+    # Invoke post-finalization callback (e.g. RSC upload from workspace dest paths)
+    # only after all materialization work has completed.
+    def postFinalizeResult =
+        require Pass _ = workspaceOutputsReadyResult
+
+        match finalRunnerError
+            None -> Pass (outputs.getStagedOutputsPostFinalize Unit)
+            Some _ -> Pass Unit
+
+    # Clean up the empty staging root directory now that all staged files are consumed.
+    def cleanupStagingRoot _ =
+        def rmdir _ = prim "rmdir"
+
+        match outputs.getStagedOutputsStagingRoot
+            Some root -> rmdir root
+            None -> Unit
+
+    # Force post-finalization effects before publishing the job outputs.
+    def pfResult = match postFinalizeResult
+        Pass _ -> Unit
+        Fail err ->
+            def _ = printlnLevel logWarning "PostFinalize callback failed: {err.getErrorCause}"
+            Unit
+
+    def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError
+    def clResult = wait (\_ cleanupStagingRoot cleanable) pfResult
+
+    wait (\_ primJobFinish job inputs.implode preparedOutputPaths.implode cleanable.implode reality) clResult
+
 def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo stdout stderr label isatty: Job =
     def hash = jobSignature cmd res finputs foutputs keep
 
@@ -172,127 +277,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             run job (RunnerInput label cmd vis env dir stdin res prefix usage isatty finputs foutputs)
 
         def final _ =
-            def needsWorkspaceMaterialization =
-                outputs.getStagedOutputsNeedsWorkspaceMaterialization
-
-            # Maybe materialize a prepared published item to the workspace.
-            def maybeMaterialize preparedItem =
-                def item = preparedItem.getPreparedStagingItemItem
-
-                if needsWorkspaceMaterialization then
-                    # TODO: Remove the non-CAS staging-materialization branch once WAKE_CAS is the default.
-                    if useCasHashes then
-                        materializePreparedStagingItemFromCas preparedItem
-                    else
-                        materializeStagedItemFromStaging item
-                else
-                    # cleanup the StagingFile as it's no longer needed.
-                    unlinkStagingSourceIfFile item
-
-            # For published items: optionally ingest to CAS, then materialize.
-            def ingestAndMaterialize (preparedItem: PreparedStagingItem) =
-                require Pass _ =
-                    # TODO: Remove the non-CAS no-ingest branch once WAKE_CAS is the default.
-                    if useCasHashes then
-                        ingestPreparedStagingItemIntoCas preparedItem
-                    else
-                        Pass Unit
-
-                maybeMaterialize preparedItem
-
-            # For unpublished items: materialize directly from staging.
-            def materializeUnpublishedStagedItem (item: StagingItem): Result Unit Error =
-                if needsWorkspaceMaterialization then
-                    materializeStagedItemFromStaging item
-                else
-                    # cleanup the StagingFile as it's no longer needed.
-                    unlinkStagingSourceIfFile item
-
-            # Split outputs into published (CAS path) and unpublished (direct workspace path),
-            # and prepare hashes for the published subset.
-            def preparedOutputsResult =
-                def StagedOutputs filteredOutputPaths _ stagingItems _ _ = outputs
-
-                def Pair publishedStagingItems unpublishedStagingItems =
-                    partitionStagingItems filteredOutputPaths stagingItems
-
-                prepareStagingOutputs publishedStagingItems
-                | rmap (\preparedItems Triple preparedItems filteredOutputPaths unpublishedStagingItems)
-
-            # Store published outputs in the DB first
-            def storedOutputsResult =
-                require Pass (Triple preparedItemsToStore _ _) = preparedOutputsResult
-
-                Pass (map storePreparedStagingItem preparedItemsToStore)
-
-            # Materialize published outputs after they have been stored in the DB.
-            def materializedPublishedOutputsResult =
-                require Pass storedOutputsToMaterialize = storedOutputsResult
-
-                storedOutputsToMaterialize
-                | map ingestAndMaterialize
-                | findFail
-
-            def materializeUnpublishedStagedItemsResult =
-                require Pass (Triple _ _ unpublishedStagingItems) = preparedOutputsResult
-
-                unpublishedStagingItems
-                | map materializeUnpublishedStagedItem
-                | findFail
-
-            def workspaceOutputsReadyResult =
-                require Pass _ = materializedPublishedOutputsResult
-                require Pass _ = materializeUnpublishedStagedItemsResult
-                require Pass storedOutputs = storedOutputsResult
-
-                Pass storedOutputs
-
-            def finalRunnerError: Option Error =
-                (
-                    runnerError,
-                    getFail preparedOutputsResult,
-                    getFail storedOutputsResult,
-                    getFail materializedPublishedOutputsResult,
-                    getFail materializeUnpublishedStagedItemsResult,
-                    Nil
-                )
-                | find isSome
-                | omap getPairFirst
-                | getOrElse None
-
-            def preparedOutputPaths =
-                workspaceOutputsReadyResult
-                | getWhenFail Nil
-                | map getPreparedStagingItemPathName
-
-            # Invoke post-finalization callback (e.g. RSC upload from workspace dest paths)
-            # only after all materialization work has completed.
-            def postFinalizeResult =
-                require Pass _ = workspaceOutputsReadyResult
-
-                match finalRunnerError
-                    None -> Pass (outputs.getStagedOutputsPostFinalize Unit)
-                    Some _ -> Pass Unit
-
-            # Clean up the empty staging root directory now that all staged files are consumed.
-            def cleanupStagingRoot _ =
-                def rmdir _ = prim "rmdir"
-
-                match outputs.getStagedOutputsStagingRoot
-                    Some root -> rmdir root
-                    None -> Unit
-
-            # Force post-finalization effects before publishing the job outputs.
-            def pfResult = match postFinalizeResult
-                Pass _ -> Unit
-                Fail err ->
-                    def _ = printlnLevel logWarning "PostFinalize callback failed: {err.getErrorCause}"
-                    Unit
-
-            def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError
-            def clResult = wait (\_ cleanupStagingRoot cleanable) pfResult
-
-            wait (\_ primJobFinish job inputs.implode preparedOutputPaths.implode cleanable.implode reality) clResult
+            finalizeJob job inputs outputs cleanable reality runnerError
 
         # Make sure we don't hash files before the job has stopped running
         def _ = waitJobMerged final job
@@ -333,15 +318,13 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
     # TODO: Replace nested-Pair return from C++ claim_tree with a proper Wake tuple.
     def parseCachedPathInfo (Pair name (Pair pathTypeString (Pair hash (Pair mode mtimeNs)))) =
         require Pass pathType = pathTypeFromString pathTypeString
-        else failWithError "Failed to parse cached output type '{pathTypeString}' for {name}"
+        else panic "Failed to parse cached output type '{pathTypeString}' for {name}"
 
-        Pass (PathInfo name pathType hash mode mtimeNs)
+        PathInfo name pathType hash mode mtimeNs
 
-    require Pass cachedOutputs =
+    def cachedOutputs =
         cache.getPairSecond
         | map parseCachedPathInfo
-        | findFail
-    else build Unit
 
     match cache
         Pair (job, _) _ ->

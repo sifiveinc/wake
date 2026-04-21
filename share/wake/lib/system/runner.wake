@@ -202,9 +202,13 @@ def workspaceStageBase =
 # Stages a declared workspace-output list with wake-stage and returns the full staged output
 # metadata plus any helper paths that should be cleaned later.
 #
-# allOutputPaths: every output path that should be represented in staging
-# filteredOutputPaths: the published subset of allOutputPaths
-# baseCleanableOutputs: non-staging cleanables to preserve alongside helper artifacts
+# Assumes all outputs already exist at their final workspace paths (e.g. produced by a local job
+# or written directly by the runner), so the returned StagedOutputs always has
+# NeedsWorkspaceMaterialization=False -- job finalization will hash/ingest them but not move them.
+#
+# allOutputPaths: every output path to stage (hashed and optionally CAS-ingested)
+# filteredOutputPaths: the published subset of allOutputPaths, i.e. those exposed via getJobOutputs
+# baseCleanableOutputs: additional paths (beyond staging artifacts) to include in the cleanup list,
 export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String): Result (Pair StagedOutputs (List String)) Error =
     # Normalize paths so string comparisons and wake-stage path lookups are consistent
     def normAllOutputPaths = map simplify allOutputPaths
@@ -340,7 +344,10 @@ export def workspaceRunner: Runner =
         match baseRunnerError
             Some err -> RunnerOutput filteredInputs emptyStagedOutputs Nil runnerUsage (Some err)
             None ->
-                match (stageWorkspaceOutputs publishedOutputPaths publishedOutputPaths publishedOutputPaths)
+                def stagingResult =
+                    stageWorkspaceOutputs publishedOutputPaths publishedOutputPaths publishedOutputPaths
+
+                match stagingResult
                     Fail err ->
                         RunnerOutput filteredInputs emptyStagedOutputs Nil runnerUsage (Some err)
                     Pass (Pair stagedOutputs cleanableOutputs) ->
@@ -600,7 +607,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         def defaultCleanableOutputs = specFile, resultFile, jsonOutputs
 
         # `fnOutputs` is not always a pure filter over `jsonOutputs`. Runners that use
-        # `TrackingDisabled` (e.g. `bindmount`) tell wakebox not to record writes, so
+        # `TrackingDisabled` (e.g. `bindmount` the workspace itself) tell wakebox not to record writes, so
         # `jsonOutputs` comes back empty even when the job produced files. Such runners
         # rely on `fnOutputs` to discover its outputs from disk after the job exits, so
         # `filteredOutputPaths` may legitimately contain paths that are not in
@@ -618,6 +625,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                     # outputs on disk (the TrackingDisabled case), CAS cannot ingest from
                     # the empty `staging_files` set. Fall back to the workspace-staging
                     # path so the discovered outputs are picked up from the workspace.
+                    # TODO: Revisit this before making WAKE_CAS the default.
                     if empty stagingItems && ! empty filteredOutputPaths then
                         stageWorkspaceOutputs allStagedOutputs filteredOutputPaths defaultCleanableOutputs
                     else
