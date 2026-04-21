@@ -135,6 +135,10 @@ struct Database {
   void finish_run();                         // mark run as complete (sets end_time)
   void clean();                              // finished execution; sweep stale jobs
 
+  // Reap dead runs: probe lock files and mark crashed runs as reaped.
+  // Automatically excludes our own run_id if prepare() was called.
+  void reap_dead_runs();
+
   // Reclaim space on disk from deleted records.
   // If not incremental, will lock DB exclusively for duration.
   // Recommend a blocking checkpoint after full.
