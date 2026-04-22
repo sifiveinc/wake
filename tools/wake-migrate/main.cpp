@@ -322,6 +322,76 @@ static std::vector<Migration> get_migrations() {
          return true;
        },
        "Replace use_id with run_jobs, add end_time for GC watermark"},
+
+      // Version 11 -> 12: Per-job hashes
+      // - Remove stale column from jobs table
+      // - Change files index from unique(path) to unique(path, hash, type, mode)
+      // - Add non-unique index on files(path) for path-only lookups
+      {11, 12,
+       [](sqlite3* db) -> bool {
+         // Step 1: Create new jobs table without stale column
+         const char* create_new_jobs = R"(
+           CREATE TABLE jobs_new(
+             job_id      integer primary key autoincrement,
+             run_id      integer not null references runs(run_id),
+             label       text    not null,
+             directory   text    not null,
+             commandline blob    not null,
+             environment blob    not null,
+             stdin       text    not null,
+             signature   integer not null,
+             stack       blob    not null,
+             stat_id     integer references stats(stat_id),
+             starttime   integer not null default 0,
+             endtime     integer not null default 0,
+             keep        integer not null default 0,
+             is_atty     integer not null default 0,
+             runner_status text
+           );
+         )";
+
+         if (!exec_sql(db, create_new_jobs)) return false;
+
+         // Step 2: Copy data, excluding stale column
+         const char* copy_jobs = R"(
+           INSERT INTO jobs_new SELECT
+             job_id, run_id, label, directory, commandline, environment,
+             stdin, signature, stack, stat_id, starttime, endtime, keep, is_atty,
+             runner_status
+           FROM jobs;
+         )";
+
+         if (!exec_sql(db, copy_jobs)) return false;
+
+         // Step 3: Drop old jobs table and rename new one
+         if (!exec_sql(db, "DROP TABLE jobs;")) return false;
+         if (!exec_sql(db, "ALTER TABLE jobs_new RENAME TO jobs;")) return false;
+
+         // Step 4: Recreate jobs indexes
+         if (!exec_sql(db,
+                       "CREATE INDEX job ON jobs(directory, commandline, environment, stdin, "
+                       "signature, keep, job_id, stat_id);"))
+           return false;
+         if (!exec_sql(db,
+                       "CREATE INDEX runner_status_idx ON jobs(runner_status) WHERE runner_status "
+                       "IS NOT NULL;"))
+           return false;
+         if (!exec_sql(db, "CREATE INDEX jobstats ON jobs(stat_id);")) return false;
+
+         // Step 5: Update files table indexes
+         if (!exec_sql(db, "DROP INDEX IF EXISTS filenames")) return false;
+
+         // Create new indexes: unique on (path, hash), non-unique on (path)
+         if (!exec_sql(
+                 db,
+                 "CREATE UNIQUE INDEX file_path_hash_type_mode ON files(path, hash, type, mode);"))
+           return false;
+         if (!exec_sql(db, "CREATE INDEX filenames ON files(path);")) return false;
+
+         return true;
+       },
+       "Per-job hashes: remove stale column, unique index on (path, hash, type, mode)"},
+
   };
 }
 
