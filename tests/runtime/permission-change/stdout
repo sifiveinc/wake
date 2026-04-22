@@ -1,4 +1,4 @@
 === Run 1: non-executable ===
 Pass "test-x=no\n hash=008ee53e94c1e0fff627cfe82080cdd0f267457b2feb846dfb7d654e49115eb1"
 === Run 2: executable ===
-Pass "test-x=no\n hash=008ee53e94c1e0fff627cfe82080cdd0f267457b2feb846dfb7d654e49115eb1"
+Pass "test-x=yes\n hash=008ee53e94c1e0fff627cfe82080cdd0f267457b2feb846dfb7d654e49115eb1"
