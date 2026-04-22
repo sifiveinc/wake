@@ -557,7 +557,14 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             Some "Non-zero exit status ({str runnerStatusCode}) for JSON runner on {specFile}".makeError
             | RunnerOutput Nil emptyStagedOutputs (specFile, Nil) runnerUsage
 
-        require Pass content = parseJSONFile resultFile
+        def claimResult =
+            claim resultFile
+            | addErrorContext "Failed to claim {resultFile} for JSON runner: "
+
+        require Pass resultPath = claimResult
+        else RunnerOutput Nil emptyStagedOutputs (specFile, Nil) runnerUsage claimResult.getFail
+
+        require Pass content = parseJSONFile resultPath
         else
             Some "Failed to parse output {resultFile} for JSON runner".makeError
             | RunnerOutput Nil emptyStagedOutputs (specFile, Nil) runnerUsage
