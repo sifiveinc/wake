@@ -450,13 +450,46 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
 
         def Usage jobStatus runtime cputime membytes inbytes outbytes = record
 
+        def mkVisibleJson (p: Path): Result JValue Error =
+            require True = match p.getPathType
+                PathTypeRegularFile -> True
+                PathTypeDirectory -> True
+                PathTypeSymlink -> True
+                _ -> False
+            else
+                failWithError "Visible path {p.getPathName} has unsupported transport type {pathTypeToString p.getPathType}"
+
+            Pass (
+                JObject (
+                    "path" :-> JString p.getPathName,
+                    "type" :-> JString (pathTypeToString p.getPathType),
+                    "hash" :-> JString p.getPathHash,
+                    "mode" :-> JInteger p.getPathMode,
+                    Nil
+                )
+            )
+
+        def visibleJsonResult =
+            visible
+            | map mkVisibleJson
+            | findFail
+
+        require Pass visibleJson = visibleJsonResult
+        else
+            def runnerError =
+                visibleJsonResult
+                | getWhenPass "Failed to encode visible inputs with cached modes".makeError
+
+            def _ = markJobSetupFailure job runnerError
+
+            RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some runnerError)
+
         def json =
             JObject (
                 "label" :-> JString label,
                 "command" :-> command | map JString | JArray,
                 "environment" :-> environment | map JString | JArray,
-                #TODO: Add updated visible transport fileds {path,type,hash,mode}
-                "visible" :-> visible | map getPathName | map JString | JArray,
+                "visible" :-> JArray visibleJson,
                 "directory" :-> JString directory,
                 "stdin" :-> JString stdin,
                 "resources" :-> res | map JString | JArray,
@@ -464,6 +497,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                 "isolate-network" :-> JBoolean False,
                 "isolate-pids" :-> JBoolean False,
                 "mount-ops" :-> JArray (JObject ("type" :-> JString "workspace", "destination" :-> JString ".", Nil), Nil),
+                "cas-dir" :-> JString primCasDir,
                 "usage" :-> JObject (
                     "status" :-> JInteger jobStatus,
                     "runtime" :-> JDouble runtime,

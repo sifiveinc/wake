@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/bin/sh",
+    "-c",
+    "echo 'rename test' > original_name.txt\ncat original_name.txt\nmv original_name.txt renamed.txt\ncat renamed.txt\nmkdir -p dir_to_rename\necho 'file in dir' > dir_to_rename/inner.txt\nmv dir_to_rename renamed_dir\ncat renamed_dir/inner.txt"
+  ],
+  "environment": [
+    "USER=root",
+    "HOME=/root",
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  ],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "mount-ops": [
+    {
+      "type": "workspace",
+      "destination": "."
+    }
+  ],
+  "visible": []
+}
+

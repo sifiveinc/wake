@@ -44,8 +44,11 @@ constexpr int maxClientConnectWaitMs = 60 * 1000;
 // The user-id and group-id are used so that fuse daemons with different uid:gid pairs
 // running within the same build can co-exist without trying to share. The kernel
 // prevents cross-user sharing when the 'allow_other' fuse mount option is not used.
+// CAS and non-CAS daemons use distinct mount paths so they never share state if both modes
+// are in use simultaneously within the same directory.
 const std::string mount_path_id(const std::string &base_dir) {
-  return base_dir + "/.fuse/" + std::to_string(getuid()) + "." + std::to_string(getgid());
+  std::string suffix = getenv("WAKE_CAS") ? ".cas" : "";
+  return base_dir + "/.fuse/" + std::to_string(getuid()) + "." + std::to_string(getgid()) + suffix;
 }
 
 daemon_client::daemon_client(const std::string &base_dir)
@@ -58,7 +61,8 @@ daemon_client::daemon_client(const std::string &base_dir)
       visibles_path(mount_path + "/.i." + std::to_string(getpid())) {}
 
 // The arg 'visible' is destroyed/moved in the interest of performance with large visible lists.
-bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_file) {
+bool daemon_client::connect(std::vector<visible_file> &visible, const std::string &cas_dir,
+                            bool close_live_file) {
   int err = mkdir_with_parents(mount_path, 0775);
   if (0 != err) {
     std::cerr << "mkdir_with_parents ('" << mount_path << "'):" << strerror(err) << std::endl;
@@ -82,7 +86,15 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
       std::string delayStr = std::to_string(exit_delay);
       const char *env[3] = {"PATH=/usr/bin:/bin:/usr/sbin:/sbin", 0, 0};
       if (getenv("DEBUG_FUSE_WAKE")) env[1] = "DEBUG_FUSE_WAKE=1";
-      execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), nullptr, env);
+      // Pass --use-cas to enable CAS-first staging when WAKE_CAS env var is set
+      // TODO: Remove the non-CAS daemon launch path once WAKE_CAS is the default.
+      if (getenv("WAKE_CAS")) {
+        execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), "--use-cas",
+               nullptr, env);
+      } else {
+        execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), nullptr,
+               env);
+      }
       std::cerr << "execl " << executable << ": " << strerror(errno) << std::endl;
       exit(1);
     }
@@ -126,8 +138,19 @@ bool daemon_client::connect(std::vector<std::string> &visible, bool close_live_f
 
   // The fuse-waked process takes an input file containing visible files, json formatted.
   JAST for_daemon(JSON_OBJECT);
+
+  // Add CAS root directory; fuse-waked derives blobs/staging subpaths
+  for_daemon.add("cas_dir", cas_dir);
+
+  // Add visible files with path, type, hash, and mode.
   auto &vis = for_daemon.add("visible", JSON_ARRAY);
-  for (auto &s : visible) vis.add(std::move(s));
+  for (auto &v : visible) {
+    auto &obj = vis.add(JSON_OBJECT);
+    obj.add("path", v.path);
+    obj.add("type", v.type);
+    obj.add("hash", v.hash);
+    obj.add("mode", static_cast<long long>(*v.mode));
+  }
 
   std::ofstream ijson(visibles_path);
   ijson << for_daemon;
