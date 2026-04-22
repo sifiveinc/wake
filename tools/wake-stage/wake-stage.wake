@@ -1,4 +1,4 @@
-# Copyright 2021 SiFive, Inc.
+# Copyright 2026 SiFive, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@
 package build_wake
 
 from wake import _
+from gcc_wake import _
 
-target buildWakeBox variant =
-    tool @here Nil variant "bin/wakebox" (json, gopt, wakefs, util, casLib, Nil) Nil Nil
+target buildStage variant: Result (List Path) Error =
+    tool @here Nil variant "lib/wake/wake-stage" (json, wcl, util, Nil) Nil Nil
+

@@ -28,6 +28,7 @@
 #include <sstream>
 #include <unordered_map>
 
+#include "cas_prim.h"
 #include "optimizer/ssa.h"
 #include "status.h"
 #include "tuple.h"
@@ -66,6 +67,10 @@ Value *claim_tuple2(Heap &h, Value *first, Value *second) {
   out->at(0)->instant_fulfill(first);
   out->at(1)->instant_fulfill(second);
   return out;
+}
+
+Value *claim_tuple5(Heap &h, Value *a, Value *b, Value *c, Value *d, Value *e) {
+  return claim_tuple2(h, a, claim_tuple2(h, b, claim_tuple2(h, c, claim_tuple2(h, d, e))));
 }
 
 Value *claim_result(Heap &h, bool ok, Value *value) {
@@ -188,7 +193,7 @@ Work *claim_hash(Heap &h, Value *value, Continuation *continuation) {
   return CHash::claim(h, value, continuation);
 }
 
-PrimMap prim_register_all(StringInfo *info, JobTable *jobtable) {
+PrimMap prim_register_all(StringInfo *info, JobTable *jobtable, CASContext *cas_ctx) {
   PrimMap pmap;
   prim_register_string(pmap, info);
   prim_register_vector(pmap);
@@ -200,5 +205,8 @@ PrimMap prim_register_all(StringInfo *info, JobTable *jobtable) {
   prim_register_json(pmap);
   prim_register_job(jobtable, pmap);
   prim_register_sources(pmap);
+  if (cas_ctx) {
+    prim_register_cas(cas_ctx, pmap);
+  }
   return pmap;
 }
