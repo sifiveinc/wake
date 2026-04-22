@@ -38,6 +38,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "run_lock.h"
 #include "schema.h"
 #include "status.h"
 #include "util/mkdir_parents.h"
@@ -102,7 +103,7 @@ struct Database::detail {
 
   long run_id;
   long gc_watermark;
-  int run_lock_fd;
+  std::optional<RunLock> run_lock;
   detail(bool debugdb_)
       : debugdb(debugdb_),
         db(0),
@@ -150,8 +151,7 @@ struct Database::detail {
         set_run_end_time(0),
         get_incomplete_runs(0),
         run_id(0),
-        gc_watermark(0),
-        run_lock_fd(-1) {}
+        gc_watermark(0) {}
 };
 
 class WaitingIndicator {
@@ -596,11 +596,7 @@ void Database::close() {
   FINALIZE(set_run_end_time);
   FINALIZE(get_incomplete_runs);
 
-  // Close run lock file if held
-  if (imp->run_lock_fd >= 0) {
-    ::close(imp->run_lock_fd);
-    imp->run_lock_fd = -1;
-  }
+  imp->run_lock.reset();
 
   close_db(this);
   release_build_lock();
@@ -830,49 +826,6 @@ void Database::entropy(uint64_t *key, int words) {
   end_txn();
 }
 
-static std::string run_lock_path(long run_id) {
-  return ".wake/locks/run_" + std::to_string(run_id) + ".lock";
-}
-
-// Returns true if lock acquired, false otherwise (sets errno).
-static bool acquire_lock(int fd, bool wait) {
-  struct flock fl;
-  memset(&fl, 0, sizeof(fl));
-  fl.l_type = F_WRLCK;
-  fl.l_whence = SEEK_SET;
-  fl.l_start = 0;
-  fl.l_len = 0;  // 0 = entire file
-  return fcntl(fd, wait ? F_SETLKW : F_SETLK, &fl) == 0;
-}
-
-static void release_lock(int fd) {
-  struct flock fl;
-  memset(&fl, 0, sizeof(fl));
-  fl.l_type = F_UNLCK;
-  fl.l_whence = SEEK_SET;
-  fl.l_start = 0;
-  fl.l_len = 0;
-  fcntl(fd, F_SETLK, &fl);
-}
-
-static bool write_pid_fd(int fd) {
-  static_assert(sizeof(pid_t) <= sizeof(long), "pid_t must fit in long");
-  char buf[32];
-  int len = snprintf(buf, sizeof(buf), "%ld\n", (long)getpid());
-  if (len <= 0 || len >= (int)sizeof(buf)) {
-    return false;
-  }
-  for (int off = 0; off < len;) {
-    auto n = write(fd, buf + off, len - off);
-    if (n < 0) {
-      if (errno == EINTR) continue;
-      return false;
-    }
-    off += n;
-  }
-  return true;
-}
-
 void Database::prepare(const std::string &cmdline) {
   auto ts = gettime_ns();
 
@@ -883,27 +836,13 @@ void Database::prepare(const std::string &cmdline) {
   single_step(why, imp->add_run, imp->debugdb);
   imp->run_id = sqlite3_last_insert_rowid(imp->db);
 
-  mkdir_with_parents(".wake/locks", 0755);
-
   // Acquire lock before committing, so we never appear incomplete without one.
-  std::string our_lock_path = run_lock_path(imp->run_id);
-  imp->run_lock_fd = ::open(our_lock_path.c_str(), O_CREAT | O_CLOEXEC | O_RDWR, 0644);
-  if (imp->run_lock_fd < 0) {
-    std::cerr << "error: failed to create run lock '" << our_lock_path << "': " << strerror(errno)
-              << std::endl;
+  auto lock = RunLock::create_and_acquire(imp->run_id, true);
+  if (!lock) {
+    std::cerr << "error: " << lock.error() << std::endl;
     exit(1);
   }
-  if (!write_pid_fd(imp->run_lock_fd)) {
-    std::cerr << "error: failed to write pid to run lock '" << our_lock_path
-              << "': " << strerror(errno) << std::endl;
-    exit(1);
-  }
-
-  if (!acquire_lock(imp->run_lock_fd, true)) {
-    std::cerr << "error: failed to acquire run lock: " << strerror(errno) << std::endl;
-    unlink(our_lock_path.c_str());
-    exit(1);
-  }
+  imp->run_lock = std::move(*lock);
   end_txn();
 
   // Reap any dead runs (our run_id is automatically excluded).
@@ -933,8 +872,8 @@ void Database::finish_run() {
   end_txn();
 
   // Remove our own lock file - we're done with this run
-  if (imp->run_lock_fd >= 0) {
-    unlink(run_lock_path(imp->run_id).c_str());
+  if (imp->run_lock) {
+    imp->run_lock->unlink_file();
   }
 }
 
@@ -959,31 +898,12 @@ void Database::reap_dead_runs() {
   // If we can acquire a run's lock, that process is dead.
   std::vector<long> dead_runs;
   for (const auto &[run_id, start_time] : incomplete_runs) {
-    std::string lock_path = run_lock_path(run_id);
-    int fd = ::open(lock_path.c_str(), O_RDWR);
-    if (fd < 0) {
-      if (errno == ENOENT) {
-        // No lock file! Conservatively keep if started < 24h ago.
-        constexpr int64_t dead_threshold_ns = 24LL * 60 * 60 * 1000000000LL;
-        if (ts - start_time > dead_threshold_ns) {
-          dead_runs.push_back(run_id);
-        }
-      } else {
-        std::cerr << "warning: failed to open run lock " << run_id << ": " << strerror(errno)
-                  << std::endl;
-      }
-      continue;
-    }
-
-    if (acquire_lock(fd, false)) {
+    auto result = RunLockProbe::probe_and_cleanup_if_dead(run_id, start_time, ts);
+    if (!result) {
+      std::cerr << "warning: " << result.error() << std::endl;
+    } else if (*result) {
       dead_runs.push_back(run_id);
-      unlink(lock_path.c_str());  // remove while locked
-      release_lock(fd);
-    } else if (errno != EAGAIN && errno != EACCES) {
-      std::cerr << "warning: failed to probe run lock " << run_id << ": " << strerror(errno)
-                << std::endl;
     }
-    ::close(fd);
   }
 
   // Mark dead runs as reaped (end_time := -1).
