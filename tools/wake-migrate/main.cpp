@@ -1,5 +1,6 @@
 
 #include <sqlite3.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -232,6 +233,17 @@ static std::vector<Migration> get_migrations() {
          return true;
        },
        "Convert runner_status from INTEGER to TEXT"},
+
+      // Version 9 -> 10: Not supported. The schema changes to the files table require a fresh
+      // database. Users must delete wake.db and let wake recreate it.
+      {9, 10,
+       [](sqlite3*) -> bool {
+         std::cerr << "Migration from version 9 to 10 is not supported.\n"
+                   << "Please delete wake.db and run wake again to create a fresh database."
+                   << std::endl;
+         return false;
+       },
+       "Migration to version 10 is not supported"},
 
   };
 }
