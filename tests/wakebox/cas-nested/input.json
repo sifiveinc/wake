@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/bin/sh",
+    "-c",
+    "mkdir -p a/b/c/d\necho 'level0' > root.txt\necho 'level1' > a/file1.txt\necho 'level2' > a/b/file2.txt\necho 'level3' > a/b/c/file3.txt\necho 'level4' > a/b/c/d/file4.txt\ncat root.txt\ncat a/file1.txt\ncat a/b/file2.txt\ncat a/b/c/file3.txt\ncat a/b/c/d/file4.txt\nfind a -type f | sort"
+  ],
+  "environment": [
+    "USER=root",
+    "HOME=/root",
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  ],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "mount-ops": [
+    {
+      "type": "workspace",
+      "destination": "."
+    }
+  ],
+  "visible": []
+}
+
