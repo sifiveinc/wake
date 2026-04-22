@@ -19,5 +19,4 @@ from wake import _
 from gcc_wake import _
 
 export target casLib variant =
-    src @here variant (blake2, wcl, Nil) Nil Nil
-
+    src @here variant (blake2, wcl, util, Nil) Nil Nil
