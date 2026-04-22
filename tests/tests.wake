@@ -259,6 +259,7 @@ def runTest (testScript: Path): Result Unit Error =
         | setPlanStdout logNever
         | setPlanStderr logNever
         | setPlanShare False
+        | addCasHashEnv
         | runJobWith localRunner # On OS/X you cannot mount fuse within fuse
 
     def removeCarriageReturns = replace `\r` ""
