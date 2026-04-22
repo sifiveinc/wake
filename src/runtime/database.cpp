@@ -71,7 +71,6 @@ struct Database::detail {
   sqlite3_stmt *detect_overlap;
   sqlite3_stmt *delete_overlap;
   sqlite3_stmt *find_prior;
-  sqlite3_stmt *update_prior;
   sqlite3_stmt *delete_prior;
   sqlite3_stmt *fetch_hash;
   sqlite3_stmt *fetch_cached_path;
@@ -94,8 +93,12 @@ struct Database::detail {
   sqlite3_stmt *get_interleaved_output;
   sqlite3_stmt *set_runner_status;
   sqlite3_stmt *get_runner_status;
+  sqlite3_stmt *insert_run_job;
+  sqlite3_stmt *get_gc_watermark;
+  sqlite3_stmt *set_run_end_time;
 
   long run_id;
+  long gc_watermark;
   detail(bool debugdb_)
       : debugdb(debugdb_),
         db(0),
@@ -121,7 +124,6 @@ struct Database::detail {
         detect_overlap(0),
         delete_overlap(0),
         find_prior(0),
-        update_prior(0),
         delete_prior(0),
         fetch_hash(0),
         fetch_cached_path(0),
@@ -138,7 +140,12 @@ struct Database::detail {
         get_file_dependency(0),
         get_interleaved_output(0),
         set_runner_status(0),
-        get_runner_status(0) {}
+        get_runner_status(0),
+        insert_run_job(0),
+        get_gc_watermark(0),
+        set_run_end_time(0),
+        run_id(0),
+        gc_watermark(0) {}
 };
 
 class WaitingIndicator {
@@ -331,9 +338,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "select status, runtime, cputime, membytes, ibytes, obytes, pathtime"
       " from stats where stat_id=?";
   const char *sql_insert_job =
-      "insert into jobs(run_id, use_id, label, directory, commandline, environment, stdin, "
+      "insert into jobs(run_id, label, directory, commandline, environment, stdin, "
       "signature, stack, is_atty)"
-      " values(?, ?1, ?, ?, ?, ?, ?, ?, ?, ?)";
+      " values(?, ?, ?, ?, ?, ?, ?, ?, ?)";
   const char *sql_insert_tree =
       "insert into filetree(access, job_id, file_id)"
       " values(?, ?, (select file_id from files where path=?))";
@@ -359,33 +366,39 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_link_stats =
       "update jobs set stat_id=?, starttime=?, endtime=?, keep=? where job_id=?";
   const char *sql_detect_overlap =
-      "select f.path from filetree t1, filetree t2, files f"
-      " where t1.job_id=?1 and t1.access=2 and t2.file_id=t1.file_id and t2.access=2 and "
-      "t2.job_id<>?1 and f.file_id=t1.file_id";
+      "select f.path from filetree t1, filetree t2, files f, run_jobs rj"
+      " where t1.job_id=?1 and t1.access=2"
+      " and t2.file_id=t1.file_id and t2.access=2 and t2.job_id<>?1"
+      " and rj.run_id=?2 and rj.job_id=t2.job_id"
+      " and f.file_id=t1.file_id";
   const char *sql_delete_overlap =
-      "delete from jobs where use_id<>? and job_id in "
-      "(select t2.job_id from filetree t1, filetree t2"
-      "  where t1.job_id=?2 and t1.access=2 and t2.file_id=t1.file_id and t2.access=2 and "
-      "t2.job_id<>?2)";
+      "delete from jobs where job_id in ("
+      "  select t2.job_id from filetree t1, filetree t2"
+      "  where t1.job_id=?1 and t1.access=2 and t2.file_id=t1.file_id and t2.access=2"
+      "  and t2.job_id<>?1"
+      "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=t2.job_id) <= ?2"
+      ")";
   const char *sql_find_prior =
       "select job_id, stat_id from jobs where "
       "directory=? and commandline=? and environment=? and stdin=? and signature=? and is_atty=? "
       "and keep=1 and stale=0 and stat_id is not null";
-  const char *sql_update_prior = "update jobs set use_id=? where job_id=?";
   const char *sql_delete_prior =
-      "delete from jobs where use_id<>?1 and job_id in"
-      " (select j2.job_id from jobs j1, jobs j2"
+      "delete from jobs where job_id in ("
+      "  select j2.job_id from jobs j1, jobs j2"
       "  where j1.job_id=?2 and j1.directory=j2.directory and j1.commandline=j2.commandline"
-      "  and j1.environment=j2.environment and j1.stdin=j2.stdin and j1.is_atty=j2.is_atty and "
-      "j2.job_id<>?2)";
+      "  and j1.environment=j2.environment and j1.stdin=j2.stdin and j1.is_atty=j2.is_atty"
+      "  and j2.job_id<>?2"
+      "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=j2.job_id) <= ?1"
+      ")";
   const char *sql_fetch_hash = "select hash from files where path=? and modified=?";
   const char *sql_fetch_cached_path =
       "select hash, type, mode from files where path=? and modified=?";
   const char *sql_delete_jobs =
-      " delete from jobs where keep=0 and use_id<>? "
-      " and not exists (select 1 from filetree where "
-      "                 filetree.job_id=jobs.job_id and "
-      "                 filetree.access=2)";
+      "delete from jobs where keep=0"
+      "  and not exists (select 1 from filetree where"
+      "                  filetree.job_id=jobs.job_id and"
+      "                  filetree.access=2)"
+      "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=jobs.job_id) <= ?1";
   const char *sql_delete_dups =
       "delete from stats where stat_id in"
       " (select stat_id from (select hashcode, count(*) as num, max(stat_id) as keep from stats "
@@ -397,8 +410,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " (select stat_id from stats"
       "  where stat_id not in (select stat_id from jobs)"
       "  order by stat_id desc limit 9999999 offset 4*(select count(*) from jobs))";
-  const char *sql_revtop_order =
-      "select job_id from jobs where use_id=(select max(run_id) from runs) order by job_id desc";
+  const char *sql_revtop_order = "select job_id from run_jobs where run_id=? order by job_id desc";
   const char *sql_setcrit_path =
       "update stats set pathtime=runtime+("
       "  select coalesce(max(s.pathtime),0) from filetree f1, filetree f2, jobs j, stats s"
@@ -444,6 +456,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " order by l.seconds";
   const char *sql_set_runner_status = "update jobs set runner_status=? where job_id=?";
   const char *sql_get_runner_status = "select runner_status from jobs where job_id=?";
+  const char *sql_insert_run_job = "insert or ignore into run_jobs(run_id, job_id) values(?, ?)";
+  const char *sql_get_gc_watermark = "select min(run_id) - 1 from runs where end_time is null";
+  const char *sql_set_run_end_time = "update runs set end_time = ? where run_id = ?";
 
 #define PREPARE(sql, member)                                                                     \
   ret = sqlite3_prepare_v2(imp->db, sql, -1, &imp->member, 0);                                   \
@@ -475,7 +490,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_detect_overlap, detect_overlap);
   PREPARE(sql_delete_overlap, delete_overlap);
   PREPARE(sql_find_prior, find_prior);
-  PREPARE(sql_update_prior, update_prior);
   PREPARE(sql_delete_prior, delete_prior);
   PREPARE(sql_fetch_hash, fetch_hash);
   PREPARE(sql_fetch_cached_path, fetch_cached_path);
@@ -498,6 +512,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_get_interleaved_output, get_interleaved_output);
   PREPARE(sql_set_runner_status, set_runner_status);
   PREPARE(sql_get_runner_status, get_runner_status);
+  PREPARE(sql_insert_run_job, insert_run_job);
+  PREPARE(sql_get_gc_watermark, get_gc_watermark);
+  PREPARE(sql_set_run_end_time, set_run_end_time);
 
   return "";
 }
@@ -538,7 +555,6 @@ void Database::close() {
   FINALIZE(detect_overlap);
   FINALIZE(delete_overlap);
   FINALIZE(find_prior);
-  FINALIZE(update_prior);
   FINALIZE(delete_prior);
   FINALIZE(fetch_hash);
   FINALIZE(fetch_cached_path);
@@ -561,6 +577,9 @@ void Database::close() {
   FINALIZE(get_interleaved_output);
   FINALIZE(set_runner_status);
   FINALIZE(get_runner_status);
+  FINALIZE(insert_run_job);
+  FINALIZE(get_gc_watermark);
+  FINALIZE(set_run_end_time);
   close_db(this);
   release_build_lock();
 }
@@ -800,22 +819,47 @@ void Database::prepare(const std::string &cmdline) {
   bind_string(why, imp->add_run, 2, cmdline);
   single_step(why, imp->add_run, imp->debugdb);
   imp->run_id = sqlite3_last_insert_rowid(imp->db);
+
+  why = "Could not compute GC watermark";
+  if (sqlite3_step(imp->get_gc_watermark) == SQLITE_ROW) {
+    imp->gc_watermark = sqlite3_column_int64(imp->get_gc_watermark, 0);
+  } else {
+    // shouldn't happen: we just inserted a run with end_time = NULL
+    imp->gc_watermark = 0;
+  }
+  finish_stmt(why, imp->get_gc_watermark, imp->debugdb);
+
+  end_txn();
+}
+
+void Database::finish_run() {
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  int64_t ts = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+
+  const char *why = "Could not set run end_time";
+  begin_rw_txn();
+  bind_integer(why, imp->set_run_end_time, 1, ts);
+  bind_integer(why, imp->set_run_end_time, 2, imp->run_id);
+  single_step(why, imp->set_run_end_time, imp->debugdb);
   end_txn();
 }
 
 void Database::clean() {
   const char *why = "Could not compute critical path";
   begin_rw_txn();
+  bind_integer(why, imp->revtop_order, 1, imp->run_id);
   while (sqlite3_step(imp->revtop_order) == SQLITE_ROW) {
     bind_integer(why, imp->setcrit_path, 1, sqlite3_column_int64(imp->revtop_order, 0));
     single_step(why, imp->setcrit_path, imp->debugdb);
   }
   finish_stmt(why, imp->revtop_order, imp->debugdb);
 
-  bind_integer(why, imp->delete_jobs, 1, imp->run_id);
+  bind_integer(why, imp->delete_jobs, 1, imp->gc_watermark);
   single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
   single_step("Could not clean database dups", imp->delete_dups, imp->debugdb);
   single_step("Could not clean database stats", imp->delete_stats, imp->debugdb);
+
   end_txn();
 
   // Add checkpoint after cleanup operations
@@ -865,7 +909,6 @@ void Database::end_txn() const {
 
 // This function needs to be able to run twice in succession and return the same results
 // ... because heap allocations are created to hold the file list output by this function.
-// Fortunately, updating use_id is the only side-effect and it does not affect reuse_job.
 Usage Database::reuse_job(const std::string &directory, const std::string &environment,
                           const std::string &commandline, const std::string &stdin_file,
                           uint64_t signature, bool is_atty, const std::string &visible, bool check,
@@ -907,6 +950,11 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
   }
   finish_stmt(why, imp->stats_job, imp->debugdb);
 
+  if (!out.found) {
+    end_txn();
+    return out;
+  }
+
   // Create a hash table of visible files
   std::unordered_set<std::string> vis;
   const char *tok = visible.c_str();
@@ -940,16 +988,17 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
 
-  // If we need to rerun the job (outputs don't exist), wipe the files-to-check list
+  // If validation failed, wipe the files-to-check list
   if (!out.found) {
     files.clear();
+    end_txn();
+    return out;
   }
 
-  if (out.found && !check) {
-    bind_integer(why, imp->update_prior, 1, imp->run_id);
-    bind_integer(why, imp->update_prior, 2, job);
-    single_step(why, imp->update_prior, imp->debugdb);
-  }
+  // Validation passed - record this job as part of the current run
+  bind_integer(why, imp->insert_run_job, 1, imp->run_id);
+  bind_integer(why, imp->insert_run_job, 2, job);
+  single_step(why, imp->insert_run_job, imp->debugdb);
 
   end_txn();
 
@@ -1002,6 +1051,12 @@ void Database::insert_job(const std::string &directory, const std::string &comma
   bind_integer(why, imp->insert_job, 9, is_atty);
   single_step(why, imp->insert_job, imp->debugdb);
   *job = sqlite3_last_insert_rowid(imp->db);
+
+  // Record this job as part of the current run
+  bind_integer(why, imp->insert_run_job, 1, imp->run_id);
+  bind_integer(why, imp->insert_run_job, 2, *job);
+  single_step(why, imp->insert_run_job, imp->debugdb);
+
   const char *tok = visible.c_str();
   const char *end = tok + visible.size();
   for (const char *scan = tok; scan != end; ++scan) {
@@ -1103,16 +1158,24 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
     single_step(why, imp->insert_unhashed_file, imp->debugdb);
   }
 
-  bind_integer(why, imp->delete_prior, 1, imp->run_id);
+  // Eagerly delete duplicate jobs (same command signature) from completed runs
+  // ?1 = gc_watermark, ?2 = job_id
+  bind_integer(why, imp->delete_prior, 1, imp->gc_watermark);
   bind_integer(why, imp->delete_prior, 2, job);
   single_step(why, imp->delete_prior, imp->debugdb);
 
-  bind_integer(why, imp->delete_overlap, 1, imp->run_id);
-  bind_integer(why, imp->delete_overlap, 2, job);
+  // Eagerly delete jobs with overlapping outputs from completed runs
+  // ?1 = job_id, ?2 = gc_watermark
+  bind_integer(why, imp->delete_overlap, 1, job);
+  bind_integer(why, imp->delete_overlap, 2, imp->gc_watermark);
   single_step(why, imp->delete_overlap, imp->debugdb);
 
+  // Detect if multiple jobs in this run output the same file (an error condition).
+  // The run_jobs table tracks all jobs in the current run, allowing us to constrain
+  // the overlap check to only jobs in this run (not jobs from previous runs).
   bool fail = false;
   bind_integer(why, imp->detect_overlap, 1, job);
+  bind_integer(why, imp->detect_overlap, 2, imp->run_id);
   while (sqlite3_step(imp->detect_overlap) == SQLITE_ROW) {
     std::stringstream s;
     s << "File output by multiple Jobs: " << rip_column(imp->detect_overlap, 0) << std::endl;
@@ -1741,10 +1804,10 @@ std::vector<JobReflection> Database::matching(
   // This query creates a subtable of the following shape:
   //
   // clang-format off
-  // | job_id | label | run_id | use_id | endtime | commandline | runner_status | status | runtime |       tags       |
-  // -----------------------------------------------------------------------------------------------------------------------
-  // |    1   |  foo  |   1    |    1   |  1234   | ls lah .    | NULL          |   0    |   2.8   | <d>a=b<d>c=d<d>  |
-  // |    2   |  bar  |   1    |    1   |  0000   | cat f.txt   | "Job failed"  |   0    |   0.0   |      null        |
+  // | job_id | label | run_id | endtime | commandline | runner_status | status | runtime |       tags       |
+  // -----------------------------------------------------------------------------------------------------------
+  // |    1   |  foo  |   1    |  1234   | ls lah .    | NULL          |   0    |   2.8   | <d>a=b<d>c=d<d>  |
+  // |    2   |  bar  |   1    |  0000   | cat f.txt   | "Job failed"  |   0    |   0.0   |      null        |
   // clang-format on
   //
   // The subtable is constructed by joining the jobs table with the minimal set of other dependent
@@ -1767,7 +1830,6 @@ std::vector<JobReflection> Database::matching(
                 j.job_id,
                 j.label,
                 j.run_id,
-                j.use_id,
                 j.endtime,
                 j.commandline,
                 j.runner_status,

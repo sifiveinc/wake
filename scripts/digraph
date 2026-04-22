@@ -18,7 +18,7 @@
 sqlite3 wake.db <<EOF | dot -Tsvg > wake.svg
 with
   jv(id, label) as (select job_id, substr(commandline, 0, instr(commandline, x'00'))
-    from jobs where use_id=(select max(run_id) from runs)),
+    from jobs where job_id in (select job_id from run_jobs where run_id=(select max(run_id) from runs where end_time is not null))),
   fv(id, label) as (select t.file_id, f.path from jv j, filetree t, files f where j.id=t.job_id and f.file_id=t.file_id),
   ei(fid, jid) as (select t.file_id, j.id from jv j, filetree t where j.id=t.job_id and t.access=1),
   eo(jid, fid) as (select j.id, t.file_id from jv j, filetree t where j.id=t.job_id and t.access=2),
