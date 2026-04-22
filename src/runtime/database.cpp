@@ -1214,6 +1214,41 @@ std::vector<std::string> Database::clear_jobs() {
   return out;
 }
 
+bool Database::clear_jobs_if_safe(std::function<void(std::vector<std::string>)> delete_files) {
+  const char *why = "Could not clear jobs";
+  std::vector<std::string> out;
+
+  // Ensure no new runs while we're cleaning, and that we have latest + consistent view.
+  begin_rw_txn();
+
+  if (sqlite3_step(imp->get_incomplete_runs) == SQLITE_ROW) {
+    finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
+    end_txn();
+    return false;
+  }
+  finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
+  while (sqlite3_step(imp->get_output_files) == SQLITE_ROW) {
+    out.emplace_back(rip_column(imp->get_output_files, 0));
+  }
+  finish_stmt(why, imp->get_output_files, imp->debugdb);
+
+  while (sqlite3_step(imp->get_unhashed_file_paths) == SQLITE_ROW) {
+    out.emplace_back(rip_column(imp->get_unhashed_file_paths, 0));
+  }
+  finish_stmt(why, imp->get_unhashed_file_paths, imp->debugdb);
+
+  single_step(why, imp->remove_all_jobs, imp->debugdb);
+  single_step(why, imp->remove_output_files, imp->debugdb);
+
+  // Delete files while still holding write lock. This prevents new
+  // builds from starting until cleanup is complete.
+  delete_files(std::move(out));
+
+  end_txn();
+
+  return true;
+}
+
 void Database::tag_job(long job, const std::string &uri, const std::string &content) {
   const char *why = "Could not tag a job";
   begin_rw_txn();
