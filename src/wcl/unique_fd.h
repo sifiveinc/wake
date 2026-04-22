@@ -44,12 +44,12 @@ class unique_fd {
   unique_fd(const unique_fd&) = delete;
   explicit unique_fd(int fd) : fd(fd) {}
 
-  unique_fd& operator=(unique_fd&& f) {
+  unique_fd& operator=(unique_fd&& f) noexcept {
     fd = f.fd;
     f.fd = -1;
     return *this;
   }
-  unique_fd(unique_fd&& f) : fd(f.fd) { f.fd = -1; }
+  unique_fd(unique_fd&& f) noexcept : fd(f.fd) { f.fd = -1; }
 
   ~unique_fd() {
     // We can't actully handle the error here because
