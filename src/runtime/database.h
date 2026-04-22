@@ -19,12 +19,14 @@
 #define DATABASE_H
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 #include "json/json5.h"
+#include "run_lock.h"
 
 struct FileReflection {
   std::string path;
@@ -134,6 +136,10 @@ struct Database {
   void prepare(const std::string &cmdline);  // prepare for job execution
   void finish_run();                         // mark run as complete (sets end_time)
   void clean();                              // finished execution; sweep stale jobs
+
+  // Reap dead runs: probe lock files and mark crashed runs as reaped.
+  // Automatically excludes our own run_id if prepare() was called.
+  void reap_dead_runs();
 
   // Reclaim space on disk from deleted records.
   // If not incremental, will lock DB exclusively for duration.
