@@ -47,7 +47,7 @@ WAKE_CPP  := $(foreach dir,$(WAKE_DIRS),$(wildcard $(dir)/*.cpp))
 WAKE_OBJS := src/parser/lexer.o src/parser/parser.o src/json/jlexer.o \
              $(patsubst %.cpp,%.o,$(WAKE_CPP)) $(patsubst %.c,%.o,$(WAKE_C))
 
-WAKE_ENV := WAKE_PATH=$(shell dirname $(shell which $(firstword $(CC))))
+WAKE_ENV := WAKE_CAS=1 WAKE_PATH=$(shell dirname $(shell which $(firstword $(CC))))
 
 all:		wake.db
 	$(WAKE_ENV) BOOTSTRAP_WAKE=true ./bin/wake build default
