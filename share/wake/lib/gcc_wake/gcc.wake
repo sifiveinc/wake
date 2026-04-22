@@ -56,19 +56,19 @@ export def c11Flags =
 export def debugCFlags =
     ("-Wall", "-Wextra", "-Wno-format-security", "-O0", "-g", "-pg", Nil)
 
-export def debugLFlags =
+export def debugLFlags Unit =
     ("-lpthread", "-g", "-pg", "-Wl,--build-id", Nil) ++ filesystemLFlag Unit
 
 export def releaseCFlags =
     ("-Wall", "-Wno-format-security", "-g", "-O2", Nil)
 
-export def releaseLFlags =
+export def releaseLFlags Unit =
     ("-lpthread", "-Wl,--build-id", Nil) ++ filesystemLFlag Unit
 
 export def staticCFlags =
     ("-Wall", "-Wno-format-security", "-g", "-O2", "-flto", Nil)
 
-export def staticLFlags =
+export def staticLFlags Unit =
     ("-lpthread", "-flto", "-static", "-Wl,--build-id", Nil) ++ filesystemLFlag Unit
 
 def doCompileC variant gcc flags headers cfile =
@@ -121,8 +121,8 @@ def doLinkO variant linker flags objects targ extraFiles =
 export def makeCompileC variant gcc flags =
     Pair variant (\extraFlags doCompileC variant gcc (flags ++ extraFlags)), Nil
 
-export def makeLinkO variant linker flags =
-    Pair variant (\extraFlags doLinkO variant linker (flags ++ extraFlags)), Nil
+export def makeLinkO variant linker flagsFn =
+    Pair variant (\extraFlags doLinkO variant linker (flagsFn Unit ++ extraFlags)), Nil
 
 export topic compileC: Pair String ((extraFlags: List String) => (headers: List Path) => (cfile: Path) => Result (List Path) Error)
 
@@ -165,40 +165,40 @@ publish compileC =
 export topic linkO: Pair String ((extraFlags: List String) => (objects: List Path) => (targ: String) => (extraFiles: List Path) => Result (List Path) Error)
 
 publish linkO =
-    makeLinkO "native-c11-debug" (which "cc") (c11Flags ++ debugLFlags)
+    makeLinkO "native-c11-debug" (which "cc") (\_ c11Flags ++ debugLFlags Unit)
 
 publish linkO =
-    makeLinkO "native-c11-release" (which "cc") (c11Flags ++ releaseLFlags)
+    makeLinkO "native-c11-release" (which "cc") (\_ c11Flags ++ releaseLFlags Unit)
 
 publish linkO =
-    makeLinkO "native-c11-static" (which "cc") (c11Flags ++ staticLFlags)
+    makeLinkO "native-c11-static" (which "cc") (\_ c11Flags ++ staticLFlags Unit)
 
 publish linkO =
-    makeLinkO "native-cpp11-debug" (which "c++") (cpp11Flags ++ debugLFlags)
+    makeLinkO "native-cpp11-debug" (which "c++") (\_ cpp11Flags ++ debugLFlags Unit)
 
 publish linkO =
-    makeLinkO "native-cpp11-release" (which "c++") (cpp11Flags ++ releaseLFlags)
+    makeLinkO "native-cpp11-release" (which "c++") (\_ cpp11Flags ++ releaseLFlags Unit)
 
 publish linkO =
-    makeLinkO "native-cpp11-static" (which "c++") (cpp11Flags ++ staticLFlags)
+    makeLinkO "native-cpp11-static" (which "c++") (\_ cpp11Flags ++ staticLFlags Unit)
 
 publish linkO =
-    makeLinkO "native-cpp14-debug" (which "c++") (cpp14Flags ++ debugLFlags)
+    makeLinkO "native-cpp14-debug" (which "c++") (\_ cpp14Flags ++ debugLFlags Unit)
 
 publish linkO =
-    makeLinkO "native-cpp14-release" (which "c++") (cpp14Flags ++ releaseLFlags)
+    makeLinkO "native-cpp14-release" (which "c++") (\_ cpp14Flags ++ releaseLFlags Unit)
 
 publish linkO =
-    makeLinkO "native-cpp14-static" (which "c++") (cpp14Flags ++ staticLFlags)
+    makeLinkO "native-cpp14-static" (which "c++") (\_ cpp14Flags ++ staticLFlags Unit)
 
 publish linkO =
-    makeLinkO "native-cpp17-debug" (which "c++") (cpp17Flags ++ debugLFlags)
+    makeLinkO "native-cpp17-debug" (which "c++") (\_ cpp17Flags ++ debugLFlags Unit)
 
 publish linkO =
-    makeLinkO "native-cpp17-release" (which "c++") (cpp17Flags ++ releaseLFlags)
+    makeLinkO "native-cpp17-release" (which "c++") (\_ cpp17Flags ++ releaseLFlags Unit)
 
 publish linkO =
-    makeLinkO "native-cpp17-static" (which "c++") (cpp17Flags ++ staticLFlags)
+    makeLinkO "native-cpp17-static" (which "c++") (\_ cpp17Flags ++ staticLFlags Unit)
 
 def pickVariant variant variants = match (find (variant ==* _.getPairFirst) variants)
     Some (Pair x _) -> Pass x.getPairSecond
