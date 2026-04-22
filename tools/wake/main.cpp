@@ -201,12 +201,14 @@ void query_jobs(const CommandLineOptions &clo, Database &db) {
 
   // --last-exe
   if (clo.last_exe) {
-    collect_ands.push_back({"run_id == (select max(run_id) from jobs)"});
+    collect_ands.push_back({"run_id == (select max(run_id) from runs where end_time is not null)"});
   }
 
   // --last-use
   if (clo.last_use) {
-    collect_ands.push_back({"use_id == (select max(run_id) from jobs)"});
+    collect_ands.push_back(
+        {"job_id IN (SELECT job_id FROM run_jobs WHERE run_id = "
+         "(SELECT max(run_id) FROM runs WHERE end_time IS NOT NULL))"});
   }
 
   // --failed
@@ -1084,6 +1086,7 @@ int main(int argc, char **argv) {
     }
   }
 
+  db.finish_run();
   db.clean();
   return pass ? 0 : 1;
 }
