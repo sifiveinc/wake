@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/bin/sh",
+    "-c",
+    "echo 'target content' > target.txt\nln -s target.txt symlink.txt\ncat symlink.txt\nls -la symlink.txt\nreadlink symlink.txt"
+  ],
+  "environment": [
+    "USER=root",
+    "HOME=/root",
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  ],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "mount-ops": [
+    {
+      "type": "workspace",
+      "destination": "."
+    }
+  ],
+  "visible": []
+}
+

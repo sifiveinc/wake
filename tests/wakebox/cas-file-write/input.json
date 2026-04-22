@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/bin/sh",
+    "-c",
+    "echo 'hello world' > test_output.txt\ncat test_output.txt\nls -la test_output.txt"
+  ],
+  "environment": [
+    "USER=root",
+    "HOME=/root",
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  ],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "mount-ops": [
+    {
+      "type": "workspace",
+      "destination": "."
+    }
+  ],
+  "visible": []
+}
+

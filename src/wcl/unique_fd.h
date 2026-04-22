@@ -59,13 +59,13 @@ class unique_fd {
   }
 
   void close() {
-    if (fd > 0) {
+    if (fd >= 0) {
       ::close(fd);
       fd = -1;
     }
   }
 
-  bool valid() const { return fd > 0; }
+  bool valid() const { return fd >= 0; }
 
   int get() const {
     assert(valid());
