@@ -8,6 +8,9 @@ on:
     tags:
       - "v*"
 
+env:
+  WAKE_CAS: "1"
+
 jobs:
     tarball:
       runs-on: ubuntu-22.04
@@ -208,10 +211,10 @@ jobs:
           run: docker build -f dockerfiles/${{ matrix.dockerfile }} ${{ matrix.extra_docker_build_args }} -t wake-${{ matrix.dockerfile }} .
 
         - name: Build
-          run: docker run --rm --mount type=bind,source=$PWD/build,target=/build --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined ${{ matrix.extra_docker_run_args }} wake-${{ matrix.dockerfile }} /bin/sh -c '${{ matrix.build_cmd }}'
+          run: docker run --rm -e WAKE_CAS=1 --mount type=bind,source=$PWD/build,target=/build --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined ${{ matrix.extra_docker_run_args }} wake-${{ matrix.dockerfile }} /bin/sh -c '${{ matrix.build_cmd }}'
 
         - name: Test
-          run: docker run --rm --mount type=bind,source=$PWD/build,target=/build --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined wake-${{ matrix.dockerfile }} /bin/sh -c '${{ matrix.test_cmd }}'
+          run: docker run --rm -e WAKE_CAS=1 --mount type=bind,source=$PWD/build,target=/build --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined wake-${{ matrix.dockerfile }} /bin/sh -c '${{ matrix.test_cmd }}'
 
         - name: Install
           run: install -D -t release/${{ matrix.target }} ${{ matrix.install_src_glob }}
