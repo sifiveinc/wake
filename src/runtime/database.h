@@ -132,6 +132,7 @@ struct Database {
   void entropy(uint64_t *key, int words);
 
   void prepare(const std::string &cmdline);  // prepare for job execution
+  void finish_run();                         // mark run as complete (sets end_time)
   void clean();                              // finished execution; sweep stale jobs
 
   // Reclaim space on disk from deleted records.

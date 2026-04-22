@@ -1,7 +1,7 @@
 #ifndef WAKE_SCHEMA_H
 #define WAKE_SCHEMA_H
 
-#define SCHEMA_VERSION "10"
+#define SCHEMA_VERSION "11"
 
 // Per-connection settings to always apply.  Do this first!
 inline const char *getCommonPragmaSQL() {
@@ -33,9 +33,10 @@ inline const char *getWakeSchemaSQLTxn() {
          "create table if not exists schema("
          "  version integer primary key);"
          "create table if not exists runs("
-         "  run_id  integer primary key autoincrement,"
-         "  time    integer not null,"
-         "  cmdline text    not null);"
+         "  run_id   integer primary key autoincrement,"
+         "  time     integer not null,"
+         "  cmdline  text    not null,"
+         "  end_time integer);"
          "create table if not exists files("
          "  file_id   integer primary key,"
          "  path      text    not null,"
@@ -58,7 +59,6 @@ inline const char *getWakeSchemaSQLTxn() {
          "create table if not exists jobs("
          "  job_id      integer primary key autoincrement,"
          "  run_id      integer not null references runs(run_id),"
-         "  use_id      integer not null references runs(run_id),"
          "  label       text    not null,"
          "  directory   text    not null,"
          "  commandline blob    not null,"
@@ -102,6 +102,11 @@ inline const char *getWakeSchemaSQLTxn() {
          "  job_id integer not null references jobs(job_id) on delete cascade,"
          "  path             text not null);"
          "create index if not exists unhashed_outputs on unhashed_files(job_id);"
+         "create table if not exists run_jobs("
+         "  run_id integer not null references runs(run_id) on delete cascade,"
+         "  job_id integer not null references jobs(job_id) on delete cascade,"
+         "  primary key(run_id, job_id));"
+         "create index if not exists run_jobs_by_job on run_jobs(job_id, run_id);"
          // clang-format off
          "insert or ignore into schema(version) values(" SCHEMA_VERSION ");"
          "pragma user_version=" SCHEMA_VERSION ";"
