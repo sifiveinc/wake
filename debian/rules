@@ -5,8 +5,8 @@
 
 override_dh_auto_build-arch:
 	make wake.db
-	./bin/wake build default
+	WAKE_CAS=1 ./bin/wake build default
 
 override_dh_auto_install-arch:
-	./bin/wake install "debian/wake/usr"
+	WAKE_CAS=1 ./bin/wake install "debian/wake/usr"
 	mkdir -p debian/wake/var/cache/wake
