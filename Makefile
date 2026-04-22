@@ -47,7 +47,7 @@ WAKE_CPP  := $(foreach dir,$(WAKE_DIRS),$(wildcard $(dir)/*.cpp))
 WAKE_OBJS := src/parser/lexer.o src/parser/parser.o src/json/jlexer.o \
              $(patsubst %.cpp,%.o,$(WAKE_CPP)) $(patsubst %.c,%.o,$(WAKE_C))
 
-WAKE_ENV := WAKE_PATH=$(shell dirname $(shell which $(firstword $(CC))))
+WAKE_ENV := WAKE_CAS=1 WAKE_PATH=$(shell dirname $(shell which $(firstword $(CC))))
 
 all:		wake.db
 	$(WAKE_ENV) BOOTSTRAP_WAKE=true ./bin/wake build default
@@ -57,7 +57,7 @@ clean:
 	touch bin/stamp lib/wake/stamp
 
 wake.db:	bin/wake bin/wakebox lib/wake/fuse-waked lib/wake/shim-wake lib/wake/wake-hash lib/wake/wake-stage bin/wake-migrate
-	test -f $@ || ./bin/wake --init .
+	test -f $@ || $(WAKE_ENV) ./bin/wake --init .
 
 install:	all
 	$(WAKE_ENV) ./bin/wake install $(DESTDIR)
