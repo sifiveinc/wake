@@ -19,12 +19,14 @@
 #define DATABASE_H
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 #include "json/json5.h"
+#include "run_lock.h"
 
 struct FileReflection {
   std::string path;
