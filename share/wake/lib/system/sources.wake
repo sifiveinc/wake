@@ -185,6 +185,6 @@ export def claimFileAsPathIn (outputDirectory: Path) (existingFile: String) (des
         | makePlan "claim: {existingFile} -> {desiredWorkspacePath}" visible
         | setPlanPersistence Once
         | setPlanFnOutputs (\_ desiredWorkspacePath, Nil)
-        # This needs to be localRunner in case the existingFile is already inside the workspace.
-        | runJobWith localRunner
+        # This needs to be workspaceRunner in case the existingFile is already inside the workspace.
+        | runJobWith workspaceRunner
         | getJobOutput

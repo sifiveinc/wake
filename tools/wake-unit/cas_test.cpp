@@ -20,6 +20,7 @@
 #include "cas/cas.h"
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -119,6 +120,22 @@ TEST(content_hash_equality, "cas") {
   EXPECT_FALSE(hash1 != hash2);
   EXPECT_FALSE(hash1 == hash3);
   EXPECT_TRUE(hash1 != hash3);
+}
+
+TEST(content_hash_same_bytes_match_for_file_and_symlink_payloads, "cas") {
+  auto file_hash = ContentHash::from_string("same-bytes");
+  auto symlink_hash = ContentHash::from_string("same-bytes");
+
+  EXPECT_TRUE(file_hash == symlink_hash);
+  EXPECT_EQUAL(file_hash.to_hex(), symlink_hash.to_hex());
+}
+
+TEST(content_hash_roundtrip, "cas") {
+  auto hash = ContentHash::from_string("hash-object");
+  auto restored = ContentHash::from_hex(hash.to_hex());
+  ASSERT_TRUE((bool)restored);
+
+  EXPECT_EQUAL(restored->to_hex(), hash.to_hex());
 }
 
 // ============================================================================
@@ -297,5 +314,78 @@ TEST(cas_store_deduplication, "cas") {
   // Same content should produce same hash
   EXPECT_EQUAL(hash1_result->to_hex(), hash2_result->to_hex());
 
+  fs::remove_all(store_path);
+}
+
+TEST(cas_store_file_blob_roundtrip, "cas") {
+  std::string store_path = "cas_test_store7";
+  std::string input_file = "cas_test_typed_file_input.txt";
+  fs::remove_all(store_path);
+
+  {
+    std::ofstream ofs(input_file);
+    ofs << "typed file object contents";
+  }
+
+  auto store_result = Cas::open(store_path);
+  ASSERT_TRUE((bool)store_result);
+  auto& store = *store_result;
+
+  auto hash_result = store.store_blob_from_file(input_file);
+  ASSERT_TRUE((bool)hash_result);
+
+  EXPECT_TRUE(store.has_blob(*hash_result));
+
+  auto read_result = store.read_blob(*hash_result);
+  ASSERT_TRUE((bool)read_result);
+  EXPECT_EQUAL(*read_result, std::string("typed file object contents"));
+
+  fs::remove(input_file);
+  fs::remove_all(store_path);
+}
+
+TEST(cas_store_symlink_target_blob_roundtrip, "cas") {
+  std::string store_path = "cas_test_store8";
+  fs::remove_all(store_path);
+
+  auto store_result = Cas::open(store_path);
+  ASSERT_TRUE((bool)store_result);
+  auto& store = *store_result;
+
+  auto hash_result = store.store_blob("relative/target");
+  ASSERT_TRUE((bool)hash_result);
+
+  EXPECT_TRUE(store.has_blob(*hash_result));
+
+  auto read_result = store.read_blob(*hash_result);
+  ASSERT_TRUE((bool)read_result);
+  EXPECT_EQUAL(*read_result, std::string("relative/target"));
+
+  fs::remove_all(store_path);
+}
+
+TEST(cas_store_file_and_symlink_same_payload_same_hash, "cas") {
+  std::string store_path = "cas_test_store9";
+  std::string input_file = "cas_test_file_payload.txt";
+  fs::remove_all(store_path);
+
+  {
+    std::ofstream ofs(input_file);
+    ofs << "shared-payload";
+  }
+
+  auto store_result = Cas::open(store_path);
+  ASSERT_TRUE((bool)store_result);
+  auto& store = *store_result;
+
+  auto file_hash = store.store_blob_from_file(input_file);
+  auto symlink_hash = store.store_blob("shared-payload");
+  ASSERT_TRUE((bool)file_hash);
+  ASSERT_TRUE((bool)symlink_hash);
+
+  EXPECT_TRUE(*file_hash == *symlink_hash);
+  EXPECT_EQUAL(file_hash->to_hex(), symlink_hash->to_hex());
+
+  fs::remove(input_file);
   fs::remove_all(store_path);
 }
