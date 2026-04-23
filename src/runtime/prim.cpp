@@ -200,5 +200,6 @@ PrimMap prim_register_all(StringInfo *info, JobTable *jobtable) {
   prim_register_json(pmap);
   prim_register_job(jobtable, pmap);
   prim_register_sources(pmap);
+  prim_register_time(pmap);
   return pmap;
 }

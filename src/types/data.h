@@ -28,6 +28,7 @@ struct Data {
   static TypeVar typeRegExp;
   static TypeVar typeJob;
   static TypeVar typeTarget;
+  static TypeVar typeTime;
   // standard library supplied
   static TypeVar typeBoolean;
   static TypeVar typeOrder;

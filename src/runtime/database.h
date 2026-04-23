@@ -53,17 +53,17 @@ struct JobTag {
       : job(job_), uri(std::move(uri_)), content(std::move(content_)) {}
 };
 
-struct Time {
+struct DBTime {
   int64_t t;
-  Time() : t(0) {}
-  explicit Time(int64_t _t) : t(_t) {}
+  DBTime() : t(0) {}
+  explicit DBTime(int64_t _t) : t(_t) {}
   int64_t as_int64() const { return t; }
   std::string as_string() const;
 };
 
 struct RunReflection {
   int id;
-  Time time;
+  DBTime time;
   std::string cmdline;
   RunReflection() = default;
   RunReflection(int id_, int64_t time_, std::string cmdline_)
@@ -79,9 +79,9 @@ struct JobReflection {
   std::vector<std::string> environment;
   std::string stack;
   std::string stdin_file;
-  Time starttime;
-  Time endtime;
-  Time wake_start;
+  DBTime starttime;
+  DBTime endtime;
+  DBTime wake_start;
   std::string wake_cmdline;
   // List of interleaved writes to (1) stdout, (2) stderr, (3) runner output, and (4) runner errors
   std::vector<std::pair<std::string, int>> std_writes;

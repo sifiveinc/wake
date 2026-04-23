@@ -1263,7 +1263,7 @@ static std::vector<std::string> chop_null(const std::string &str) {
   return out;
 }
 
-std::string Time::as_string() const {
+std::string DBTime::as_string() const {
   char buf[100];
   struct tm tm;
   time_t time = t / 1000000000;
@@ -1505,10 +1505,10 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
   desc.environment = chop_null(rip_column(query, 4));
   desc.stack = rip_column(query, 5);
   desc.stdin_file = rip_column(query, 6);
-  desc.starttime = Time(sqlite3_column_int64(query, 7));
-  desc.endtime = Time(sqlite3_column_int64(query, 8));
+  desc.starttime = DBTime(sqlite3_column_int64(query, 7));
+  desc.endtime = DBTime(sqlite3_column_int64(query, 8));
   desc.stale = sqlite3_column_int64(query, 9) != 0;
-  desc.wake_start = Time(sqlite3_column_int64(query, 10));
+  desc.wake_start = DBTime(sqlite3_column_int64(query, 10));
   desc.wake_cmdline = rip_column(query, 11);
   desc.usage.status = sqlite3_column_int64(query, 12);
   desc.usage.runtime = sqlite3_column_double(query, 13);
@@ -1853,7 +1853,7 @@ std::vector<RunReflection> Database::get_runs() const {
   while (sqlite3_step(imp->get_all_runs) == SQLITE_ROW) {
     RunReflection run;
     run.id = sqlite3_column_int(imp->get_all_runs, 0);
-    run.time = Time(sqlite3_column_int64(imp->get_all_runs, 1));
+    run.time = DBTime(sqlite3_column_int64(imp->get_all_runs, 1));
     run.cmdline = rip_column(imp->get_all_runs, 2);
     out.emplace_back(run);
   }
