@@ -148,7 +148,7 @@ def jobSignature cmd res fni fno keep =
 # Process staged outputs: partition into published/unpublished, prepare hashes, store in the DB,
 # ingest published items into CAS, and materialize all items to the workspace.
 # Returns the list of stored PreparedStagingItems on success.
-def materializeJobOutputs (outputs: StagedOutputs): Result (List PreparedStagingItem) Error =
+def materializeJobOutputs (prefix: String) (outputs: StagedOutputs): Result (List PreparedStagingItem) Error =
     def needsWorkspaceMaterialization = outputs.getStagedOutputsNeedsWorkspaceMaterialization
 
     def maybeMaterialize preparedItem =
@@ -188,7 +188,7 @@ def materializeJobOutputs (outputs: StagedOutputs): Result (List PreparedStaging
     def Pair publishedStagingItems unpublishedStagingItems =
         partitionStagingItems filteredOutputPaths stagingItems
 
-    require Pass preparedItems = prepareStagingOutputs publishedStagingItems
+    require Pass preparedItems = prepareStagingOutputs prefix publishedStagingItems
 
     # Store published outputs in the DB first
     def storedItems = map storePreparedStagingItem preparedItems
@@ -209,7 +209,7 @@ def materializeJobOutputs (outputs: StagedOutputs): Result (List PreparedStaging
 # Finalize a completed job: collect any runner/output errors, invoke the post-finalize callback,
 # clean up the staging root, and call primJobFinish to publish the job's outputs.
 def finalizeJob job inputs outputs cleanable reality runnerError =
-    def workspaceOutputsReadyResult = materializeJobOutputs outputs
+    def workspaceOutputsReadyResult = materializeJobOutputs (str (getJobId job)) outputs
 
     def finalRunnerError: Option Error =
         (runnerError, getFail workspaceOutputsReadyResult, Nil)
