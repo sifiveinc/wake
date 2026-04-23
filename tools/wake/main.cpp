@@ -978,6 +978,11 @@ int main(int argc, char **argv) {
   status_set_bulk_fd(4, clo.fd4);
   status_set_bulk_fd(5, clo.fd5);
 
+  if (clo.check) {
+    std::cerr << "error: '--check' feature is not currently supported." << std::endl;
+    return 1;
+  }
+
   /* Primitives */
   JobTable jobtable(&db, memory_budget, cpu_budget, clo.debug, clo.verbose, clo.quiet, clo.check,
                     clo.batch);
