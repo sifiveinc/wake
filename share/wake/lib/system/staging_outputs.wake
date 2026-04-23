@@ -185,7 +185,7 @@ def stagingHashInput (item: StagingItem): Option (Triple String String Integer) 
 # Converts staged metadata into PreparedStagingItem values by hashing staged files from their
 # staging paths and deriving hashes for symlinks/directories. Checks the dest-path hash cache
 # first to avoid re-hashing files whose content is already known (e.g. unchanged source files).
-export def prepareStagingOutputs (stagingItems: List StagingItem): Result (List PreparedStagingItem) Error =
+export def prepareStagingOutputs (prefix: String) (stagingItems: List StagingItem): Result (List PreparedStagingItem) Error =
     # Check if the dest path already has a cached hash using the staging item's mtime.
     def tryCachedFileHash (destPath: String) (mtimeNs: Integer): Option String =
         match (getCachedPathInfo destPath mtimeNs)
@@ -220,7 +220,7 @@ export def prepareStagingOutputs (stagingItems: List StagingItem): Result (List 
         )
 
     # Only hash files that missed the cache.
-    require Pass freshHashes = computeHashes (map getTripleSecond uncachedInputs)
+    require Pass freshHashes = computeHashes prefix (map getTripleSecond uncachedInputs)
 
     def freshByDest = zip (map getTripleFirst uncachedInputs) freshHashes
     def allHashesByDest = listToMap scmp (cachedByDest ++ freshByDest)
