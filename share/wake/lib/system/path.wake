@@ -197,7 +197,7 @@ def storePath (pathInfo: PathInfo): Path =
     pathInfo.getPathInfoHash
     pathInfo.getPathInfoMode
 
-export def computeHashes (files: List String): Result (List String) Error =
+export def computeHashes (prefix: String) (files: List String): Result (List String) Error =
     def simpleFiles = map simplify files
 
     require False = empty simpleFiles
@@ -214,7 +214,7 @@ export def computeHashes (files: List String): Result (List String) Error =
 
     def hashPlan cmd vis =
         Plan
-        "hash: {str toHashLen} paths"
+        "hash: #{prefix}"
         cmd
         vis
         Nil
