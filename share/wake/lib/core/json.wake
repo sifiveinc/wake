@@ -63,10 +63,10 @@ export def parseJSONBody (body: String): Result JValue Error =
         Pass jvalue -> Pass jvalue
         Fail cause -> Fail (makeError cause)
 
-export def parseJSONFile (path: String): Result JValue Error =
+export def parseJSONFile (path: Path): Result JValue Error =
     def imp f = prim "json_file"
 
-    match (imp path)
+    match (imp path.getPathName)
         Pass body -> Pass body
         Fail f -> Fail (makeError f)
 

@@ -22,7 +22,7 @@ def test (preprocessFn: JValue => a) (testFn: a => Result JValue Error) (input: 
         # input file, so claim it instead.
         claimFileAsPath input "build/claimed-json/{input}"
     require Pass json =
-        parseJSONFile inputPath.getPathName
+        parseJSONFile inputPath
     def testResult =
         json
         | preprocessFn
