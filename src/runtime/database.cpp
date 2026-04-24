@@ -216,11 +216,17 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
     }
 #endif
 
-    auto apply_pragmas = [this](const char *pragmas,
-                                const char *label) -> std::optional<std::string> {
+    auto apply_pragmas = [this](const char *pragmas, const char *label,
+                                unsigned retries = 0) -> std::optional<std::string> {
       char *pragma_fail = nullptr;
-      int ret = sqlite3_exec(imp->db, pragmas, 0, 0, &pragma_fail);
-      if (ret == SQLITE_OK) return std::nullopt;
+      do {
+        int ret = sqlite3_exec(imp->db, pragmas, 0, 0, &pragma_fail);
+        if (ret == SQLITE_OK) return std::nullopt;
+        if (ret != SQLITE_BUSY && ret != SQLITE_LOCKED) break;
+        sqlite3_free(pragma_fail);
+        usleep(100000);  // 100ms between retries
+      } while (retries-- > 0);
+
       std::string out = pragma_fail ? pragma_fail : "unknown error";
       sqlite3_free(pragma_fail);
       return std::string("Could not ") + label + ": " + out;
@@ -230,7 +236,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       return *res;
     }
     if (!readonly) {
-      if (auto res = apply_pragmas(getWriterPragmaSQL(), "set writer pragmas")) {
+      if (auto res = apply_pragmas(getWriterPragmaSQL(), "set writer pragmas", 5)) {
         close_db(this);
         return *res;
       }
