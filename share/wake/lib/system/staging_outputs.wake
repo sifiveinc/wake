@@ -66,6 +66,12 @@ export def getStagingItemPathType (item: StagingItem): PathType = match item
     StagingSymlink _ -> PathTypeSymlink
     StagingDirectory _ -> PathTypeDirectory
 
+# Returns the mtime (ns) for any staged item.
+export def getStagingItemMtimeNs (item: StagingItem): Integer = match item
+    StagingFile (StagingFileOutput _ _ _ s ns) -> s * 1000000000 + ns
+    StagingSymlink (StagingSymlinkOutput _ _ s ns) -> s * 1000000000 + ns
+    StagingDirectory (StagingDirectoryOutput _ _ s ns) -> s * 1000000000 + ns
+
 # Returns the final workspace path name for a prepared staged item.
 export def getPreparedStagingItemPathName (preparedItem: PreparedStagingItem): String =
     getStagingItemDestPath preparedItem.getPreparedStagingItemItem
