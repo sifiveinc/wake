@@ -271,6 +271,7 @@ struct Job {
     std::string type;
     std::optional<cas::ContentHash> content_hash;
     std::optional<mode_t> mode;
+    long mtime;
   };
 
   std::set<std::string> files_visible;
@@ -334,13 +335,15 @@ void Job::parse() {
     std::string type;
     std::optional<cas::ContentHash> content_hash;
     std::optional<mode_t> mode;
+    long mtime = 0;
 
     if (x.second.kind == JSON_OBJECT) {
-      // New format: {"path": "...", "type": "...", "hash": "...", "mode": ...}
+      // New format: {"path": "...", "type": "...", "hash": "...", "mode": ..., "mtime": ...}
       path = x.second.get("path").value;
       type = x.second.get("type").value;
       const std::string &hash = x.second.get("hash").value;
       const std::string &mode_value = x.second.get("mode").value;
+      const std::string &mtime_value = x.second.get("mtime").value;
 
       if (path.empty()) {
         fprintf(stderr, "Visible entry missing 'path'\n");
@@ -354,12 +357,24 @@ void Job::parse() {
         fprintf(stderr, "Visible entry '%s' missing 'mode'\n", path.c_str());
         continue;
       }
+      if (mtime_value.empty()) {
+        fprintf(stderr, "Visible entry '%s' missing 'mtime'\n", path.c_str());
+        continue;
+      }
 
       try {
         mode = static_cast<mode_t>(std::stoul(mode_value, nullptr, 10));
       } catch (const std::exception &e) {
         fprintf(stderr, "Visible entry '%s' has invalid 'mode' value '%s': %s\n", path.c_str(),
                 mode_value.c_str(), e.what());
+        continue;
+      }
+
+      try {
+        mtime = std::stol(mtime_value, nullptr, 10);
+      } catch (const std::exception &e) {
+        fprintf(stderr, "Visible entry '%s' has invalid 'mtime' value '%s': %s\n", path.c_str(),
+                mtime_value.c_str(), e.what());
         continue;
       }
 
@@ -383,7 +398,7 @@ void Job::parse() {
 
     if (!path.empty() && path[0] != '/') {
       files_visible.insert(path);
-      visible_entries[path] = VisibleEntry{type, content_hash, mode};
+      visible_entries[path] = VisibleEntry{type, content_hash, mode, mtime};
 
       // Add implicit parent directories for this path.
       // Only needed in CAS mode where the filesystem is virtualized and parent
@@ -396,7 +411,7 @@ void Job::parse() {
           std::string parent = path.substr(0, slash);
           if (visible_entries.find(parent) == visible_entries.end()) {
             files_visible.insert(parent);
-            visible_entries[parent] = VisibleEntry{"directory", std::nullopt, std::nullopt};
+            visible_entries[parent] = VisibleEntry{"directory", std::nullopt, std::nullopt, mtime};
           }
         }
       }
@@ -751,6 +766,8 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
           int res = stat(cas_blob_path(hash).c_str(), stbuf);
           if (res == 0) {
             stbuf->st_mode = (stbuf->st_mode & S_IFMT) | visible_mode_or(visible_it->second, 0444);
+            stbuf->st_mtim.tv_sec = visible_it->second.mtime / 1000000000L;
+            stbuf->st_mtim.tv_nsec = visible_it->second.mtime % 1000000000L;
             return 0;
           }
         } else if (type == "symlink") {
@@ -762,6 +779,8 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
             stbuf->st_size = target.size();
             stbuf->st_uid = getuid();
             stbuf->st_gid = getgid();
+            stbuf->st_mtim.tv_sec = visible_it->second.mtime / 1000000000L;
+            stbuf->st_mtim.tv_nsec = visible_it->second.mtime % 1000000000L;
             return 0;
           }
         }
@@ -772,6 +791,8 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
         stbuf->st_nlink = 2;
         stbuf->st_uid = getuid();
         stbuf->st_gid = getgid();
+        stbuf->st_mtim.tv_sec = visible_it->second.mtime / 1000000000L;
+        stbuf->st_mtim.tv_nsec = visible_it->second.mtime % 1000000000L;
         return 0;
       }
     }

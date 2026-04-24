@@ -30,6 +30,7 @@ struct visible_file {
   std::string type;
   std::string hash;
   std::optional<int> mode;
+  long mtime;
 };
 
 struct daemon_client {

@@ -150,6 +150,7 @@ bool daemon_client::connect(std::vector<visible_file> &visible, const std::strin
     obj.add("type", v.type);
     obj.add("hash", v.hash);
     obj.add("mode", static_cast<long long>(*v.mode));
+    obj.add("mtime", static_cast<long long>(v.mtime));
   }
 
   std::ofstream ijson(visibles_path);
