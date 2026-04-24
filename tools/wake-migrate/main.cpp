@@ -234,16 +234,122 @@ static std::vector<Migration> get_migrations() {
        },
        "Convert runner_status from INTEGER to TEXT"},
 
-      // Version 9 -> 10: Not supported. The schema changes to the files table require a fresh
-      // database. Users must delete wake.db and let wake recreate it.
+      // Version 9 -> 10: Add 'type' and 'mode' columns to the files table.
+      // Backfills type/mode by lstat()-ing every stored path; evicts jobs whose
+      // input or output files no longer exist on the workspace.
       {9, 10,
-       [](sqlite3*) -> bool {
-         std::cerr << "Migration from version 9 to 10 is not supported.\n"
-                   << "Please delete wake.db and run wake again to create a fresh database."
-                   << std::endl;
-         return false;
+       [](sqlite3* db) -> bool {
+         // Recreate files table with the new type and mode columns.
+         static const char* ddl[] = {
+             "create table files_new("
+             " file_id integer primary key, path text not null,"
+             " hash text not null, type text not null default '',"
+             " mode integer not null default 0, modified integer not null)",
+             "insert into files_new select file_id,path,hash,'',0,modified from files",
+             "drop table files",
+             "alter table files_new rename to files",
+             "create unique index filenames on files(path)",
+         };
+         for (const char* sql : ddl)
+           if (!exec_sql(db, sql)) return false;
+
+         // Cursor-based stat loop: process 1000 rows at a time so memory usage
+         // stays bounded even on very large databases.
+         const char* sel_sql =
+             "select file_id,path,hash from files where file_id>? order by file_id limit 1000";
+         const char* upd_sql = "update files set type=?,mode=? where file_id=?";
+         const char* del_jobs_sql =
+             "delete from jobs where job_id in"
+             " (select job_id from filetree where file_id=? and (access=1 or access=2))";
+
+         sqlite3_stmt *sel = nullptr, *upd = nullptr, *del_jobs = nullptr;
+         if (sqlite3_prepare_v2(db, sel_sql, -1, &sel, nullptr) != SQLITE_OK ||
+             sqlite3_prepare_v2(db, upd_sql, -1, &upd, nullptr) != SQLITE_OK ||
+             sqlite3_prepare_v2(db, del_jobs_sql, -1, &del_jobs, nullptr) != SQLITE_OK) {
+           std::cerr << "Migration 9->10: prepare failed: " << sqlite3_errmsg(db) << "\n";
+           sqlite3_finalize(sel);
+           sqlite3_finalize(upd);
+           sqlite3_finalize(del_jobs);
+           return false;
+         }
+
+         // Wake stores directories with a fixed all-zero hash (dirHash in path.wake).
+         static const std::string dir_hash(64, '0');
+
+         bool ok = true;
+         int64_t last_id = -1;
+         while (ok) {
+           struct Row {
+             int64_t id;
+             std::string path;
+             bool is_dir;
+           };
+           std::vector<Row> batch;
+           batch.reserve(1000);
+
+           sqlite3_bind_int64(sel, 1, last_id);
+           while (sqlite3_step(sel) == SQLITE_ROW) {
+             int64_t fid = sqlite3_column_int64(sel, 0);
+             const char* p = reinterpret_cast<const char*>(sqlite3_column_text(sel, 1));
+             const char* h = reinterpret_cast<const char*>(sqlite3_column_text(sel, 2));
+             batch.push_back({fid, std::string(p), dir_hash == h});
+           }
+           sqlite3_reset(sel);
+
+           if (batch.empty()) break;
+           last_id = batch.back().id;
+
+           for (const auto& r : batch) {
+             struct stat st;
+             if (lstat(r.path.c_str(), &st) == 0) {
+               // type is known from the hash for directories; for other entries
+               // use lstat to distinguish symlinks from regular files.
+               const char* type = r.is_dir ? "directory" : S_ISLNK(st.st_mode) ? "symlink" : "file";
+               // Wake stores permission bits only (see prim_stat in string.cpp),
+               // not the full st_mode with file-type bits.
+               sqlite3_bind_text(upd, 1, type, -1, SQLITE_STATIC);
+               sqlite3_bind_int64(upd, 2, static_cast<long>(st.st_mode & 0777));
+               sqlite3_bind_int64(upd, 3, r.id);
+               ok = sqlite3_step(upd) == SQLITE_DONE;
+               sqlite3_reset(upd);
+             } else {
+               // File no longer exists: remove all jobs that referenced it as
+               // an input or output so they are not served from cache.
+               sqlite3_bind_int64(del_jobs, 1, r.id);
+               ok = sqlite3_step(del_jobs) == SQLITE_DONE;
+               sqlite3_reset(del_jobs);
+             }
+             if (!ok) break;
+           }
+         }
+
+         // Foreign Key cascade is off during migration, so deleting jobs above left
+         // orphaned rows in every table that references jobs(job_id).
+         // Sweep them now; otherwise filetree rows with access=2 cause the
+         // runtime to report "File output by multiple Jobs" on the next run.
+         if (ok) {
+           static const char* cleanup[] = {
+               "delete from filetree where job_id not in (select job_id from jobs)",
+               "delete from log where job_id not in (select job_id from jobs)",
+               "delete from tags where job_id not in (select job_id from jobs)",
+               "delete from unhashed_files where job_id not in (select job_id from jobs)",
+           };
+           for (const char* sql : cleanup)
+             if (!exec_sql(db, sql)) {
+               ok = false;
+               break;
+             }
+         }
+
+         if (!ok) std::cerr << "Migration 9->10 failed: " << sqlite3_errmsg(db) << "\n";
+
+         sqlite3_finalize(sel);
+         sqlite3_finalize(upd);
+         sqlite3_finalize(del_jobs);
+         return ok;
        },
-       "Migration to version 10 is not supported"},
+       "Backfill file type and mode; evict jobs with missing inputs or outputs\n"
+       "(Large wake.db's may take time to migrate -- consider using a fresh DB to avoid waiting)"},
 
   };
 }
