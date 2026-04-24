@@ -180,59 +180,25 @@ export def parseStagingFiles (content: JValue): Result (List StagingItem) Error 
             | map parseStagingEntry
             | findFail
 
-# Picks the staged filesystem paths that still need hashing from disk.
-# Note: Symlinks are excluded here because their hashes are computed directly from the
-# target string.
-def stagingHashInput (item: StagingItem): Option (Triple String String Integer) = match item
-    StagingFile (StagingFileOutput destPath stagingPath _ mtimeSec mtimeNsec) ->
-        Some (Triple destPath stagingPath (mtimeNsFromParts mtimeSec mtimeNsec))
-    _ -> None
-
-# Converts staged metadata into PreparedStagingItem values by hashing staged files from their
-# staging paths and deriving hashes for symlinks/directories. Checks the dest-path hash cache
-# first to avoid re-hashing files whose content is already known (e.g. unchanged source files).
+# Hashes staged outputs and wraps them with their computed hashes.
+# Regular files are hashed from their staging paths. Symlinks are hashed from their
+# target string (they have no on-disk staging file). Directories use a fixed zero hash.
 export def prepareStagingOutputs (stagingItems: List StagingItem): Result (List PreparedStagingItem) Error =
-    # Check if the dest path already has a cached hash using the staging item's mtime.
-    def tryCachedFileHash (destPath: String) (mtimeNs: Integer): Option String =
-        match (getCachedPathInfo destPath mtimeNs)
-            Pass (Some pathInfo) -> Some pathInfo.getPathInfoHash
-            _ -> None
-
-    # Look up the dest-path hash cache once per input so that splitting into cached and uncached
-    # below doesn't double the database queries.
-    def lookupHash (Triple destPath stagingPath mtimeNs) =
-        Pair (Triple destPath stagingPath mtimeNs) (tryCachedFileHash destPath mtimeNs)
-
-    def hashInputs =
+    def fileInputs =
         stagingItems
-        | mapPartial stagingHashInput
-        | map lookupHash
-
-    # Split into cached (hash already known) and uncached (needs wake-hash).
-    def cachedByDest =
-        hashInputs
         | mapPartial (
-            \(Pair (Triple destPath _ _) maybeHash) match maybeHash
-                Some hash -> Some (Pair destPath hash)
-                None -> None
+            \item match item
+                StagingFile (StagingFileOutput destPath stagingPath _ _ _) ->
+                    Some (Pair destPath stagingPath)
+                _ -> None
         )
 
-    def uncachedInputs =
-        hashInputs
-        | mapPartial (
-            \(Pair triple maybeHash) match maybeHash
-                Some _ -> None
-                None -> Some triple
-        )
+    require Pass hashes = computeHashes (map getPairSecond fileInputs)
 
-    # Only hash files that missed the cache.
-    require Pass freshHashes = computeHashes (map getTripleSecond uncachedInputs)
-
-    def freshByDest = zip (map getTripleFirst uncachedInputs) freshHashes
-    def allHashesByDest = listToMap scmp (cachedByDest ++ freshByDest)
+    def hashesByDest = listToMap scmp (zip (map getPairFirst fileInputs) hashes)
 
     def lookupFileHash (destPath: String): Result String Error =
-        match (mlookup destPath allHashesByDest)
+        match (mlookup destPath hashesByDest)
             Some hash -> Pass hash
             None -> failWithError "Missing hash for staged file {destPath}"
 
