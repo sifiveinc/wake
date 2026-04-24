@@ -14,7 +14,7 @@ export def test _ =
 
     # Run test -x
     def result =
-        makeExecPlan ("sh", "-c", "test -x script && echo yes || echo no", Nil) (script, Nil)
+        makeExecPlan ("sh", "-c", "cat script > /dev/null; test -x script && echo yes || echo no", Nil) (script, Nil)
         | setPlanLabel "test -x script"
         | runJobWith defaultRunner
         | getJobStdout
