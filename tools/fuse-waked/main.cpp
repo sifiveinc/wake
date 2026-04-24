@@ -1697,7 +1697,9 @@ static int wakefuse_chmod(const char *path, mode_t mode) {
   // Update mode in staged file if present
   if (StagedItem *sf = g_staged_files.find(key.first, key.second)) {
     sf->set_mode(mode);
+    return 0;
   }
+  assert(!g_use_cas && "chmod writing to workspace file in virtualization mode");
 
   // TODO: Remove workspace writes once backwards compatibility is no longer needed
 #ifdef __linux__
@@ -1706,8 +1708,7 @@ static int wakefuse_chmod(const char *path, mode_t mode) {
 #else
   int res = fchmodat(context.rootfd, key.second.c_str(), mode, AT_SYMLINK_NOFOLLOW);
 #endif
-  // Ignore ENOENT if file is staged (not on disk yet)
-  if (res == -1 && errno != ENOENT) return -errno;
+  if (res == -1) return -errno;
 
   return 0;
 }
