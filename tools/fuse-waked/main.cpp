@@ -1841,15 +1841,22 @@ static int wakefuse_utimens(const char *path, const struct timespec ts[2]) {
 
   if (!it->second.is_writeable(key.second)) return -EACCES;
 
-  // Update timestamps in staged file if present
   if (StagedItem *sf = g_staged_files.find(key.first, key.second)) {
-    sf->set_times(ts[0], ts[1]);
+    if (auto spath = sf->staging_path()) {
+      // File/hardlink: apply to backing (staing) file directly
+      int res = utimensat(AT_FDCWD, spath->data(), ts, 0);
+      if (res == -1) return -errno;
+    } else {
+      // Symlink/directory: no backing file, track in metadata
+      sf->set_times(ts[0], ts[1]);
+    }
+    return 0;
   }
+  assert(!g_use_cas && "utimens writing to workspace file in virtualization mode");
 
   // TODO: Remove workspace writes once backwards compatibility is no longer needed
   int res = wake_utimensat(context.rootfd, key.second.c_str(), ts);
-  // Ignore ENOENT if file is staged (not on disk yet)
-  if (res == -1 && errno != ENOENT) return -errno;
+  if (res == -1) return -errno;
 
   it->second.files_wrote.insert(std::move(key.second));
   return 0;
