@@ -1,0 +1,7 @@
+
+export def go Unit =
+    makeExecPlan ("sh", "-c", "touch -d '2000-01-01 UTC' output.txt; date -Isec -ur output.txt", Nil) Nil
+    | setPlanLabel "mtime set and get"
+    | setPlanFnOutputs (\_ "output.txt", Nil)
+    | runJobWith fuseRunner
+    | getJobStdout
