@@ -80,8 +80,6 @@ overloaded(Ts...) -> overloaded<Ts...>;
 struct StagedFileData {
   std::string staging_path;
   mode_t mode;
-  struct timespec mtime;
-  struct timespec atime;
 };
 
 struct StagedSymlinkData {
@@ -99,8 +97,6 @@ struct StagedDirectoryData {
 struct StagedHardlinkData {
   std::string staging_path;
   mode_t mode;
-  struct timespec mtime;
-  struct timespec atime;
 };
 
 using StagedItemData =
@@ -163,37 +159,23 @@ struct StagedItem {
                data);
   }
 
-  // Get mtime
+  // Get mtime (valid for symlink and directory; files/hardlinks use the backing staging file)
   struct timespec mtime() const {
-    if (auto *f = std::get_if<StagedFileData>(&data)) return f->mtime;
     if (auto *l = std::get_if<StagedSymlinkData>(&data)) return l->mtime;
     if (auto *d = std::get_if<StagedDirectoryData>(&data)) return d->mtime;
-    if (auto *h = std::get_if<StagedHardlinkData>(&data)) return h->mtime;
     return {0, 0};
   }
 
-  // Get atime (valid for file and hardlink)
-  struct timespec atime() const {
-    if (auto *f = std::get_if<StagedFileData>(&data)) return f->atime;
-    if (auto *h = std::get_if<StagedHardlinkData>(&data)) return h->atime;
-    return {0, 0};
-  }
-
-  // Set timestamps (for utimens support)
+  // Set timestamps (for utimens support; only symlinks/directories use in-memory times)
   void set_times(const struct timespec &at, const struct timespec &mt) {
-    if (auto *f = std::get_if<StagedFileData>(&data)) {
-      f->atime = at;
-      f->mtime = mt;
-    } else if (auto *l = std::get_if<StagedSymlinkData>(&data)) {
+    (void)at;
+    if (auto *l = std::get_if<StagedSymlinkData>(&data)) {
       l->mtime = mt;
     } else if (auto *d = std::get_if<StagedDirectoryData>(&data)) {
       d->mtime = mt;
       // Known limitation: same as set_mode — timestamps are tracked per-entry, so an utimens on
       // one hardlink path does not update sibling hardlink entries.
       // TODO: Add robust hardlink support
-    } else if (auto *h = std::get_if<StagedHardlinkData>(&data)) {
-      h->atime = at;
-      h->mtime = mt;
     }
   }
 };
@@ -500,10 +482,13 @@ void Job::dump(const std::string &job_id) {
         // Emit type-specific fields using std::visit
         std::visit(overloaded{
                        [&s](const StagedFileData &f) {
+                         struct stat st;
+                         int ret = stat(f.staging_path.c_str(), &st);
+                         assert(ret == 0 && "staging file must exist at dump time");
                          s << ",\"staging_path\":\"" << json_escape(f.staging_path) << "\"";
                          s << ",\"mode\":" << (f.mode & 07777);
-                         s << ",\"mtime_sec\":" << f.mtime.tv_sec;
-                         s << ",\"mtime_nsec\":" << f.mtime.tv_nsec;
+                         s << ",\"mtime_sec\":" << st.st_mtim.tv_sec;
+                         s << ",\"mtime_nsec\":" << st.st_mtim.tv_nsec;
                        },
                        [&s](const StagedSymlinkData &l) {
                          s << ",\"target\":\"" << json_escape(l.target) << "\"";
@@ -516,12 +501,15 @@ void Job::dump(const std::string &job_id) {
                          s << ",\"mtime_nsec\":" << d.mtime.tv_nsec;
                        },
                        [&s](const StagedHardlinkData &h) {
+                         struct stat st;
+                         int ret = stat(h.staging_path.c_str(), &st);
+                         assert(ret == 0 && "staging file must exist at dump time");
                          // Hardlink has same staging_path as source - client uses it as
                          // deduplication key
                          s << ",\"staging_path\":\"" << json_escape(h.staging_path) << "\"";
                          s << ",\"mode\":" << (h.mode & 07777);
-                         s << ",\"mtime_sec\":" << h.mtime.tv_sec;
-                         s << ",\"mtime_nsec\":" << h.mtime.tv_nsec;
+                         s << ",\"mtime_sec\":" << st.st_mtim.tv_sec;
+                         s << ",\"mtime_nsec\":" << st.st_mtim.tv_nsec;
                        },
                    },
                    sf.data);
@@ -1200,7 +1188,7 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
     StagedItem staged;
     staged.dest_path = key.second;
     staged.job_id = key.first;
-    staged.data = StagedFileData{staging_path, mode, {0, 0}, {0, 0}};
+    staged.data = StagedFileData{staging_path, mode};
     StagedItem *inserted = g_staged_files.insert(key.first, key.second, std::move(staged));
 
     g_staged_files.register_fd(fd, inserted);
@@ -1631,8 +1619,6 @@ static int wakefuse_link(const char *from, const char *to) {
       if (!src_staging_path) return -EPERM;  // symlinks have no staging_path
 
       mode_t src_mode = src.mode();
-      struct timespec src_mtime = src.mtime();
-      struct timespec src_atime = src.atime();
 
       // Create an independent copy of the staging file so each output owns its own
       // staging path. This avoids races where one consumer (CAS ingestion or workspace
@@ -1647,7 +1633,7 @@ static int wakefuse_link(const char *from, const char *to) {
       StagedItem sf;
       sf.dest_path = keyt.second;
       sf.job_id = keyf.first;
-      sf.data = StagedHardlinkData{new_staging_path, src_mode, src_mtime, src_atime};
+      sf.data = StagedHardlinkData{new_staging_path, src_mode};
       g_staged_files.insert(keyt.first, keyt.second, std::move(sf));
 
       it->second.staged_paths.insert(keyt.second);
@@ -2108,27 +2094,10 @@ static int wakefuse_statfs_trace(const char *path, struct statvfs *stbuf) {
 static int wakefuse_release(const char *path, struct fuse_file_info *fi) {
   if (fi->fh != BAD_FD) {
     // Check if this is a staged file
-    if (StagedItem *staged = g_staged_files.find_by_fd(fi->fh)) {
+    if (g_staged_files.find_by_fd(fi->fh)) {
       int res = close(fi->fh);
       g_staged_files.unregister_fd(fi->fh);
       if (res == -1) return -errno;
-
-      // Capture timestamps from staging file if not explicitly set
-      // Only applies to files (hardlinks share the staging file)
-      if (auto spath = staged->staging_path()) {
-        struct stat st;
-        if (stat(spath->data(), &st) == 0) {
-          struct timespec mt = staged->mtime();
-          struct timespec at = staged->atime();
-          if (mt.tv_sec == 0 && mt.tv_nsec == 0) {
-            mt = st.st_mtim;
-          }
-          if (at.tv_sec == 0 && at.tv_nsec == 0) {
-            at = st.st_atim;
-          }
-          staged->set_times(at, mt);
-        }
-      }
       return 0;
     }
 
