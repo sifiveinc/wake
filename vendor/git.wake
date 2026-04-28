@@ -22,7 +22,7 @@ topic releaseAs: String
 def buildAs Unit = match (subscribe releaseAs)
     version, Nil -> Pass version
     _ ->
-        def cmdline = which "git", "describe", "--tags", "--dirty", Nil
+        def cmdline = which "git", "describe", "--tags", "--dirty", "--match=v*", Nil
 
         require Pass stdout =
             makeExecPlan cmdline Nil

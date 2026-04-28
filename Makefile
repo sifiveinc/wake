@@ -1,6 +1,6 @@
 # Bootstrap build file
 
-VERSION	:= $(shell if test -f manifest.wake; then sed -n "/publish releaseAs/ s/^[^']*'\([^']*\)'.*/\1/p" manifest.wake; else git describe --tags --dirty | cut -c 2- | tr -d '\n' | sed 's/$$/-bootstrap/'; fi)
+VERSION	:= $(shell if test -f manifest.wake; then sed -n "/publish releaseAs/ s/^[^']*'\([^']*\)'.*/\1/p" manifest.wake; else git describe --tags --dirty --match='v*' | cut -c 2- | tr -d '\n' | sed 's/$$/-bootstrap/'; fi)
 
 CC	:= cc -std=c11
 CXX	:= c++
