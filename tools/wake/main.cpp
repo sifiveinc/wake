@@ -207,6 +207,35 @@ void query_runs(Database &db) {
   }
 }
 
+void query_ps(Database &db) {
+  const auto jobs = db.get_active_jobs();
+
+  if (jobs.empty()) {
+    std::cout << "No jobs currently running." << std::endl;
+    return;
+  }
+
+  // Get current time for elapsed calculation
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
+
+  int cur_run = -1;
+  std::cout << std::left;
+  for (const auto &aj : jobs) {
+    if (aj.run_id != cur_run) {
+      cur_run = aj.run_id;
+      std::cout << "\nRun " << cur_run << ":" << std::endl;
+      std::cout << "  " << std::setw(8) << "JOB" << std::setw(12) << "ELAPSED"
+                << "LABEL" << std::endl;
+    }
+    int64_t elapsed_ns = now_ns - aj.starttime;
+    std::string elapsed = "[" + format_duration(elapsed_ns) + "]";
+    std::cout << "  " << std::setw(8) << aj.job_id << std::setw(12) << elapsed << aj.label
+              << std::endl;
+  }
+}
+
 void query_jobs(const CommandLineOptions &clo, Database &db) {
   std::vector<std::vector<std::string>> collect_ands = {};
   std::vector<std::vector<std::string>> collect_input_ands = {};
@@ -271,6 +300,8 @@ void inspect_database(const CommandLineOptions &clo, Database &db) {
     output_tagdag(db, clo.tagdag);
   } else if (clo.history) {
     query_runs(db);
+  } else if (clo.ps) {
+    query_ps(db);
   } else {
     query_jobs(clo, db);
   }
@@ -318,6 +349,7 @@ void print_help(const char *argv0) {
     << "    --last-used        Capture all jobs used by last build. Regardless of cache"   << std::endl
     << "    --last-executed    Capture all jobs executed by the last build. Skips cache"   << std::endl
     << "    --history          Report the cmndline history of all wake commands recorded"  << std::endl
+    << "    --ps               Show jobs currently running in active wake builds"          << std::endl
     << "    --failed   -f      Capture jobs which failed last build"                       << std::endl
     << "    --tag      KEY=VAL Capture jobs which are tagged, matching KEY and VAL globs"  << std::endl
     << "    --canceled         Capture jobs which were canceled in the last build"         << std::endl
@@ -503,7 +535,7 @@ int main(int argc, char **argv) {
   bool is_db_inspect_capture = !clo.job_ids.empty() || !clo.output_files.empty() ||
                                !clo.input_files.empty() || !clo.labels.empty() ||
                                !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
-                               clo.tagdag || clo.canceled || clo.history;
+                               clo.tagdag || clo.canceled || clo.history || clo.ps;
 
   // DescribePolicy::human() is the default and doesn't have a flag.
   // DescribePolicy::debug() is overloaded and can't be marked as a db flag

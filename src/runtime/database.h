@@ -81,6 +81,13 @@ struct RunReflection {
   RunReflection() = default;
 };
 
+struct ActiveJobReflection {
+  int run_id;
+  long job_id;
+  std::string label;
+  int64_t starttime;  // wall-clock ns when job was started
+};
+
 struct JobReflection {
   long job;
   bool stale;
@@ -167,7 +174,8 @@ struct Database {
       // ^^^ only these matter to identify the job
       uint64_t signature,  // this must match to qualify for reuse
       const std::string &label, const std::string &stack, bool is_atty, const std::string &visible,
-      long *job);  // key used for accesses below
+      long *job);                               // key used for accesses below
+  void start_job(long job, int64_t starttime);  // record wall-clock start time eagerly
   void finish_job(long job,
                   const std::string &inputs,       // null separated
                   const std::string &outputs,      // null separated
@@ -214,6 +222,7 @@ struct Database {
   std::vector<JobTag> get_tags();
 
   std::vector<RunReflection> get_runs() const;
+  std::vector<ActiveJobReflection> get_active_jobs() const;
 
   std::vector<FileDependency> get_file_dependencies() const;
 
