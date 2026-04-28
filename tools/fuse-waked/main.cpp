@@ -724,8 +724,9 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
                           [stbuf](const StagedDirectoryData &d) {
                             // Return synthetic directory stat
                             memset(stbuf, 0, sizeof(*stbuf));
+                            stbuf->st_size = 4096;
                             stbuf->st_mode = S_IFDIR | (d.mode & 07777);
-                            stbuf->st_nlink = 2;
+                            stbuf->st_nlink = 1;
                             stbuf->st_uid = getuid();
                             stbuf->st_gid = getgid();
                             stbuf->st_mtim = d.mtime;
@@ -769,7 +770,8 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
       if (type == "directory") {
         memset(stbuf, 0, sizeof(*stbuf));
         stbuf->st_mode = S_IFDIR | visible_mode_or(visible_it->second, 0755);
-        stbuf->st_nlink = 2;
+        stbuf->st_size = 4096;
+        stbuf->st_nlink = 1;
         stbuf->st_uid = getuid();
         stbuf->st_gid = getgid();
         return 0;
