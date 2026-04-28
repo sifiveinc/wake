@@ -23,10 +23,17 @@
 
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <signal.h>
+#include <sys/prctl.h>
+#endif
 
 pid_t wake_spawn(const char *cmd, char **cmdline, char **environ) {
   pid_t pid = vfork();
   if (pid == 0) {
+#ifdef __linux__
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL) == -1) _exit(1);
+#endif
     execve(cmdline[0], cmdline, environ);
     _exit(127);
   }
