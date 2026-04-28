@@ -29,10 +29,13 @@
 #endif
 
 pid_t wake_spawn(const char *cmd, char **cmdline, char **environ) {
+  pid_t parent = getpid();
+  (void)parent;
   pid_t pid = vfork();
   if (pid == 0) {
 #ifdef __linux__
     if (prctl(PR_SET_PDEATHSIG, SIGKILL) == -1) _exit(1);
+    if (getppid() != parent) _exit(2);
 #endif
     execve(cmdline[0], cmdline, environ);
     _exit(127);
