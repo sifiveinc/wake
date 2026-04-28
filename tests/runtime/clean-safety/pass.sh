@@ -6,9 +6,6 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-echo "Skipping test until https://github.com/sifiveinc/wake/issues/1781 is resolved"
-exit 0
-
 cleanup() {
   if [ -n "${WAKE_PID:-}" ]; then
     kill $WAKE_PID 2>/dev/null || true
