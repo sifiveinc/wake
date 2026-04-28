@@ -144,9 +144,10 @@ tuple Path =
     Type: PathType
     Hash: String
     Mode: Integer
+    MtimeNs: Integer
 
 from wake export type Path
-from wake export def getPathName getPathType getPathHash getPathMode
+from wake export def getPathName getPathType getPathHash getPathMode getPathMtimeNs
 
 # Metadata used to insert/update a path in the files DB before it becomes a Path.
 tuple PathInfo =
@@ -181,7 +182,7 @@ def getCachedPathInfo (file: String) (mtimeNs: Integer): Result (Option PathInfo
 # Store path hash/metadata into the files DB. MtimeNs == 0 falls back to getmtime_ns(path).
 # The returned Path represents the now-recorded DB-backed path metadata.
 def storePath (pathInfo: PathInfo): Path =
-    def addHash f t h m mns = prim "add_hash"
+    def addHash f t h m mtimeNs = prim "add_hash"
 
     def _ =
         addHash
@@ -196,6 +197,7 @@ def storePath (pathInfo: PathInfo): Path =
     pathInfo.getPathInfoType
     pathInfo.getPathInfoHash
     pathInfo.getPathInfoMode
+    pathInfo.getPathInfoMtimeNs
 
 export def computeHashes (files: List String): Result (List String) Error =
     def simpleFiles = map simplify files

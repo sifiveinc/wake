@@ -1,0 +1,13 @@
+Fresh concurrent (if supported) runs:
+==> result-a.txt <==
+2020-01-01T00:00:00+00:00
+
+==> result-b.txt <==
+1999-01-01T00:00:00+00:00
+
+Reuse:
+==> result-a.txt <==
+2020-01-01T00:00:00+00:00
+
+==> result-b.txt <==
+1999-01-01T00:00:00+00:00
