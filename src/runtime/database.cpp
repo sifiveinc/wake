@@ -79,6 +79,7 @@ struct Database::detail {
   sqlite3_stmt *find_prior;
   sqlite3_stmt *delete_prior;
   sqlite3_stmt *delete_jobs;
+  sqlite3_stmt *delete_orphan_files;
   sqlite3_stmt *delete_dups;
   sqlite3_stmt *delete_stats;
   sqlite3_stmt *revtop_order;
@@ -136,6 +137,7 @@ struct Database::detail {
         find_prior(0),
         delete_prior(0),
         delete_jobs(0),
+        delete_orphan_files(0),
         delete_dups(0),
         delete_stats(0),
         revtop_order(0),
@@ -425,6 +427,10 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "                  filetree.job_id=jobs.job_id and"
       "                  filetree.access=2)"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=jobs.job_id) <= ?1";
+  const char *sql_delete_orphan_files =
+      "delete from files"
+      "  where file_id not in (select file_id from filetree)"
+      "  and   file_id not in (select file_id from run_files)";
   const char *sql_delete_dups =
       "delete from stats where stat_id in"
       " (select stat_id from (select hashcode, count(*) as num, max(stat_id) as keep from stats "
@@ -524,6 +530,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_find_prior, find_prior);
   PREPARE(sql_delete_prior, delete_prior);
   PREPARE(sql_delete_jobs, delete_jobs);
+  PREPARE(sql_delete_orphan_files, delete_orphan_files);
   PREPARE(sql_delete_dups, delete_dups);
   PREPARE(sql_delete_stats, delete_stats);
   PREPARE(sql_revtop_order, revtop_order);
@@ -592,6 +599,7 @@ void Database::close() {
   FINALIZE(find_prior);
   FINALIZE(delete_prior);
   FINALIZE(delete_jobs);
+  FINALIZE(delete_orphan_files);
   FINALIZE(delete_dups);
   FINALIZE(delete_stats);
   FINALIZE(revtop_order);
@@ -886,6 +894,7 @@ void Database::clean() {
 
   bind_integer(why, imp->delete_jobs, 1, imp->gc_watermark);
   single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
+  single_step("Could not clean orphan files", imp->delete_orphan_files, imp->debugdb);
   single_step("Could not clean database dups", imp->delete_dups, imp->debugdb);
   single_step("Could not clean database stats", imp->delete_stats, imp->debugdb);
 
