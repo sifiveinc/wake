@@ -1,0 +1,5 @@
+export def test Unit =
+    makeExecPlan ("touch", "output.txt", Nil) Nil
+    | setPlanLabel "produce output"
+    | runJobWith defaultRunner
+    | getJobOutput

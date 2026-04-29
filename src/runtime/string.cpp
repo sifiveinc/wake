@@ -387,6 +387,18 @@ static PRIMFN(prim_unlink) {
   RETURN(claim_unit(runtime.heap));
 }
 
+static PRIMFN(prim_rmdir) {
+  EXPECT(1);
+  STRING(path, 0);
+
+  runtime.heap.reserve(reserve_unit());
+
+  // don't care if this succeeds
+  (void)rmdir(path->c_str());
+
+  RETURN(claim_unit(runtime.heap));
+}
+
 static PRIMTYPE(type_getenv) {
   TypeVar list;
   Data::typeList.clone(list);
@@ -850,6 +862,7 @@ void prim_register_string(PrimMap &pmap, StringInfo *info) {
   prim_register(pmap, "print", prim_print, type_print, PRIM_IMPURE);
   prim_register(pmap, "mkdir", prim_mkdir, type_mkdir, PRIM_IMPURE);
   prim_register(pmap, "unlink", prim_unlink, type_unlink, PRIM_IMPURE);
+  prim_register(pmap, "rmdir", prim_rmdir, type_unlink, PRIM_IMPURE);
   prim_register(pmap, "write", prim_write, type_write, PRIM_IMPURE);
   prim_register(pmap, "read", prim_read, type_read, PRIM_ORDERED);
   prim_register(pmap, "breadcrumb", prim_breadcrumb, type_breadcrumb, PRIM_IMPURE);

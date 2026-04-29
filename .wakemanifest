@@ -25,6 +25,7 @@ share/wake/lib/gcc_wake/gcc.wake
 share/wake/lib/gcc_wake/pkgconfig.wake
 share/wake/lib/nothing/nothing.wake
 share/wake/lib/rust_wake/cargo.wake
+share/wake/lib/system/cas.wake
 share/wake/lib/system/environment.wake
 share/wake/lib/system/http.wake
 share/wake/lib/system/io.wake
@@ -35,6 +36,8 @@ share/wake/lib/system/runner.wake
 share/wake/lib/system/remote_cache_api.wake
 share/wake/lib/system/remote_cache_runner.wake
 share/wake/lib/system/sources.wake
+share/wake/lib/system/staging_outputs.wake
+src/cas/cas.wake
 src/compat/compat.wake
 src/dst/dst.wake
 src/json/json.wake
@@ -55,6 +58,7 @@ tools/tools.wake
 tools/wakebox/wakebox.wake
 tools/wake-format/wake-format.wake
 tools/wake-hash/hash.wake
+tools/wake-stage/wake-stage.wake
 tools/wake-migrate/wake-migrate.wake
 tools/wake-unit/wake-unit.wake
 tools/wake/wake.wake

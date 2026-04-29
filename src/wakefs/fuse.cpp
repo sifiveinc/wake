@@ -35,6 +35,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 
 #ifdef __linux__
@@ -59,7 +60,70 @@ bool json_as_struct(const std::string &json, json_args &result) {
 
   for (auto &x : jast.get("environment").children) result.environment.push_back(x.second.value);
 
-  for (auto &x : jast.get("visible").children) result.visible.push_back(x.second.value);
+  for (auto &x : jast.get("visible").children) {
+    visible_file vf;
+    if (x.second.kind == JSON_OBJECT) {
+      // New format: {"path": "...", "type": "...", "hash": "...", "mode": ..., "mtime": ...}
+      vf.path = x.second.get("path").value;
+      vf.type = x.second.get("type").value;
+      vf.hash = x.second.get("hash").value;
+      const std::string &mode_value = x.second.get("mode").value;
+      const std::string &mtime_value = x.second.get("mtime").value;
+
+      if (vf.path.empty()) {
+        std::cerr << "Visible entry missing 'path'\n";
+        return false;
+      }
+      if (vf.type.empty()) {
+        std::cerr << "Visible entry '" << vf.path << "' missing 'type'\n";
+        return false;
+      }
+      if (mode_value.empty()) {
+        std::cerr << "Visible entry '" << vf.path << "' missing 'mode'\n";
+        return false;
+      }
+      if (mtime_value.empty()) {
+        std::cerr << "Visible entry '" << vf.path << "' missing 'mtime'\n";
+        return false;
+      }
+
+      try {
+        vf.mode = std::stoi(mode_value);
+      } catch (const std::exception &e) {
+        std::cerr << "Visible entry '" << vf.path << "' has invalid 'mode' value '" << mode_value
+                  << "': " << e.what() << "\n";
+        return false;
+      }
+
+      try {
+        vf.mtime = std::stol(mtime_value);
+      } catch (const std::exception &e) {
+        std::cerr << "Visible entry '" << vf.path << "' has invalid 'mtime' value '" << mtime_value
+                  << "': " << e.what() << "\n";
+        return false;
+      }
+
+      if (vf.type != "directory" && vf.hash.empty()) {
+        std::cerr << "Visible entry '" << vf.path << "' (type '" << vf.type
+                  << "') missing 'hash'\n";
+        return false;
+      }
+    } else {
+      // Legacy format: just a string path (no CAS lookup possible)
+      vf.path = x.second.value;
+      vf.type = "";
+      vf.hash = "";  // Empty hash means read from workspace
+      vf.mode.reset();
+      vf.mtime = 0;
+    }
+    result.visible.push_back(vf);
+  }
+
+  // Parse CAS root directory (layout: {cas_dir}/blobs, {cas_dir}/staging)
+  result.cas_dir = jast.get("cas-dir").value;
+  if (result.cas_dir.empty()) {
+    result.cas_dir = ".build/cas";
+  }
 
   JAST timeout_entry = jast.get("command-timeout");
   if (timeout_entry.kind == JSON_INTEGER) {
@@ -138,6 +202,12 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
   result_jast.add("outputs", JSON_ARRAY).children = std::move(from_daemon.get("outputs").children);
   result_jast.add_bool("timed-out", timed_out);
 
+  auto staging_files_opt = from_daemon.get_opt("staging_files");
+  if (staging_files_opt && (*staging_files_opt)->kind == JSON_OBJECT) {
+    result_jast.add("staging_files", JSON_OBJECT).children =
+        std::move((*staging_files_opt)->children);
+  }
+
   char hostname[HOST_NAME_MAX + 1];
   if (0 == gethostname(hostname, sizeof(hostname))) result_jast.add("run-host", hostname);
 
@@ -154,7 +224,7 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     return false;
   }
 
-  if (!args.daemon.connect(args.visible, args.isolate_pids)) return false;
+  if (!args.daemon.connect(args.visible, args.cas_dir, args.isolate_pids)) return false;
 
   struct timeval start;
   gettimeofday(&start, 0);

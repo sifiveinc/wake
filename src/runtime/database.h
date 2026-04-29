@@ -20,6 +20,7 @@
 
 #include <memory>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -27,9 +28,17 @@
 
 struct FileReflection {
   std::string path;
+  std::string type;
   std::string hash;
-  FileReflection(std::string &&path_, std::string &&hash_)
-      : path(std::move(path_)), hash(std::move(hash_)) {}
+  long mode;
+  long modified;  // mtime in nanoseconds
+  FileReflection(std::string &&path_, std::string &&type_, std::string &&hash_, long mode_,
+                 long modified_)
+      : path(std::move(path_)),
+        type(std::move(type_)),
+        hash(std::move(hash_)),
+        mode(mode_),
+        modified(modified_) {}
 };
 
 struct Usage {
@@ -142,7 +151,8 @@ struct Database {
                   const std::string &commandline,
                   const std::string &stdin_file,  // "" -> /dev/null
                   uint64_t signature, bool is_atty, const std::string &visible, bool check,
-                  long &job, std::vector<FileReflection> &out, double *pathtime);
+                  long &job, std::string &label, std::vector<FileReflection> &out,
+                  double *pathtime);
   Usage predict_job(uint64_t hashcode, double *pathtime);
   void insert_job(  // also wipes out any old runs
       const std::string &directory, const std::string &environment, const std::string &commandline,
@@ -177,9 +187,12 @@ struct Database {
   //    of the removed files
   std::vector<std::string> clear_jobs();
 
-  void add_hash(const std::string &file, const std::string &hash, long modified);
+  void add_hash(const std::string &file, const std::string &type, const std::string &hash,
+                long mode, long modified);
 
   std::string get_hash(const std::string &file, long modified);
+  std::tuple<std::string, std::string, long> get_cached_path(const std::string &file,
+                                                             long modified);
 
   // In core_filters, the outer vec is a set of filters to be AND'd together, inner vec is a set of
   // queries to be OR'd together. This holds for input_file_filters and output_file_filters as well

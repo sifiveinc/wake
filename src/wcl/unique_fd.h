@@ -52,15 +52,20 @@ class unique_fd {
   unique_fd(unique_fd&& f) noexcept : fd(f.fd) { f.fd = -1; }
 
   ~unique_fd() {
-    if (fd > 0) {
-      // We can't actully handle the error here because
-      // destructors and constructors assume exceptions
-      // will be used :(
-      close(fd);
+    // We can't actully handle the error here because
+    // destructors and constructors assume exceptions
+    // will be used :(
+    close();
+  }
+
+  void close() {
+    if (fd >= 0) {
+      ::close(fd);
+      fd = -1;
     }
   }
 
-  bool valid() const { return fd > 0; }
+  bool valid() const { return fd >= 0; }
 
   int get() const {
     assert(valid());

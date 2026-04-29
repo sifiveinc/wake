@@ -403,8 +403,8 @@ export def makeBinaryRequest (request: HttpRequest): Result Path Error =
         # Curl jobs don't use many resources, most time is spent waiting for a response
         | setPlanUsage (Usage 0 0.0 0.1 0 0 0)
         | setPlanEcho logDebug
-        # Use localRunner to help avoid potential high namespace overhead.
-        | runJobWith localRunner
+        # Use workspaceRunner to help avoid potential high namespace overhead.
+        | runJobWith workspaceRunner
         | setJobTag "http.method" methodStr
         | setJobTag "http.url" url
         | setJobInspectVisibilityHidden

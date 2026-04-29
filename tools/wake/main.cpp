@@ -19,7 +19,9 @@
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 
+#include <fcntl.h>
 #include <inttypes.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -29,7 +31,9 @@
 #include <wcl/tracing.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -49,6 +53,7 @@
 #include "parser/parser.h"
 #include "parser/syntax.h"
 #include "parser/wakefiles.h"
+#include "runtime/cas_context.h"
 #include "runtime/config.h"
 #include "runtime/database.h"
 #include "runtime/job.h"
@@ -342,6 +347,29 @@ std::string get_date() {
   return ss.str();
 }
 
+// Scan `staging_dir` for per-PID directories left and remove any
+// whose owning process is no longer alive.
+static void cleanup_stale_staging(const std::string &staging_dir) {
+  std::error_code ec;
+  auto it = std::filesystem::directory_iterator(staging_dir, ec);
+  if (ec) return;
+
+  for (const auto &entry : it) {
+    std::string name = entry.path().filename().string();
+
+    if (name.empty() || !std::all_of(name.begin(), name.end(), ::isdigit)) continue;
+
+    pid_t pid = static_cast<pid_t>(std::stol(name));
+
+    if (pid <= 0 || pid == getpid()) continue;
+
+    // Only remove if the process is definitively gone (ESRCH).
+    if (kill(pid, 0) == 0 || errno != ESRCH) continue;
+
+    std::filesystem::remove_all(entry.path(), ec);
+  }
+}
+
 int main(int argc, char **argv) {
   // Make sure we always get core dumps but don't fail
   // if that fails for some reason.
@@ -562,6 +590,27 @@ int main(int argc, char **argv) {
   if (!fail.empty()) {
     std::cerr << "Failed to open wake.db: " << fail << std::endl;
     return 1;
+  }
+
+  if (!is_db_inspection) {
+    std::error_code ec;
+    std::filesystem::create_directories(".build/staging", ec);
+    if (!ec) {
+      int sweep_fd = open(".build/staging/.sweep.lock", O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+      if (sweep_fd != -1) {
+        // Try to get an exclusive lock, NON-BLOCKING. If another process is already
+        // sweeping, we simply skip.
+        struct flock fl = {};
+        fl.l_type = F_WRLCK;
+        fl.l_whence = SEEK_SET;
+        fl.l_start = 0;
+        fl.l_len = 0;
+        if (fcntl(sweep_fd, F_SETLK, &fl) == 0) {
+          cleanup_stale_staging(".build/staging");
+        }
+        close(sweep_fd);
+      }
+    }
   }
 
   // If the user asked to list all files we *would* clean.
@@ -886,7 +935,11 @@ int main(int argc, char **argv) {
                     clo.batch);
   StringInfo info(clo.verbose, clo.debug, clo.quiet, VERSION_STR, wcl::make_canonical(wake_cwd),
                   cmdline);
-  PrimMap pmap = prim_register_all(&info, &jobtable);
+
+  const std::string cas_dir = ".build/cas";
+  CASContext cas_ctx(cas_dir);
+
+  PrimMap pmap = prim_register_all(&info, &jobtable, &cas_ctx);
 
   bool isTreeBuilt = true;
   std::unique_ptr<Expr> root = bind_refs(std::move(top), pmap, isTreeBuilt);

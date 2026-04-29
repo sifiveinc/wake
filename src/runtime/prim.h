@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "cas_context.h"
 #include "tuple.h"
 #include "types/primfn.h"
 
@@ -112,6 +113,8 @@ inline size_t reserve_list(size_t elements) {
 Value *claim_unit(Heap &h);
 Value *claim_bool(Heap &h, bool x);
 Value *claim_tuple2(Heap &h, Value *first, Value *second);
+inline size_t reserve_tuple5() { return reserve_tuple2() * 4; }
+Value *claim_tuple5(Heap &h, Value *a, Value *b, Value *c, Value *d, Value *e);
 Value *claim_result(Heap &h, bool ok, Value *value);
 Value *claim_list(Heap &h, size_t elements, Value **values);
 
@@ -145,6 +148,6 @@ void prim_register_json(PrimMap &pmap);
 void prim_register_job(JobTable *jobtable, PrimMap &pmap);
 void prim_register_sources(PrimMap &pmap);
 
-PrimMap prim_register_all(StringInfo *info, JobTable *jobtable);
+PrimMap prim_register_all(StringInfo *info, JobTable *jobtable, CASContext *cas_ctx);
 
 #endif

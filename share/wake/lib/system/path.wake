@@ -74,6 +74,10 @@ export def workspace: String =
 export def cwd: String =
     prim "cwd"
 
+# The PID of the current wake process.
+def wakePid: Integer =
+    prim "pid"
+
 # Remove any leading directories from `file`.
 #
 # Parameters:
@@ -110,73 +114,105 @@ export def basename (file: String): String =
 export def dirname (file: String): String =
     simplify "{file}/.."
 
-export def isPathDir (path: Path): Boolean =
-    getPathHash path
-    | matches `0+`
+export def isPathDir (path: Path): Boolean = match path.getPathType
+    PathTypeDirectory -> True
+    _ -> False
 
-# Paths differ from Strings in that they have been hashed; their content is frozen
+export def pathTypeToString = match _
+    PathTypeRegularFile -> "file"
+    PathTypeDirectory -> "directory"
+    PathTypeCharacterDevice -> "character"
+    PathTypeBlockDevice -> "block"
+    PathTypeFifo -> "fifo"
+    PathTypeSymlink -> "symlink"
+    PathTypeSocket -> "socket"
+
+export def pathTypeFromString (pathType: String): Result PathType Error = match pathType
+    "file" -> Pass PathTypeRegularFile
+    "directory" -> Pass PathTypeDirectory
+    "character" -> Pass PathTypeCharacterDevice
+    "block" -> Pass PathTypeBlockDevice
+    "fifo" -> Pass PathTypeFifo
+    "symlink" -> Pass PathTypeSymlink
+    "socket" -> Pass PathTypeSocket
+    "" -> Pass PathTypeRegularFile
+    _ -> failWithError "Unknown path type '{pathType}'"
+
+# A Path is intended to represent metadata that has already been recorded in the files DB.
 tuple Path =
     Name: String
+    Type: PathType
     Hash: String
+    Mode: Integer
+    MtimeNs: Integer
 
 from wake export type Path
-from wake export def getPathName getPathHash
+from wake export def getPathName getPathType getPathHash getPathMode getPathMtimeNs
+
+# Metadata used to insert/update a path in the files DB before it becomes a Path.
+tuple PathInfo =
+    Name: String
+    Type: PathType
+    Hash: String
+    Mode: Integer
+    MtimeNs: Integer
 
 # We still use Path for directories even though hashing doesn't make a lot of sense.
 # The previous definition of `getPathHash` would return all zeros so we mimic that.
 def dirHash =
     "0000000000000000000000000000000000000000000000000000000000000000"
 
-export def getPathParent (path: Path): Path =
-    Path (simplify "{getPathName path}/..") dirHash
+export def getPathParent (path: Path): String =
+    simplify "{getPathName path}/.."
 
-# Previously we were using ++ to concat the hashed and non-hashed files
-# but this would cause non-deterministic behavior with the hash order being
-# different on different runs depending on which files were touched. By
-# merging them this way we can maintain the existing order.
-def mergeSelect (existing_hashes: List Boolean) (hashed: List String) (not_to_hash: List String): List String =
-    match existing_hashes hashed not_to_hash
-        Nil Nil Nil -> Nil
-        (False, es) _ (path, ns) -> path, mergeSelect es hashed ns
-        (True, es) (path, hs) _ -> path, mergeSelect es hs not_to_hash
-        _ _ _ ->
-            unreachable "impossible hash merge occured ({format existing_hashes}), ({format hashed}), ({format not_to_hash})"
+def getCachedPathInfo (file: String) (mtimeNs: Integer): Result (Option PathInfo) Error =
+    def get f m = prim "get_cached_path"
+    def Pair pathTypeString (Pair hash mode) = get file mtimeNs
 
-def computeHashes (prefix: String) (files: List String): List String =
-    def simple_files = map simplify files
+    if hash ==* "" then
+        Pass None
+    else
+        require Pass pathType = pathTypeFromString pathTypeString
+        else failWithError "Failed to decode cached path type '{pathTypeString}' for {file}"
 
-    # Many files will not even need to be rehashed because of their modtime
-    def needsHashing (file: String) =
-        def get f = prim "get_hash"
-        def hash = get file
+        def cachedPathInfo = PathInfo file pathType hash mode mtimeNs
 
-        if hash ==* "" then True else False
+        Pass (Some cachedPathInfo)
 
-    # Get just the files that we need to hash
-    def which_files_to_hash = map needsHashing simple_files
+# Store path hash/metadata into the files DB. MtimeNs == 0 falls back to getmtime_ns(path).
+# The returned Path represents the now-recorded DB-backed path metadata.
+def storePath (pathInfo: PathInfo): Path =
+    def addHash f t h m mtimeNs = prim "add_hash"
 
-    def (Pair hs ns) =
-        zip simple_files which_files_to_hash
-        | splitBy (_.getPairSecond)
+    def _ =
+        addHash
+        pathInfo.getPathInfoName
+        (pathTypeToString pathInfo.getPathInfoType)
+        pathInfo.getPathInfoHash
+        pathInfo.getPathInfoMode
+        pathInfo.getPathInfoMtimeNs
 
-    def to_hash = map getPairFirst hs
-    def not_to_hash = map getPairFirst ns
+    Path
+    pathInfo.getPathInfoName
+    pathInfo.getPathInfoType
+    pathInfo.getPathInfoHash
+    pathInfo.getPathInfoMode
+    pathInfo.getPathInfoMtimeNs
 
-    # Lots of jobs have no outputs at all, and some do not need to be rehashed
-    require False = empty to_hash
-    else not_to_hash
+export def computeHashes (prefix: String) (files: List String): Result (List String) Error =
+    def simpleFiles = map simplify files
 
-    # if the number of files to hash is too long then execve will
-    # error out.
-    def to_hash_len = len to_hash
-    def to_hash_file_bytes = sum (map strlen to_hash)
+    require False = empty simpleFiles
+    else Pass Nil
+
+    def toHashLen = len simpleFiles
+    def toHashFileBytes = sum (map strlen simpleFiles)
 
     # These numbers don't appear to be well documented in any easily computeable fashion for Linux.
     # The problem is that the same error is returned for multiple cases, and many hard to compute
     # things cause us to go over. These numbers appear to be safe in practice (found exact via binary search).
     # To account for any other variance I backed off these numbers quite a bit.
-    def use_file = to_hash_file_bytes >= 1900000 || to_hash_len >= 12000
-    def add f h = prim "add_hash"
+    def useStdinFile = toHashFileBytes >= 1900000 || toHashLen >= 12000
 
     def hashPlan cmd vis =
         Plan
@@ -195,66 +231,67 @@ def computeHashes (prefix: String) (files: List String): List String =
         identity
         identity
         False
+        | addCasHashEnv
 
-    def stdin_file_path = ".build/tmp/to_hash.{prefix}.stdin"
-
-    # We construct a different plan depending on if we could use command line arguments or not
-    require Pass plan = match use_file
+    require Pass (Pair plan maybeStdinFilePath) = match useStdinFile
         True ->
-            require Pass stdin_file = write stdin_file_path (catWith "\n" to_hash)
+            def stdinContent = catWith "\n" simpleFiles
+            def stdinFilePath = ".build/tmp/hash.{str wakePid}.{hashString stdinContent}.stdin"
 
-            hashPlan ("{wakePath}/../lib/wake/wake-hash", "@", Nil) (stdin_file,)
-            | setPlanStdin stdin_file.getPathName
+            require Pass stdinFile = write stdinFilePath stdinContent
+
+            hashPlan ("{wakePath}/../lib/wake/wake-hash", "@", Nil) (stdinFile,)
+            | setPlanStdin stdinFile.getPathName
             | Pass
+            |< (\p Pair p (Some stdinFilePath))
         False ->
-            hashPlan ("{wakePath}/../lib/wake/wake-hash", to_hash) Nil
+            hashPlan ("{wakePath}/../lib/wake/wake-hash", simpleFiles) Nil
             | Pass
-    else mergeSelect which_files_to_hash (map (add _ "BadHash") to_hash) not_to_hash
+            |< (\p Pair p None)
+    else failWithError "Failed to prepare batched hash job"
 
     def job =
         plan
-        | setPlanEcho logDebug
         # localRunner is required to avoid an infinite loop through makeJSONRunner/writeImp.
         | runJobWith localRunner
         | setJobInspectVisibilityHidden
 
     require Exited 0 = getJobStatus job
-    else mergeSelect which_files_to_hash (map (add _ "BadHash") to_hash) not_to_hash
+    else failWithError "Failed to batch hash paths"
 
     require Pass stdout = getJobStdout job
-    else mergeSelect which_files_to_hash (map (add _ "BadHash") to_hash) not_to_hash
+    else failWithError "Failed to get stdout for batched hashing"
 
-    # We want a better error message if the number of lines do not match
-    # that are returned
-    def hash_lines =
+    def lines =
         stdout
         | tokenize `\n`
         | filter (_ !=* "")
 
-    require True = len hash_lines == to_hash_len
-    else panic "wake-hash returned {format hash_lines} lines but we expected {str to_hash_len} lines"
+    require True = len lines == toHashLen
+    else failWithError "wake-hash returned {format lines} lines but expected {str toHashLen}"
 
-    # Finally actually add all the hashes
-    def hashed =
-        hash_lines
-        | zip to_hash
-        | map (\(Pair file hash) add file hash)
-
-    # Make sure to unlink the file if we created it
+    # Clean up the temporary stdin file if we created one.
     def unlink _ = prim "unlink"
-    def _ = if use_file then unlink stdin_file_path else Unit
 
-    # Finally we merge them back in the order we got them so that we don't
-    # get non-determinism in the hash order.
-    mergeSelect which_files_to_hash hashed not_to_hash
+    def _ = match maybeStdinFilePath
+        Some stdinFilePath -> unlink stdinFilePath
+        None -> Unit
+
+    def parseHash (Pair file hash) =
+        require False = hash ==* "BadHash"
+        else failWithError "Failed to hash path {file}"
+
+        Pass hash
+
+    zip simpleFiles lines
+    | map parseHash
+    | findFail
 
 def hashUsage =
     defaultUsage
     | setUsageCPUtime 0.1
 
 target hashcode (f: String): String =
-    # Check if the file was already hashed as an output from a previous job.  The prim also checks
-    # the modtime to determine whether the file needs to be rehashed even if it *is* in the db.
     def get f = prim "get_hash"
     def reuse = get f
 
@@ -263,6 +300,7 @@ target hashcode (f: String): String =
     else
         def hashPlan cmd =
             Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+            | addCasHashEnv
 
         def job =
             # "<hash>" is a magic string which triggers main.cpp to hash the file rather than read
@@ -273,12 +311,13 @@ target hashcode (f: String): String =
             | runJobWith localRunner
             | setJobInspectVisibilityHidden
 
-        def hash =
+        def hashLines =
             job.getJobStdout
             | getWhenFail ""
-            | extract `(.{64}).*`
+            | tokenize `\n`
+            | filter (_ !=* "")
 
-        match job.isJobOk hash
+        match job.isJobOk hashLines
             True (x, Nil) -> x
             _ _ -> "BadHash"
 
@@ -286,6 +325,7 @@ target hashcode (f: String): String =
 export target markFileCleanable (filepath: String): Result Unit Error =
     def hashPlan cmd =
         Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+        | addCasHashEnv
 
     def job =
         hashPlan ("<hash>", filepath, Nil)

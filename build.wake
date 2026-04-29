@@ -95,6 +95,7 @@ def targets =
     buildFuseDaemon,
     buildShim,
     buildHash,
+    buildStage,
     buildBSP,
     (bootstrapTarget buildLSP),
     buildWakeFormat,
@@ -136,11 +137,27 @@ def doInstall dest kind =
 
     require Pass variant = toVariant kind
 
-    def releaseBin exe = installAs "{dest}/{replace `\.[^.]*$` '' exe.getPathName}" exe
+    def releaseBinDest exe = "{dest}/{replace `\.[^.]*$` '' exe.getPathName}"
+    def releaseBin exe = installAs (releaseBinDest exe) exe
+
+    def processBinFiles allFiles =
+        # Prefer variant-suffixed sources (e.g. wake.native-cpp17-release) over plain sources
+        # when both exist, installing to the plain name (wake) with suffix stripped.
+        def isVariantSuffixed f = (replace `\.[^.]*$` '' f.getPathName) !=* f.getPathName
+
+        def variantDests =
+            filter isVariantSuffixed allFiles
+            | map releaseBinDest
+
+        def files =
+            filter (\f isVariantSuffixed f || ! exists (_ ==* releaseBinDest f) variantDests) allFiles
+
+        map releaseBin files
+        | findFail
 
     def install_binfiles =
         all variant
-        | rmapPass (\files map releaseBin files | findFail)
+        | rmapPass processBinFiles
 
     # Join on the installs now that everything has been kicked off
     require Pass readme = install_readme
