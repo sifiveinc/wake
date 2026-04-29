@@ -155,22 +155,13 @@ def materializeJobOutputs (prefix: String) (outputs: StagedOutputs): Result (Lis
         def item = preparedItem.getPreparedStagingItemItem
 
         if needsWorkspaceMaterialization then
-            # TODO: Remove the non-CAS staging-materialization branch once WAKE_CAS is the default.
-            if useCasHashes then
-                materializePreparedStagingItemFromCas preparedItem
-            else
-                materializeStagedItemFromStaging item
+            materializePreparedStagingItemFromCas preparedItem
         else
             # cleanup the StagingFile as it's no longer needed.
             unlinkStagingSourceIfFile item
 
     def ingestAndMaterialize (preparedItem: PreparedStagingItem) =
-        require Pass _ =
-            # TODO: Remove the non-CAS no-ingest branch once WAKE_CAS is the default.
-            if useCasHashes then
-                ingestPreparedStagingItemIntoCas preparedItem
-            else
-                Pass Unit
+        require Pass _ = ingestPreparedStagingItemIntoCas preparedItem
 
         maybeMaterialize preparedItem
 
@@ -330,15 +321,12 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
         | map parseCachedPathInfo
 
     match cache
-        Pair (job, _) _ ->
-            if useCasHashes then
-                match (materializeCachedOutputs cachedOutputs)
-                    Pass _ -> confirm True cachedOutputs job
-                    Fail err ->
-                        panic "Failed to materialize outputs for {str job.getJobId} '{job.getJobDescription}': {err.getErrorCause}"
-            else
-                confirm True cachedOutputs job
-        Pair Nil _ -> confirm False cachedOutputs (build Unit)
+        Pair (job, _) _ -> match (materializeCachedOutputs cachedOutputs)
+            Pass _ -> confirm True cachedOutputs job
+            Fail err ->
+                panic "Failed to materialize outputs for {str job.getJobId} '{job.getJobDescription}': {err.getErrorCause}"
+        # Cache miss, or -c mode (TODO: determine checking is needed, compare output paths!)
+        Pair Nil _ -> build Unit
 
 # Only run if the first four arguments differ
 target runOnce cmd env dir stdin vis isatty run \ res usage finputs foutputs keep echo stdout stderr label =
