@@ -374,7 +374,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "  where t1.job_id=?2 and t1.access=2 and t2.file_id=t1.file_id and t2.access=2 and "
       "t2.job_id<>?2)";
   const char *sql_find_prior =
-      "select job_id, stat_id from jobs where "
+      "select job_id, stat_id, label from jobs where "
       "directory=? and commandline=? and environment=? and stdin=? and signature=? and is_atty=? "
       "and keep=1 and stale=0 and stat_id is not null";
   const char *sql_update_prior = "update jobs set use_id=? where job_id=?";
@@ -875,7 +875,8 @@ void Database::end_txn() const {
 Usage Database::reuse_job(const std::string &directory, const std::string &environment,
                           const std::string &commandline, const std::string &stdin_file,
                           uint64_t signature, bool is_atty, const std::string &visible, bool check,
-                          long &job, std::vector<FileReflection> &files, double *pathtime) {
+                          long &job, std::string &label, std::vector<FileReflection> &files,
+                          double *pathtime) {
   Usage out;
   long stat_id;
 
@@ -891,6 +892,7 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
   if (out.found) {
     job = sqlite3_column_int64(imp->find_prior, 0);
     stat_id = sqlite3_column_int64(imp->find_prior, 1);
+    label = rip_column(imp->find_prior, 2);
   }
   finish_stmt(why, imp->find_prior, imp->debugdb);
 

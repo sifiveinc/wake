@@ -1493,17 +1493,22 @@ static PRIMFN(prim_job_cache) {
   long job;
   double pathtime;
   std::vector<FileReflection> files;
-  Usage reuse = jobtable->imp->db->reuse_job(
-      dir->as_str(), env->as_str(), cmd->as_str(), stdin_file->as_str(), hash.data[0],
-      mpz_cmp_si(is_atty, 0) != 0, visible->as_str(), jobtable->imp->check, job, files, &pathtime);
+  std::string label;
+  Usage reuse = jobtable->imp->db->reuse_job(dir->as_str(), env->as_str(), cmd->as_str(),
+                                             stdin_file->as_str(), hash.data[0],
+                                             mpz_cmp_si(is_atty, 0) != 0, visible->as_str(),
+                                             jobtable->imp->check, job, label, files, &pathtime);
 
-  size_t need = reserve_tuple2() + reserve_tree(files) + reserve_list(1) + Job::reserve();
+  size_t need = reserve_tuple2() + reserve_tree(files) + reserve_list(1) + Job::reserve() +
+                String::reserve(label.size());
   runtime.heap.reserve(need);
 
   Value *joblist;
   if (reuse.found && !jobtable->imp->check) {
-    Job *jobp = Job::claim(runtime.heap, jobtable->imp->db, dir, dir, stdin_file, env, cmd, true,
-                           STREAM_ECHO, STREAM_INFO, STREAM_WARNING, STREAM_INFO, STREAM_ERROR);
+    String *label_s = String::alloc(runtime.heap, label);
+    Job *jobp =
+        Job::claim(runtime.heap, jobtable->imp->db, label_s, dir, stdin_file, env, cmd, true,
+                   STREAM_ECHO, STREAM_INFO, STREAM_WARNING, STREAM_INFO, STREAM_ERROR);
     jobp->state = STATE_FORKED | STATE_STDOUT | STATE_STDERR | STATE_RUNNER_OUT | STATE_RUNNER_ERR |
                   STATE_MERGED | STATE_FINISHED;
     jobp->job = job;
