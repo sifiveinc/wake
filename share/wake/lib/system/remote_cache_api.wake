@@ -358,17 +358,16 @@ export def rscApiPostStringBlob (name: String) (value: String) (api: RemoteCache
 #  api | rscApiPostFileBlob "foo" "/some/path/to/foo" = Pass "asdf-fdsa-asdf-fdsa"
 #  (RemoteCacheApi "foo" 1 None) | rscApiPostFileBlob "foo" "/some/path/to/foo" = Fail "authorization required"
 # ```
-export def rscApiPostFileBlob (name: String) (file: String) (api: RemoteCacheApi): Result String Error =
+export def rscApiPostFileBlob (name: String) (file: String) (hash: String) (api: RemoteCacheApi): Result String Error =
     require Pass _ = guardRemoteCacheDisabled Unit
 
     # We must use unsafe here since we cannot elevate *file* to a Path without either copying it
     # or triggering the 'job output by multiple files' error.
 
+    # TODO: Obtain the size in a different way, reading from workspace is problematic in multi-wake.
     def contentType = match (unsafe_stat file)
         Pass (Stat _ _ size) -> contentTypeFromSize size
         Fail _ -> None
-
-    require Pass hash = rscHashFile file
 
     def setBlobFn = addFormDataWithHash name file contentType hash
 
@@ -690,7 +689,8 @@ export def rscApiGetFileBlob ((CacheSearchBlob blobId uri contentHash): CacheSea
     require Pass blobPath = (uri | resolveUriResponse resolveDbSchemeToFile resolveBlobFileScheme)
 
     # Verify content hash if provided
-    require Pass actualHash = rscHashFile blobPath.getPathName
+    def actualHash = blobPath.getPathHash
+
     require Pass _ = verifyBlobHash blobId actualHash contentHash
 
     def fixupScript =
@@ -1157,12 +1157,3 @@ def mkCacheSearchResponse (json: JValue): Result CacheSearchResponse Error =
     | Match
     | Pass
 
-# RSC version of computing hashes for files, similar to Hashcode target in path.wake
-def rscHashFile (file: String): Result String Error =
-    def get f = prim "get_hash"
-    def cached = get file
-
-    if cached !=* "" then
-        Pass cached
-    else
-        failWithError "rsc: hash not found in DB for {file}"
