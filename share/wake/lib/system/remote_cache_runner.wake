@@ -60,8 +60,8 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         # workspace materialization), it invokes this to upload outputs from their permanent
         # workspace locations. This is left as 'def _' so that wake won't block progess
         # on it but it will stil be joined on before wake exits.
-        def postFinalize _ =
-            def _ = postJob rscApi job wakeroot hashKey input output
+        def postFinalize preparedItems =
+            def _ = postJob rscApi job wakeroot hashKey input output preparedItems
 
             Unit
 
@@ -389,7 +389,7 @@ def mkCacheAllowedRequest ((RunnerInput label cmd vis env dir stdin _res _prefix
     CacheAllowedRequest label cmd dir env hidden isAtty stdin vis jobStatus runtime cputime mem obytes
 
 # Posts a completed job to the remote cache
-def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: String) (input: RunnerInput) (output: RunnerOutput): Result Unit Error =
+def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: String) (input: RunnerInput) (output: RunnerOutput) (preparedItems: List PreparedStagingItem): Result Unit Error =
     def stagedOutputs = output.getRunnerOutputOutputs
     def StagedOutputs filteredOutputPaths _ stagingItems _ _ = stagedOutputs
 
@@ -410,27 +410,22 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
         require True = subset scmp filteredOutputPaths stagedOutputPaths
         else failWithError "rsc: Missing staging metadata for published outputs"
 
-        def uploadStagingFile (StagingFileOutput destPath _stagingPath mode _ _) =
-            # Post-finalization: staging file has been consumed. Upload from workspace dest path.
-            def doUpload =
-                rscApi
-                | rscApiPostFileBlob destPath destPath
-
-            require Pass id = doUpload
-
-            CachePostRequestOutputFile destPath mode id
-            | Pass
-
-        def publishedFileUpload (item: StagingItem): Option (Result CachePostRequestOutputFile Error) =
+        # Upload staged and prepared (hashed) files.  In the future this should upload files from their CAS blobs.
+        def uploadPreparedFile ((PreparedStagingItem item hash): PreparedStagingItem): Option (Result CachePostRequestOutputFile Error) =
             match item
-                StagingFile file ->
-                    if isPublishedOutput file.getStagingFileOutputDestPath then
-                        Some (uploadStagingFile file)
+                StagingFile (StagingFileOutput destPath _stagingPath mode _ _) ->
+                    if isPublishedOutput destPath then
+                        # Post-finalization: staging file has been consumed. Upload from workspace dest path.
+                        # TODO: Upload using CAS blob contents directly, this is wrong for multi-wake!
+                        rscApi
+                        | rscApiPostFileBlob destPath destPath hash
+                        | rmap (CachePostRequestOutputFile destPath mode)
+                        | Some
                     else
                         None
                 _ -> None
 
-        def publishedSymlinkUpload (item: StagingItem): Option (Result CachePostRequestOutputSymlink Error) =
+        def uploadPreparedSymlink ((PreparedStagingItem item _hash): PreparedStagingItem): Option (Result CachePostRequestOutputSymlink Error) =
             match item
                 StagingSymlink (StagingSymlinkOutput destPath symlinkTarget _ _) ->
                     if isPublishedOutput destPath then
@@ -439,41 +434,17 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
                         None
                 _ -> None
 
-        def publishedDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory =
-            match item
-                StagingDirectory (StagingDirectoryOutput destPath mode _ _) ->
-                    if isPublishedOutput destPath then
-                        Some (CachePostRequestOutputDirectory destPath mode False)
-                    else
-                        None
-                _ -> None
+        # Directories carry no meaningful hash, so iterate staging items directly.
+        # Both published and hidden directories are uploaded.
+        # (hidden=True marks them as ancillary — restored on rehydration but not listed as job outputs).
+        def uploadDirectory (item: StagingItem): Option CachePostRequestOutputDirectory = match item
+            StagingDirectory (StagingDirectoryOutput destPath mode _ _) ->
+                Some (CachePostRequestOutputDirectory destPath mode (! isPublishedOutput destPath))
+            _ -> None
 
-        def hiddenDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory =
-            match item
-                StagingDirectory (StagingDirectoryOutput destPath mode _ _) ->
-                    if isPublishedOutput destPath then
-                        None
-                    else
-                        Some (CachePostRequestOutputDirectory destPath mode True)
-                _ -> None
-
-        def fileUploads =
-            stagingItems
-            | mapPartial publishedFileUpload
-
-        def symlinksUpload =
-            stagingItems
-            | mapPartial publishedSymlinkUpload
-
-        def publishedDirectoriesUpload =
-            stagingItems
-            | mapPartial publishedDirectoryUpload
-
-        def hiddenDirectoriesUpload =
-            stagingItems
-            | mapPartial hiddenDirectoryUpload
-
-        def directoriesUpload = publishedDirectoriesUpload ++ hiddenDirectoriesUpload
+        def fileUploads = mapPartial uploadPreparedFile preparedItems
+        def symlinksUpload = mapPartial uploadPreparedSymlink preparedItems
+        def directoriesUpload = mapPartial uploadDirectory stagingItems
 
         Pass (Triple fileUploads directoriesUpload symlinksUpload)
 

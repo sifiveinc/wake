@@ -165,20 +165,6 @@ def dirHash =
 export def getPathParent (path: Path): String =
     simplify "{getPathName path}/.."
 
-def getCachedPathInfo (file: String) (mtimeNs: Integer): Result (Option PathInfo) Error =
-    def get f m = prim "get_cached_path"
-    def Pair pathTypeString (Pair hash mode) = get file mtimeNs
-
-    if hash ==* "" then
-        Pass None
-    else
-        require Pass pathType = pathTypeFromString pathTypeString
-        else failWithError "Failed to decode cached path type '{pathTypeString}' for {file}"
-
-        def cachedPathInfo = PathInfo file pathType hash mode mtimeNs
-
-        Pass (Some cachedPathInfo)
-
 # Store path hash/metadata into the files DB.
 # The returned Path represents the now-recorded DB-backed path metadata.
 def storePath (pathInfo: PathInfo): Path =

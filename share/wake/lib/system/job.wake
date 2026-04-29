@@ -218,7 +218,7 @@ def finalizeJob job inputs outputs cleanable reality runnerError =
         require Pass _ = workspaceOutputsReadyResult
 
         match finalRunnerError
-            None -> Pass (outputs.getStagedOutputsPostFinalize Unit)
+            None -> Pass (outputs.getStagedOutputsPostFinalize preparedOutputStagingItems)
             Some _ -> Pass Unit
 
     # Clean up the empty staging root directory now that all staged files are consumed.

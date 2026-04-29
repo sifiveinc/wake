@@ -97,9 +97,11 @@ export tuple StagedOutputs =
     # before this final rmdir cleanup.
     export StagingRoot: Option String
     # Callback invoked after finalization (CAS ingestion + workspace materialization).
-    # Used by RSC to upload outputs from their permanent workspace locations.
+    # Receives the list of prepared staging items for all published outputs.
+    # Used by RSC to upload outputs using this recorded information.
+    # For now RSC upload reads contents from their materialized workspace locations.
     # Default: no-op.
-    export PostFinalize: Unit => Unit
+    export PostFinalize: List PreparedStagingItem => Unit
 
 export def emptyStagedOutputs: StagedOutputs =
     StagedOutputs Nil True Nil None (\_ Unit)

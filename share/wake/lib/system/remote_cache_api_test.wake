@@ -72,7 +72,7 @@ export def testDisablingCacheWithEndpoints (api: RemoteCacheApi): Result Unit Er
         Pass Unit
 
     def testFileBlobUpload Unit: Result Unit Error =
-        require Pass _ = rscApiPostFileBlob "test-blob" "/path/to/test/file" api
+        require Pass _ = rscApiPostFileBlob "test-blob" "/path/to/test/file" "test-hash" api
 
         Pass Unit
 
