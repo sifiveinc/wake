@@ -395,7 +395,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=t2.job_id) <= ?1"
       ")";
   const char *sql_find_prior =
-      "select job_id, stat_id from jobs where "
+      "select job_id, stat_id, label from jobs where "
       "directory=? and commandline=? and environment=? and stdin=? and signature=? and is_atty=? "
       "and keep=1 and stat_id is not null";
   const char *sql_delete_prior =
@@ -1001,7 +1001,8 @@ static std::optional<std::unordered_map<std::string_view, PathInfo>> build_path_
 Usage Database::reuse_job(const std::string &directory, const std::string &environment,
                           const std::string &commandline, const std::string &stdin_file,
                           uint64_t signature, bool is_atty, const std::string &visible, bool check,
-                          long &job, std::vector<FileReflection> &files, double *pathtime) {
+                          long &job, std::string &label, std::vector<FileReflection> &files,
+                          double *pathtime) {
   Usage out;
   const char *why = "Could not check for a cached job";
 
@@ -1012,11 +1013,12 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     exit(1);
   }
 
-  struct JobIdStatId {
+  struct JobCandidate {
     long job;
     long stat_id;
+    std::string label;
   };
-  std::vector<JobIdStatId> matches;
+  std::vector<JobCandidate> matches;
 
   // (RO) Look for candidate prior jobs, check visible set.
   begin_ro_txn();
@@ -1027,10 +1029,10 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
   bind_integer(why, imp->find_prior, 5, signature);
   bind_integer(why, imp->find_prior, 6, is_atty);
   while (sqlite3_step(imp->find_prior) == SQLITE_ROW) {
-    JobIdStatId match;
-    match.job = static_cast<long>(sqlite3_column_int64(imp->find_prior, 0));
-    match.stat_id = static_cast<long>(sqlite3_column_int64(imp->find_prior, 1));
-    matches.emplace_back(match);
+    auto job = static_cast<long>(sqlite3_column_int64(imp->find_prior, 0));
+    auto stat_id = static_cast<long>(sqlite3_column_int64(imp->find_prior, 1));
+    auto label = rip_column(imp->find_prior, 2);
+    matches.push_back({job, stat_id, std::move(label)});
   }
   finish_stmt(why, imp->find_prior, imp->debugdb);
 
@@ -1068,6 +1070,7 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
   }
 
   job = match_it->job;
+  label = match_it->label;
 
   // Gather statistics
   bind_integer(why, imp->stats_job, 1, match_it->stat_id);
