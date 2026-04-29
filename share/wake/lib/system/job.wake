@@ -327,11 +327,10 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
         | map parseCachedPathInfo
 
     match cache
-        Pair (job, _) _ ->
-            require Pass _ = materializeCachedOutputs cachedOutputs
-            else build Unit
-
-            job
+        Pair (job, _) _ -> match (materializeCachedOutputs cachedOutputs)
+            Pass _ -> job
+            Fail err ->
+                panic "Failed to materialize outputs for {str job.getJobId} '{job.getJobDescription}': {err.getErrorCause}"
         # Cache miss, or -c mode (TODO: determine checking is needed, compare output paths!)
         Pair Nil _ -> build Unit
 
