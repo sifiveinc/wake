@@ -203,10 +203,6 @@ struct Database {
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode);
 
-  std::string get_hash(const std::string &file, long modified);
-  std::tuple<std::string, std::string, long> get_cached_path(const std::string &file,
-                                                             long modified);
-
   // In core_filters, the outer vec is a set of filters to be AND'd together, inner vec is a set of
   // queries to be OR'd together. This holds for input_file_filters and output_file_filters as well
   // but is less useful as its restricted to the column 'path' in the files table.
