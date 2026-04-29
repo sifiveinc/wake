@@ -251,6 +251,7 @@ def finalizeJob job inputs outputs cleanable reality runnerError =
             hash,
             pathTypeToString (getStagingItemPathType item),
             str (getStagingItemMode item),
+            str (getStagingItemMtimeNs item),
         )
 
     def preparedOutputStrings = map pstr preparedOutputStagingItems
@@ -270,6 +271,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             p.getPathHash,
             pathTypeToString p.getPathType,
             str p.getPathMode,
+            str p.getPathMtimeNs,
         )
 
     def visKey =

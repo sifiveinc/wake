@@ -138,7 +138,7 @@ export def pathTypeFromString (pathType: String): Result PathType Error = match 
     "" -> Pass PathTypeRegularFile
     _ -> failWithError "Unknown path type '{pathType}'"
 
-# A Path is intended to represent metadata that has already been recorded in the files DB.
+# A Path is intended to represent metadata that has already been recorded in the DB.
 tuple Path =
     Name: String
     Type: PathType
@@ -179,10 +179,10 @@ def getCachedPathInfo (file: String) (mtimeNs: Integer): Result (Option PathInfo
 
         Pass (Some cachedPathInfo)
 
-# Store path hash/metadata into the files DB. MtimeNs == 0 falls back to getmtime_ns(path).
+# Store path hash/metadata into the files DB.
 # The returned Path represents the now-recorded DB-backed path metadata.
 def storePath (pathInfo: PathInfo): Path =
-    def addHash f t h m mtimeNs = prim "add_hash"
+    def addHash f t h m = prim "add_hash"
 
     def _ =
         addHash
@@ -190,7 +190,6 @@ def storePath (pathInfo: PathInfo): Path =
         (pathTypeToString pathInfo.getPathInfoType)
         pathInfo.getPathInfoHash
         pathInfo.getPathInfoMode
-        pathInfo.getPathInfoMtimeNs
 
     Path
     pathInfo.getPathInfoName

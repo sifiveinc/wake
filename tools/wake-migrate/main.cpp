@@ -498,6 +498,73 @@ static std::vector<Migration> get_migrations() {
        },
        "Per-job hashes: remove stale column, unique index on (path, hash, type, mode)"},
 
+      // Version 12 -> 13: Move modified from files to filetree
+      // - Remove modified column from files table
+      // - Add modified column to filetree table
+      // - Populate filetree.modified from old files.modified via JOIN
+      {12, 13,
+       [](sqlite3* db) -> bool {
+         // Step 1: Create files_new without modified column
+         if (!exec_sql(db, R"(
+           CREATE TABLE files_new(
+             file_id integer primary key,
+             path    text    not null,
+             hash    text    not null,
+             type    text    not null,
+             mode    integer not null
+           );
+         )"))
+           return false;
+
+         // Step 2: Copy files data
+         if (!exec_sql(db, R"(
+           INSERT INTO files_new (file_id, path, hash, type, mode)
+           SELECT file_id, path, hash, type, mode FROM files;
+         )"))
+           return false;
+
+         // Step 3: Create filetree_new with modified column
+         if (!exec_sql(db, R"(
+           CREATE TABLE filetree_new(
+             tree_id  integer primary key autoincrement,
+             access   integer not null,
+             job_id   integer not null references jobs(job_id) on delete cascade,
+             file_id  integer not null references files(file_id),
+             modified integer not null,
+             unique(job_id, access, file_id) on conflict ignore
+           );
+         )"))
+           return false;
+
+         // Step 4: Copy filetree data, pulling modified from old files via JOIN
+         if (!exec_sql(db, R"(
+           INSERT INTO filetree_new (tree_id, access, job_id, file_id, modified)
+           SELECT ft.tree_id, ft.access, ft.job_id, ft.file_id, f.modified
+           FROM filetree ft JOIN files f ON ft.file_id = f.file_id;
+         )"))
+           return false;
+
+         // Step 5: Drop old tables — auto-drops their indexes, freeing up the index names
+         if (!exec_sql(db, "DROP TABLE filetree;")) return false;
+         if (!exec_sql(db, "DROP TABLE files;")) return false;
+
+         // Step 6: Rename new tables to final names
+         if (!exec_sql(db, "ALTER TABLE files_new RENAME TO files;")) return false;
+         if (!exec_sql(db, "ALTER TABLE filetree_new RENAME TO filetree;")) return false;
+
+         // Step 7: Create indexes
+         if (!exec_sql(db,
+                       "CREATE UNIQUE INDEX file_path_hash_type_mode ON files(path, hash, type, "
+                       "mode);"))
+           return false;
+         if (!exec_sql(db, "CREATE INDEX filenames ON files(path);")) return false;
+         if (!exec_sql(db, "CREATE INDEX filesearch ON filetree(file_id, access, job_id);"))
+           return false;
+
+         return true;
+       },
+       "Move modified from files to filetree"},
+
   };
 }
 
