@@ -102,6 +102,7 @@ struct Database::detail {
   sqlite3_stmt *get_gc_watermark;
   sqlite3_stmt *set_run_end_time;
   sqlite3_stmt *get_incomplete_runs;
+  sqlite3_stmt *clear_run_files;
 
   long run_id;
   long gc_watermark;
@@ -152,6 +153,7 @@ struct Database::detail {
         get_gc_watermark(0),
         set_run_end_time(0),
         get_incomplete_runs(0),
+        clear_run_files(0),
         run_id(0),
         gc_watermark(0) {}
 };
@@ -480,6 +482,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_get_gc_watermark = "select min(run_id) - 1 from runs where end_time is null";
   const char *sql_set_run_end_time = "update runs set end_time = ? where run_id = ?";
   const char *sql_get_incomplete_runs = "select run_id, time from runs where end_time is null";
+  const char *sql_clear_run_files = "delete from run_files where run_id = ?";
 
 #define PREPARE(sql, member)                                                                     \
   ret = sqlite3_prepare_v2(imp->db, sql, -1, &imp->member, 0);                                   \
@@ -537,6 +540,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_get_gc_watermark, get_gc_watermark);
   PREPARE(sql_set_run_end_time, set_run_end_time);
   PREPARE(sql_get_incomplete_runs, get_incomplete_runs);
+  PREPARE(sql_clear_run_files, clear_run_files);
 
   return "";
 }
@@ -603,6 +607,7 @@ void Database::close() {
   FINALIZE(get_gc_watermark);
   FINALIZE(set_run_end_time);
   FINALIZE(get_incomplete_runs);
+  FINALIZE(clear_run_files);
 
   imp->run_lock.reset();
 
@@ -806,6 +811,8 @@ void Database::finish_run() {
   bind_integer(why, imp->set_run_end_time, 1, ts);
   bind_integer(why, imp->set_run_end_time, 2, imp->run_id);
   single_step(why, imp->set_run_end_time, imp->debugdb);
+  bind_integer(why, imp->clear_run_files, 1, imp->run_id);
+  single_step("Could not clear run_files for finished run", imp->clear_run_files, imp->debugdb);
   end_txn();
 
   // Remove our own lock file - we're done with this run
@@ -851,6 +858,8 @@ void Database::reap_dead_runs() {
       bind_integer(why, imp->set_run_end_time, 1, static_cast<int64_t>(-1));
       bind_integer(why, imp->set_run_end_time, 2, dead_run);
       single_step(why, imp->set_run_end_time, imp->debugdb);
+      bind_integer(why, imp->clear_run_files, 1, dead_run);
+      single_step("Could not clear run_files for dead run", imp->clear_run_files, imp->debugdb);
     }
     end_txn();
   }
