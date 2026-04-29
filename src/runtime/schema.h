@@ -1,7 +1,7 @@
 #ifndef WAKE_SCHEMA_H
 #define WAKE_SCHEMA_H
 
-#define SCHEMA_VERSION "12"
+#define SCHEMA_VERSION "13"
 
 // Per-connection settings to always apply.  Do this first!
 inline const char *getCommonPragmaSQL() {
@@ -41,8 +41,7 @@ inline const char *getWakeSchemaSQLTxn() {
          "  path      text    not null,"
          "  hash      text    not null,"
          "  type      text    not null,"
-         "  mode      integer not null,"
-         "  modified  integer not null);"
+         "  mode      integer not null);"
          "create unique index if not exists file_path_hash_type_mode on files(path, hash, type, "
          "mode);"
          "create index if not exists filenames on files(path);"
@@ -83,6 +82,7 @@ inline const char *getWakeSchemaSQLTxn() {
          "  access   integer not null,"  // 0=visible, 1=input, 2=output
          "  job_id   integer not null references jobs(job_id) on delete cascade,"
          "  file_id  integer not null references files(file_id),"
+         "  modified integer not null,"
          "  unique(job_id, access, file_id) on conflict ignore);"
          "create index if not exists filesearch on filetree(file_id, access, job_id);"
          "create table if not exists log("
