@@ -278,26 +278,6 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
 
         job
 
-    def confirm abort last job =
-        # notOk cannot be deadcode eliminated thanks to printlnLevel having effects
-        def notOk pathInfo =
-            def name = pathInfo.getPathInfoName
-            def hash = pathInfo.getPathInfoHash
-
-            if hashcode name ==* hash then
-                Unit
-            # The panic will not be deadcode dropped, because it's an alternative return of the effect-ful notOk
-            else if abort then
-                panic "The hashcode of output file '{name}' has changed from {hash} (when wake last ran) to {hashcode name} (when inspected this time). Presumably it was hand edited. Please move this file out of the way. Aborting the build to prevent loss of your data."
-            else
-                printlnLevel
-                logError
-                "Wake was run with '-c' and the hashcode of output file '{name}' has changed, despite being produced from identical inputs. In the prior run, it was {hash} and now it is {hashcode name}. Hashes of dependent jobs using this file will not be checked."
-
-        def _ = waitJobMerged (\_ map notOk last) job
-
-        job
-
     def materializeCachedOutputs (outputs: List PathInfo): Result Unit Error =
         outputs
         | map materializeCachedItemFromCas
@@ -322,7 +302,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
 
     match cache
         Pair (job, _) _ -> match (materializeCachedOutputs cachedOutputs)
-            Pass _ -> confirm True cachedOutputs job
+            Pass _ -> job
             Fail err ->
                 panic "Failed to materialize outputs for {str job.getJobId} '{job.getJobDescription}': {err.getErrorCause}"
         # Cache miss, or -c mode (TODO: determine checking is needed, compare output paths!)
