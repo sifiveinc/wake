@@ -151,7 +151,8 @@ struct Database {
                   const std::string &commandline,
                   const std::string &stdin_file,  // "" -> /dev/null
                   uint64_t signature, bool is_atty, const std::string &visible, bool check,
-                  long &job, std::vector<FileReflection> &out, double *pathtime);
+                  long &job, std::string &label, std::vector<FileReflection> &out,
+                  double *pathtime);
   Usage predict_job(uint64_t hashcode, double *pathtime);
   void insert_job(  // also wipes out any old runs
       const std::string &directory, const std::string &environment, const std::string &commandline,

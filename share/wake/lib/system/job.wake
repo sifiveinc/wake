@@ -332,10 +332,10 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
     match cache
         Pair (job, _) _ ->
             if useCasHashes then
-                require Pass _ = materializeCachedOutputs cachedOutputs
-                else build Unit
-
-                confirm True cachedOutputs job
+                match (materializeCachedOutputs cachedOutputs)
+                    Pass _ -> confirm True cachedOutputs job
+                    Fail err ->
+                        panic "Failed to materialize outputs for {str job.getJobId} '{job.getJobDescription}': {err.getErrorCause}"
             else
                 confirm True cachedOutputs job
         Pair Nil _ -> confirm False cachedOutputs (build Unit)
