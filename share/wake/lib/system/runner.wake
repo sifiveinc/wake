@@ -465,6 +465,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                     "type" :-> JString (pathTypeToString p.getPathType),
                     "hash" :-> JString p.getPathHash,
                     "mode" :-> JInteger p.getPathMode,
+                    "mtime" :-> JInteger p.getPathMtimeNs,
                     Nil
                 )
             )

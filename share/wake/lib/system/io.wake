@@ -314,7 +314,7 @@ export def installAs (dest: String) (file: Path): Result Path Error =
         require True = job.isJobOk
         else failWithError "installAs to {sdest} failed"
 
-        Pass (Path sdest (file.getPathType) (file.getPathHash) (file.getPathMode))
+        Pass (Path sdest (file.getPathType) (file.getPathHash) (file.getPathMode) (file.getPathMtimeNs))
     else
         makeExecPlan cmd inputs
         | setPlanLabel "installAs: {dest} {file.getPathName}"
