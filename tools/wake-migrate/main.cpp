@@ -565,6 +565,21 @@ static std::vector<Migration> get_migrations() {
        },
        "Move modified from files to filetree"},
 
+      // Version 13 -> 14: Add run_files table for guarding files during active runs.
+      // No backfill needed: run_files is only populated by active runs; past runs are done.
+      {13, 14,
+       [](sqlite3* db) -> bool {
+         if (!exec_sql(db,
+                       "CREATE TABLE IF NOT EXISTS run_files("
+                       "  run_id  integer not null references runs(run_id) on delete cascade,"
+                       "  file_id integer not null references files(file_id) on delete cascade,"
+                       "  primary key(file_id, run_id));"))
+           return false;
+         return exec_sql(
+             db, "CREATE INDEX IF NOT EXISTS run_files_by_run ON run_files(run_id, file_id);");
+       },
+       "Add run_files table for guarding files during active runs"},
+
   };
 }
 
