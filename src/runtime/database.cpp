@@ -67,6 +67,7 @@ struct Database::detail {
   sqlite3_stmt *insert_tree_file_id;
   sqlite3_stmt *insert_log;
   sqlite3_stmt *insert_file;
+  sqlite3_stmt *claim_file;
   sqlite3_stmt *get_log;
   sqlite3_stmt *replay_log;
   sqlite3_stmt *get_tree;
@@ -101,6 +102,7 @@ struct Database::detail {
   sqlite3_stmt *get_gc_watermark;
   sqlite3_stmt *set_run_end_time;
   sqlite3_stmt *get_incomplete_runs;
+  sqlite3_stmt *clear_run_files;
 
   long run_id;
   long gc_watermark;
@@ -121,6 +123,7 @@ struct Database::detail {
         insert_tree_file_id(0),
         insert_log(0),
         insert_file(0),
+        claim_file(0),
         get_log(0),
         replay_log(0),
         get_tree(0),
@@ -150,6 +153,7 @@ struct Database::detail {
         get_gc_watermark(0),
         set_run_end_time(0),
         get_incomplete_runs(0),
+        clear_run_files(0),
         run_id(0),
         gc_watermark(0) {}
 };
@@ -363,6 +367,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " values(?, ?, ?, ?)";
   const char *sql_insert_file =
       "insert or ignore into files(hash, type, mode, path) values (?, ?, ?, ?)";
+  const char *sql_claim_file =
+      "insert or ignore into run_files(run_id, file_id)"
+      " values(?, (select file_id from files where path=? and hash=? and type=? and mode=?))";
   const char *sql_get_log =
       "select output from log where job_id=? and descriptor=? order by log_id";
   const char *sql_replay_log = "select descriptor, output from log where job_id=? order by log_id";
@@ -475,6 +482,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_get_gc_watermark = "select min(run_id) - 1 from runs where end_time is null";
   const char *sql_set_run_end_time = "update runs set end_time = ? where run_id = ?";
   const char *sql_get_incomplete_runs = "select run_id, time from runs where end_time is null";
+  const char *sql_clear_run_files = "delete from run_files where run_id = ?";
 
 #define PREPARE(sql, member)                                                                     \
   ret = sqlite3_prepare_v2(imp->db, sql, -1, &imp->member, 0);                                   \
@@ -497,6 +505,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_insert_tree_file_id, insert_tree_file_id);
   PREPARE(sql_insert_log, insert_log);
   PREPARE(sql_insert_file, insert_file);
+  PREPARE(sql_claim_file, claim_file);
   PREPARE(sql_get_log, get_log);
   PREPARE(sql_replay_log, replay_log);
   PREPARE(sql_get_tree, get_tree);
@@ -531,6 +540,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_get_gc_watermark, get_gc_watermark);
   PREPARE(sql_set_run_end_time, set_run_end_time);
   PREPARE(sql_get_incomplete_runs, get_incomplete_runs);
+  PREPARE(sql_clear_run_files, clear_run_files);
 
   return "";
 }
@@ -562,6 +572,7 @@ void Database::close() {
   FINALIZE(insert_tree_file_id);
   FINALIZE(insert_log);
   FINALIZE(insert_file);
+  FINALIZE(claim_file);
   FINALIZE(get_log);
   FINALIZE(replay_log);
   FINALIZE(get_tree);
@@ -596,6 +607,7 @@ void Database::close() {
   FINALIZE(get_gc_watermark);
   FINALIZE(set_run_end_time);
   FINALIZE(get_incomplete_runs);
+  FINALIZE(clear_run_files);
 
   imp->run_lock.reset();
 
@@ -799,6 +811,8 @@ void Database::finish_run() {
   bind_integer(why, imp->set_run_end_time, 1, ts);
   bind_integer(why, imp->set_run_end_time, 2, imp->run_id);
   single_step(why, imp->set_run_end_time, imp->debugdb);
+  bind_integer(why, imp->clear_run_files, 1, imp->run_id);
+  single_step("Could not clear run_files for finished run", imp->clear_run_files, imp->debugdb);
   end_txn();
 
   // Remove our own lock file - we're done with this run
@@ -844,6 +858,8 @@ void Database::reap_dead_runs() {
       bind_integer(why, imp->set_run_end_time, 1, static_cast<int64_t>(-1));
       bind_integer(why, imp->set_run_end_time, 2, dead_run);
       single_step(why, imp->set_run_end_time, imp->debugdb);
+      bind_integer(why, imp->clear_run_files, 1, dead_run);
+      single_step("Could not clear run_files for dead run", imp->clear_run_files, imp->debugdb);
     }
     end_txn();
   }
@@ -1502,6 +1518,14 @@ void Database::add_hash(const std::string &file, const std::string &type, const 
   bind_integer(why, imp->insert_file, 3, mode);
   bind_string(why, imp->insert_file, 4, file);
   single_step(why, imp->insert_file, imp->debugdb);
+
+  bind_integer(why, imp->claim_file, 1, imp->run_id);
+  bind_string(why, imp->claim_file, 2, file);
+  bind_string(why, imp->claim_file, 3, hash);
+  bind_string(why, imp->claim_file, 4, type);
+  bind_integer(why, imp->claim_file, 5, mode);
+  single_step(why, imp->claim_file, imp->debugdb);
+
   end_txn();
 }
 
