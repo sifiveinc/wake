@@ -165,9 +165,9 @@ def dirHash =
 export def getPathParent (path: Path): String =
     simplify "{getPathName path}/.."
 
-# Store path hash/metadata into the files DB.
-# The returned Path represents the now-recorded DB-backed path metadata.
-def storePath (pathInfo: PathInfo): Path =
+# Record path hash/metadata into the files DB (add_hash side-effect only).
+# Does NOT create a filetree entry; that happens later via primJobFinish.
+def storePath (pathInfo: PathInfo): Unit =
     def addHash f t h m = prim "add_hash"
 
     def _ =
@@ -177,12 +177,7 @@ def storePath (pathInfo: PathInfo): Path =
         pathInfo.getPathInfoHash
         pathInfo.getPathInfoMode
 
-    Path
-    pathInfo.getPathInfoName
-    pathInfo.getPathInfoType
-    pathInfo.getPathInfoHash
-    pathInfo.getPathInfoMode
-    pathInfo.getPathInfoMtimeNs
+    Unit
 
 export def computeHashes (prefix: String) (files: List String): Result (List String) Error =
     def simpleFiles = map simplify files
