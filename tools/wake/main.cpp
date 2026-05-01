@@ -192,7 +192,7 @@ static std::string format_duration(int64_t nanos) {
 void query_runs(Database &db) {
   const auto runs = db.get_runs();
   for (const auto &run : runs) {
-    std::cout << run.start_time.as_string() << " → ";
+    std::cout << run.start_time.as_string() << " -> ";
     if (!run.end_time) {
       std::cout << "...                  [running]  ";
     } else if (*run.end_time < 0) {
