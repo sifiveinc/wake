@@ -266,7 +266,7 @@ export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPa
 
         require Exited 0 = getJobStatus stageJob
         else
-            require Pass stderr = getJobStderr stageJob
+            require Pass stderr = getJobFailedStderr stageJob
             else failWithError "workspace staging helper failed"
 
             failWithError "workspace staging helper failed: {stderr}"
