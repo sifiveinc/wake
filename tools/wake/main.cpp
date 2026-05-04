@@ -278,6 +278,13 @@ void query_jobs(const CommandLineOptions &clo, Database &db) {
     collect_ands.push_back({"endtime = 0"});
   }
 
+  // --active
+  if (clo.active) {
+    collect_ands.push_back(
+        {"starttime != 0 AND endtime == 0 and run_id in (select run_id from runs where run_id is "
+         "null)"});
+  }
+
   // Hide introspection jobs by default unless --include-hidden is specified
   if (!clo.include_hidden) {
     hide_internal_jobs(collect_ands);
@@ -353,6 +360,7 @@ void print_help(const char *argv0) {
     << "    --failed   -f      Capture jobs which failed last build"                       << std::endl
     << "    --tag      KEY=VAL Capture jobs which are tagged, matching KEY and VAL globs"  << std::endl
     << "    --canceled         Capture jobs which were canceled in the last build"         << std::endl
+    << "    --active           Capture jobs currently running across all active builds"    << std::endl
     << "    --timeline         Report timeline of captured jobs as HTML"                   << std::endl
     << "    --simple-timeline  Report simplified timeline of captured jobs as HTML"        << std::endl
     << "    --verbose  -v      Report metadata, stdout and stderr of captured jobs"        << std::endl
@@ -535,7 +543,7 @@ int main(int argc, char **argv) {
   bool is_db_inspect_capture = !clo.job_ids.empty() || !clo.output_files.empty() ||
                                !clo.input_files.empty() || !clo.labels.empty() ||
                                !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
-                               clo.tagdag || clo.canceled || clo.history || clo.ps;
+                               clo.tagdag || clo.canceled || clo.active || clo.history || clo.ps;
 
   // DescribePolicy::human() is the default and doesn't have a flag.
   // DescribePolicy::debug() is overloaded and can't be marked as a db flag
