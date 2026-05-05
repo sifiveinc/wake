@@ -79,7 +79,9 @@ overloaded(Ts...) -> overloaded<Ts...>;
 // Staged item types - written to .cas/staging/ during job execution, hashed by wakebox after
 struct StagedFileData {
   std::string staging_path;
-  mode_t mode;
+  std::shared_ptr<mode_t> mode;
+
+  bool is_hardlink() const { return mode.use_count() > 1; }
 };
 
 struct StagedSymlinkData {
@@ -92,15 +94,7 @@ struct StagedDirectoryData {
   struct timespec mtime;
 };
 
-// Hardlinks are not true filesystem hardlinks. On link(), we reflink/copy the source's staging
-// file so each entry owns an independent staging_path.
-struct StagedHardlinkData {
-  std::string staging_path;
-  mode_t mode;
-};
-
-using StagedItemData =
-    std::variant<StagedFileData, StagedSymlinkData, StagedDirectoryData, StagedHardlinkData>;
+using StagedItemData = std::variant<StagedFileData, StagedSymlinkData, StagedDirectoryData>;
 
 struct StagedItem {
   std::string dest_path;
@@ -111,35 +105,32 @@ struct StagedItem {
   bool is_file() const { return std::holds_alternative<StagedFileData>(data); }
   bool is_symlink() const { return std::holds_alternative<StagedSymlinkData>(data); }
   bool is_directory() const { return std::holds_alternative<StagedDirectoryData>(data); }
-  bool is_hardlink() const { return std::holds_alternative<StagedHardlinkData>(data); }
+  bool is_hardlink() const {
+    if (auto *f = std::get_if<StagedFileData>(&data)) return f->is_hardlink();
+    return false;
+  }
 
   // Type name for JSON output
   const char *type_name() const {
-    return std::visit(
-        overloaded{
-            [](const StagedFileData &) { return "file"; },
-            [](const StagedSymlinkData &) { return "symlink"; },
-            [](const StagedDirectoryData &) { return "directory"; },
-            // Serialize hardlinks as ordinary file entries. The shared staging_path still preserves
-            // the deduplication behavior Wake cares about during hashing and CAS ingestion.
-            [](const StagedHardlinkData &) { return "file"; },
-        },
-        data);
+    return std::visit(overloaded{
+                          [](const StagedFileData &) { return "file"; },
+                          [](const StagedSymlinkData &) { return "symlink"; },
+                          [](const StagedDirectoryData &) { return "directory"; },
+                      },
+                      data);
   }
 
   std::optional<std::string_view> staging_path() const {
     if (auto *f = std::get_if<StagedFileData>(&data)) return f->staging_path;
-    if (auto *h = std::get_if<StagedHardlinkData>(&data)) return h->staging_path;
     return std::nullopt;
   }
 
   // Get mode (valid for file, directory, and hardlink)
   mode_t mode() const {
     return std::visit(overloaded{
-                          [](const StagedFileData &f) { return f.mode; },
+                          [](const StagedFileData &f) { return *f.mode; },
                           [](const StagedSymlinkData &) { return static_cast<mode_t>(0777); },
                           [](const StagedDirectoryData &d) { return d.mode; },
-                          [](const StagedHardlinkData &h) { return h.mode; },
                       },
                       data);
   }
@@ -147,14 +138,9 @@ struct StagedItem {
   // Set mode (for chmod support)
   void set_mode(mode_t m) {
     std::visit(overloaded{
-                   [m](StagedFileData &f) { f.mode = m; },
+                   [m](StagedFileData &f) { *f.mode = m; },
                    [](StagedSymlinkData &) {},  // Symlinks don't have mode
                    [m](StagedDirectoryData &d) { d.mode = m; },
-                   // Known limitation: hardlink mode is tracked per-entry rather than shared across
-                   // all names pointing to the same staged file. A chmod on one hardlink path will
-                   // not update sibling hardlink entries, diverging from POSIX inode semantics.
-                   // TODO: Add robust hardlink support
-                   [m](StagedHardlinkData &h) { h.mode = m; },
                },
                data);
   }
@@ -173,9 +159,6 @@ struct StagedItem {
       l->mtime = mt;
     } else if (auto *d = std::get_if<StagedDirectoryData>(&data)) {
       d->mtime = mt;
-      // Known limitation: same as set_mode — timestamps are tracked per-entry, so an utimens on
-      // one hardlink path does not update sibling hardlink entries.
-      // TODO: Add robust hardlink support
     }
   }
 };
@@ -501,7 +484,7 @@ void Job::dump(const std::string &job_id) {
                          int ret = stat(f.staging_path.c_str(), &st);
                          assert(ret == 0 && "staging file must exist at dump time");
                          s << ",\"staging_path\":\"" << json_escape(f.staging_path) << "\"";
-                         s << ",\"mode\":" << (f.mode & 07777);
+                         s << ",\"mode\":" << (*f.mode & 07777);
                          s << ",\"mtime_sec\":" << st.st_mtim.tv_sec;
                          s << ",\"mtime_nsec\":" << st.st_mtim.tv_nsec;
                        },
@@ -514,17 +497,6 @@ void Job::dump(const std::string &job_id) {
                          s << ",\"mode\":" << (d.mode & 07777);
                          s << ",\"mtime_sec\":" << d.mtime.tv_sec;
                          s << ",\"mtime_nsec\":" << d.mtime.tv_nsec;
-                       },
-                       [&s](const StagedHardlinkData &h) {
-                         struct stat st;
-                         int ret = stat(h.staging_path.c_str(), &st);
-                         assert(ret == 0 && "staging file must exist at dump time");
-                         // Hardlink has same staging_path as source - client uses it as
-                         // deduplication key
-                         s << ",\"staging_path\":\"" << json_escape(h.staging_path) << "\"";
-                         s << ",\"mode\":" << (h.mode & 07777);
-                         s << ",\"mtime_sec\":" << st.st_mtim.tv_sec;
-                         s << ",\"mtime_nsec\":" << st.st_mtim.tv_nsec;
                        },
                    },
                    sf.data);
@@ -722,7 +694,7 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
                             int res = stat(f.staging_path.c_str(), stbuf);
                             if (res == -1) return -errno;
                             // Combine file type from staging file with tracked permissions
-                            stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (f.mode & ~S_IFMT);
+                            stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (*f.mode & ~S_IFMT);
                             return 0;
                           },
                           [stbuf](const StagedSymlinkData &l) {
@@ -745,12 +717,6 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
                             stbuf->st_uid = getuid();
                             stbuf->st_gid = getgid();
                             stbuf->st_mtim = d.mtime;
-                            return 0;
-                          },
-                          [stbuf](const StagedHardlinkData &h) {
-                            int res = stat(h.staging_path.c_str(), stbuf);
-                            if (res == -1) return -errno;
-                            stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (h.mode & ~S_IFMT);
                             return 0;
                           },
                       },
@@ -1211,7 +1177,7 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
     StagedItem staged;
     staged.dest_path = key.second;
     staged.job_id = key.first;
-    staged.data = StagedFileData{staging_path, mode};
+    staged.data = StagedFileData{staging_path, std::make_shared<mode_t>(mode)};
     StagedItem *inserted = g_staged_files.insert(key.first, key.second, std::move(staged));
 
     g_staged_files.register_fd(fd, inserted);
@@ -1641,31 +1607,25 @@ static int wakefuse_link(const char *from, const char *to) {
       auto src_staging_path = src.staging_path();
       if (!src_staging_path) return -EPERM;  // symlinks have no staging_path
 
-      mode_t src_mode = src.mode();
+      const StagedFileData *src_sf = std::get_if<StagedFileData>(&src.data);
+      assert(src_sf && "must be staged file");
 
-      // Create an independent copy of the staging file so each output owns its own
-      // staging path. This avoids races where one consumer (CAS ingestion or workspace
-      // materialization) deletes the shared file before another can read it.
-      // Uses reflink (copy-on-write) when the filesystem supports it.
       std::string new_staging_path = g_staging_dir + "/" + std::to_string(getpid()) + "_" +
                                      std::to_string(++g_staging_counter);
-      auto copy_result = wcl::reflink_or_copy_file(std::string(*src_staging_path), new_staging_path,
-                                                   src_mode & 07777);
-      if (!copy_result) return -copy_result.error();
+      int res = link(src_staging_path->data(), new_staging_path.c_str());
+      if (res < 0) return -errno;
 
       StagedItem sf;
       sf.dest_path = keyt.second;
       sf.job_id = keyf.first;
-      sf.data = StagedHardlinkData{new_staging_path, src_mode};
+      sf.data = StagedFileData{new_staging_path, src_sf->mode};
       g_staged_files.insert(keyt.first, keyt.second, std::move(sf));
 
       it->second.staged_paths.insert(keyt.second);
       it->second.files_wrote.insert(keyt.second);
-      // Both hardlink paths need direct_io to prevent kernel caching issues
-      hardlinks.insert(std::string(from));
-      hardlinks.insert(std::string(to));
       return 0;
     }
+    return -EEXIST;
   }
 
   // TODO: Remove the workspace hardlink fallback once WAKE_CAS is the default.
@@ -1921,16 +1881,16 @@ static int wakefuse_open(const char *path, struct fuse_file_info *fi) {
 
   if (!it->second.is_readable(key.second)) return -ENOENT;
 
-  if (hardlinks.count(std::string(path))) {
-    // Hardlinked staged files have independent staging copies; writes would not
-    // propagate to other links as a real hardlink would. Reject to avoid silent
-    // divergence between hardlinked outputs.
-    if ((fi->flags & O_ACCMODE) != O_RDONLY) return -EACCES;
+  StagedItem *sf = g_staged_files.find(key.first, key.second);
+  bool is_hardlink = (sf && sf->is_hardlink()) || hardlinks.count(std::string(path));
+
+  if (is_hardlink) {
+    // TODO: This is insufficient if open() happens /then/ the file is linked.
     fi->direct_io = true;
   }
 
   // Check if file is staged (written by this job)
-  if (StagedItem *sf = g_staged_files.find(key.first, key.second)) {
+  if (sf) {
     // open() is not valid for directories
     if (sf->is_directory()) return -EISDIR;
 
