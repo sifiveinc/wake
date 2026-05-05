@@ -52,9 +52,8 @@ kill -9 $WAKE_PID 2>/dev/null || true
 wait $WAKE_PID 2>/dev/null || true
 unset WAKE_PID
 
-# Before reaping, still shows as running (lock file gone but not reaped yet)
-# After any wake command, it gets reaped and shows as crashed
-"${WAKE}" -x 'True'
+# Ensure --history can detect run liveness when only read-only.
+chmod -w .wake/locks/*
 
 OUTPUT=$("${WAKE}" --history)
 if echo "$OUTPUT" | grep -qE '\?\?\?[[:space:]]+\[crashed\].*longRunningBuild'; then
