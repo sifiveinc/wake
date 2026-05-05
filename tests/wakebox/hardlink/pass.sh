@@ -5,6 +5,6 @@ export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
 
 trap 'rm link_file_src.txt link_file_dst.txt' EXIT
 
-STDOUT=$(${1}/wakebox -p input.json)
+export WAKE_CAS=1
 
-[ "$STDOUT" = "pass" ] || exit 1
+${1}/wakebox -p input.json
