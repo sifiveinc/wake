@@ -63,6 +63,7 @@
 
 // How long to wait for a new client to connect before the daemon exits
 static int linger_timeout;
+// TODO: Remove this once CAS is default!
 static std::set<std::string> hardlinks = {};
 
 // Staging directory for CAS
@@ -80,8 +81,6 @@ overloaded(Ts...) -> overloaded<Ts...>;
 struct StagedFileData {
   std::string staging_path;
   std::shared_ptr<mode_t> mode;
-
-  bool is_hardlink() const { return mode.use_count() > 1; }
 };
 
 struct StagedSymlinkData {
@@ -106,7 +105,7 @@ struct StagedItem {
   bool is_symlink() const { return std::holds_alternative<StagedSymlinkData>(data); }
   bool is_directory() const { return std::holds_alternative<StagedDirectoryData>(data); }
   bool is_hardlink() const {
-    if (auto *f = std::get_if<StagedFileData>(&data)) return f->is_hardlink();
+    if (auto *f = std::get_if<StagedFileData>(&data)) return f->mode.use_count() > 1;
     return false;
   }
 
@@ -1625,6 +1624,7 @@ static int wakefuse_link(const char *from, const char *to) {
       it->second.files_wrote.insert(keyt.second);
       return 0;
     }
+
     return -EEXIST;
   }
 
