@@ -59,6 +59,7 @@
 #include "runtime/job.h"
 #include "runtime/prim.h"
 #include "runtime/profile.h"
+#include "runtime/run_lock.h"
 #include "runtime/runtime.h"
 #include "runtime/sources.h"
 #include "runtime/status.h"
@@ -193,9 +194,11 @@ void query_runs(Database &db) {
   const auto runs = db.get_runs();
   for (const auto &run : runs) {
     std::cout << run.start_time.as_string() << " -> ";
-    if (!run.end_time) {
+
+    bool live = !run.end_time && RunLockProbe::is_live(run.id);
+    if (live) {
       std::cout << "...                  [running]  ";
-    } else if (*run.end_time < 0) {
+    } else if (run.end_time < 0) {
       std::cout << "???                  [crashed]  ";
     } else {
       Time end(*run.end_time);
