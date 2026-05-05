@@ -130,10 +130,10 @@ void RunLock::unlink_file() { ::unlink(path.c_str()); }
 
 namespace RunLockProbe {
 
-wcl::result<bool, std::string> probe_and_cleanup_if_dead(long run_id, int64_t start_time,
-                                                         int64_t current_time) {
+wcl::result<bool, std::string> probe(long run_id, int64_t start_time, int64_t current_time,
+                                     bool cleanup) {
   std::string lock_path = run_lock_path(run_id);
-  int fd = ::open(lock_path.c_str(), O_RDWR | O_CLOEXEC);
+  int fd = ::open(lock_path.c_str(), (cleanup ? O_RDWR : O_RDONLY) | O_CLOEXEC);
 
   if (fd < 0) {
     if (errno == ENOENT) {
@@ -144,21 +144,35 @@ wcl::result<bool, std::string> probe_and_cleanup_if_dead(long run_id, int64_t st
     return make_errno<bool>("failed to open run lock ", run_id);
   }
 
-  // Try to acquire the lock non-blocking
-  if (acquire_lock(fd, false)) {
-    // Lock acquired - process is dead
-    unlink(lock_path.c_str());  // remove while locked
-    release_lock(fd);
+  if (cleanup) {
+    // Try to acquire the lock non-blocking
+    if (acquire_lock(fd, false)) {
+      // Lock acquired - process is dead
+      unlink(lock_path.c_str());  // remove while locked
+      release_lock(fd);
+      ::close(fd);
+      return wcl::result_value<std::string>(true);
+    }
+    if (errno != EAGAIN && errno != EACCES) {
+      ::close(fd);
+      return make_errno<bool>("failed to probe run lock ", run_id);
+    }
     ::close(fd);
-    return wcl::result_value<std::string>(true);
-  }
-  if (errno != EAGAIN && errno != EACCES) {
+    return wcl::result_value<std::string>(false);
+  } else {
+    struct flock fl;
+    memset(&fl, 0, sizeof(fl));
+    fl.l_type = F_WRLCK;
+    fl.l_whence = SEEK_SET;
+    fl.l_start = 0;
+    fl.l_len = 0;
+    if (fcntl(fd, F_GETLK, &fl) != 0) {
+      ::close(fd);
+      return make_errno<bool>("failed to query run lock ", run_id);
+    }
     ::close(fd);
-    return make_errno<bool>("failed to probe run lock ", run_id);
+    return wcl::result_value<std::string>(fl.l_type == F_UNLCK);
   }
-
-  ::close(fd);
-  return wcl::result_value<std::string>(false);
 }
 
 }  // namespace RunLockProbe

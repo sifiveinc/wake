@@ -847,7 +847,7 @@ void Database::reap_dead_runs() {
   // If we can acquire a run's lock, that process is dead.
   std::vector<long> dead_runs;
   for (const auto &[run_id, start_time] : incomplete_runs) {
-    auto result = RunLockProbe::probe_and_cleanup_if_dead(run_id, start_time, ts);
+    auto result = RunLockProbe::probe(run_id, start_time, ts, /*cleanup=*/true);
     if (!result) {
       std::cerr << "warning: " << result.error() << std::endl;
     } else if (*result) {
