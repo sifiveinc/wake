@@ -1595,8 +1595,10 @@ static int wakefuse_link(const char *from, const char *to) {
 
   if (it->second.is_visible(keyt.second)) return -EEXIST;
 
-  // Handle link from staged file (CAS mode only)
   if (g_use_cas) {
+    // Deny hardlinking visible files as "from".
+    if (it->second.is_visible(keyf.second)) return -EPERM;
+    // Allow hardlinking staged files as "from".
     if (StagedItem *src_ptr = g_staged_files.find(keyf.first, keyf.second)) {
       const StagedItem &src = *src_ptr;
       // Hardlinks to directories are forbidden in POSIX
@@ -1625,6 +1627,7 @@ static int wakefuse_link(const char *from, const char *to) {
       return 0;
     }
 
+    // For everything else, "from" doesn't exist.
     return -EEXIST;
   }
 
