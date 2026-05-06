@@ -1355,7 +1355,7 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   bind_integer(why, imp->detect_overlap, 2, imp->run_id);
   while (sqlite3_step(imp->detect_overlap) == SQLITE_ROW) {
     std::stringstream s;
-    s << "File output by multiple Jobs: " << rip_column(imp->detect_overlap, 0) << "(this job is "
+    s << "File output by multiple Jobs: " << rip_column(imp->detect_overlap, 0) << " (this job is "
       << job << " in run " << imp->run_id << "; other job is " << rip_column(imp->detect_overlap, 1)
       << ")" << std::endl;
     status_get_generic_stream(STREAM_ERROR) << s.str() << std::endl;
