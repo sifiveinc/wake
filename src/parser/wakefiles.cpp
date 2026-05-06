@@ -36,6 +36,7 @@
 #include <fstream>
 #include <memory>
 #include <sstream>
+#include <string_view>
 
 #include "compat/readable.h"
 #include "compat/windows.h"
@@ -142,7 +143,7 @@ bool push_files(int ok, char *files, std::vector<std::string> &out, const re2::R
                 size_t skip) {
   if (ok) {
     for (char *file = files; *file; file += strlen(file) + 1) {
-      re2::StringPiece p(file + skip, strlen(file) - skip);
+      std::string_view p(file + skip, strlen(file) - skip);
       if (RE2::FullMatch(p, re)) {
         out.emplace_back(file);
       }
@@ -227,7 +228,7 @@ static bool push_files(std::vector<std::string> &out, const std::string &path, i
 
     if (!push_files_is_directory(dirfd, path, f, &failed)) {
       // Append the current file if it matches the regex
-      re2::StringPiece p(name.c_str() + skip, name.size() - skip);
+      std::string_view p(name.c_str() + skip, name.size() - skip);
       if (RE2::FullMatch(p, re)) out.emplace_back(std::move(name));
       continue;
     }
@@ -302,7 +303,7 @@ std::string glob2regexp(const std::string &glob) {
   std::string exp("(?s)");
   size_t s = 0, e;
   while ((e = glob.find_first_of("\\[?*", s)) != std::string::npos) {
-    re2::StringPiece piece(glob.c_str() + s, e - s);
+    std::string_view piece(glob.c_str() + s, e - s);
     exp.append(RE2::QuoteMeta(piece));
     if (glob[e] == '\\') {
       // Trailing \ is left as a raw '\'
@@ -310,7 +311,7 @@ std::string glob2regexp(const std::string &glob) {
       if (e + 1 == glob.size() || static_cast<unsigned char>(glob[e + 1]) >= 0x80) {
         s = e + 1;
       } else {
-        re2::StringPiece piece(glob.c_str() + e + 1, 1);
+        std::string_view piece(glob.c_str() + e + 1, 1);
         exp.append(RE2::QuoteMeta(piece));
         s = e + 2;
       }
@@ -435,7 +436,7 @@ static std::vector<std::string> filter_wakefiles(std::vector<std::string> &&wake
     bool skip = false;
     size_t prefix = std::string::npos;
     for (auto &filter : filters) {
-      re2::StringPiece piece(wakefile.c_str() + filter.prefix, wakefile.size() - filter.prefix);
+      std::string_view piece(wakefile.c_str() + filter.prefix, wakefile.size() - filter.prefix);
       if (skip == filter.allow && RE2::FullMatch(piece, *filter.exp)) {
         skip = !filter.allow;
         prefix = filter.prefix;

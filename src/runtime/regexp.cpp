@@ -29,8 +29,6 @@
 #include "util/sfinae.h"
 #include "value.h"
 
-static re2::StringPiece sp(String *s) { return re2::StringPiece(s->c_str(), s->size()); }
-
 static PRIMTYPE(type_rcmp) {
   return args.size() == 2 && args[0]->unify(Data::typeRegExp) && args[1]->unify(Data::typeRegExp) &&
          out->unify(Data::typeOrder);
@@ -56,7 +54,7 @@ static PRIMFN(prim_re2) {
   STRING(arg0, 0);
   size_t need = reserve_result() + RegExp::reserve();
   runtime.heap.reserve(need);
-  RegExp *regexp = RegExp::claim(runtime.heap, runtime.heap, sp(arg0));
+  RegExp *regexp = RegExp::claim(runtime.heap, runtime.heap, arg0->as_sv());
   if (regexp->exp->ok()) {
     RETURN(claim_result(runtime.heap, true, regexp));
   } else {
@@ -89,7 +87,7 @@ static PRIMTYPE(type_quote) {
 static PRIMFN(prim_quote) {
   EXPECT(1);
   STRING(arg0, 0);
-  RETURN(String::alloc(runtime.heap, RE2::QuoteMeta(sp(arg0))));
+  RETURN(String::alloc(runtime.heap, RE2::QuoteMeta(arg0->as_sv())));
 }
 
 static bool check_re2_bug(size_t size) {
@@ -122,7 +120,7 @@ static PRIMFN(prim_match) {
   RE2_BUG(arg1);
 
   runtime.heap.reserve(reserve_bool());
-  auto out = RE2::FullMatch(sp(arg1), *arg0->exp);
+  auto out = RE2::FullMatch(arg1->as_sv(), *arg0->exp);
   RETURN(claim_bool(runtime.heap, out));
 }
 
@@ -142,7 +140,7 @@ static PRIMFN(prim_extract) {
 
   int matches = arg0->exp->NumberOfCapturingGroups();
   std::vector<re2::StringPiece> submatch(matches + 1);
-  re2::StringPiece input = sp(arg1);
+  auto input = arg1->as_sv();
 
   if (arg0->exp->Match(input, 0, input.size(), RE2::ANCHOR_BOTH, &submatch[0], matches + 1)) {
     size_t need = reserve_list(matches);
@@ -176,7 +174,7 @@ static PRIMFN(prim_replace) {
   RE2_BUG(arg2);
 
   std::string buffer = arg2->as_str();
-  RE2::GlobalReplace(&buffer, *arg0->exp, sp(arg1));
+  RE2::GlobalReplace(&buffer, *arg0->exp, arg1->as_sv());
   RETURN(String::alloc(runtime.heap, buffer));
 }
 
@@ -194,14 +192,14 @@ static PRIMFN(prim_tokenize) {
   STRING(arg1, 1);
   RE2_BUG(arg1);
 
-  re2::StringPiece input = sp(arg1);
+  std::string_view input = arg1->as_sv();
   re2::StringPiece hit;
-  std::vector<re2::StringPiece> tokens;
+  std::vector<std::string_view> tokens;
   size_t need = 0;
 
   while (arg0->exp->Match(input, 0, input.size(), RE2::UNANCHORED, &hit, 1)) {
     if (hit.empty()) break;
-    re2::StringPiece token(input.data(), hit.data() - input.data());
+    std::string_view token(input.data(), hit.data() - input.data());
     tokens.emplace_back(token);
     need += String::reserve(token.size());
     input.remove_prefix(token.size() + hit.size());
@@ -217,7 +215,7 @@ static PRIMFN(prim_tokenize) {
 
   std::vector<Value *> out;
   for (size_t i = 0; i < tokens.size(); ++i) {
-    re2::StringPiece &p = tokens[i];
+    std::string_view p = tokens[i];
     out.emplace_back(String::claim(runtime.heap, p.data(), p.size()));
   }
 

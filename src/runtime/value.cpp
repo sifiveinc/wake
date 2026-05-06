@@ -303,11 +303,11 @@ MyOpts::MyOpts() {
 
 static MyOpts opts;
 
-RegExp::RegExp(Heap &h, const re2::StringPiece &regexp)
+RegExp::RegExp(Heap &h, std::string_view regexp)
     : Parent(h),
       exp(std::make_shared<RE2>(has_set_dot_nl<RE2::Options>::value
-                                    ? re2::StringPiece(regexp)
-                                    : re2::StringPiece("(?s)" + regexp.as_string()),
+                                    ? std::string(regexp)
+                                    : std::string("(?s)" + std::string(regexp)),
                                 opts)) {}
 
 void RegExp::format(std::ostream &os, FormatState &state) const {
