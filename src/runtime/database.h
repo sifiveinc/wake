@@ -168,6 +168,8 @@ struct Database {
       uint64_t signature,  // this must match to qualify for reuse
       const std::string &label, const std::string &stack, bool is_atty, const std::string &visible,
       long *job);  // key used for accesses below
+
+  void start_job(long job, int64_t starttime);  // record wall-clock start time eagerly
   void finish_job(long job,
                   const std::string &inputs,       // null separated
                   const std::string &outputs,      // null separated

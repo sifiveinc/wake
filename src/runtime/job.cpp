@@ -904,6 +904,9 @@ static void launch(JobTable *jobtable) {
     jobtable->imp->pidmap[pid] = entry;
     entry->job->pid = entry->pid = pid;
     entry->job->state |= STATE_FORKED;
+    int64_t starttime_ns =
+        (int64_t)entry->job->start.tv_sec * 1000000000LL + entry->job->start.tv_nsec;
+    jobtable->imp->db->start_job(entry->job->job, starttime_ns);
     close(stdout_stream[1]);
     close(stderr_stream[1]);
     close(runner_out_stream[1]);
@@ -1327,6 +1330,8 @@ static PRIMFN(prim_job_virtual) {
 
   clock_gettime(CLOCK_REALTIME, &job->start);
   job->stop = job->start;
+  int64_t starttime_ns = (int64_t)job->start.tv_sec * 1000000000LL + job->start.tv_nsec;
+  job->db->start_job(job->job, starttime_ns);
 
   if (!stdout_payload->empty())
     job->db->save_output(job->job, 1, stdout_payload->c_str(), stdout_payload->size(), 0);

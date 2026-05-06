@@ -210,6 +210,28 @@ void query_runs(Database &db) {
   }
 }
 
+// Returns lock-proven live run_ids (DB-open runs confirmed by lock probe).
+std::vector<int> get_live_run_ids(Database &db) {
+  std::vector<int> live;
+  for (auto &r : db.get_runs())
+    if (!r.end_time && RunLockProbe::is_live(r.id)) live.push_back(r.id);
+  return live;
+}
+
+// Build a run_id in/not-in predicate for use in core_filters.
+std::string run_id_filter(bool in, const std::vector<int> &ids) {
+  std::string q = in ? "run_id in (" : "run_id not in (";
+  bool any = false;
+  for (auto id : ids) {
+    if (any) q += ',';
+    q += std::to_string(id);
+    any = true;
+  }
+  if (!any) return in ? "0" : "1";
+  q += ')';
+  return q;
+}
+
 void query_jobs(const CommandLineOptions &clo, Database &db) {
   std::vector<std::vector<std::string>> collect_ands = {};
   std::vector<std::vector<std::string>> collect_input_ands = {};
@@ -247,9 +269,33 @@ void query_jobs(const CommandLineOptions &clo, Database &db) {
     collect_ands.push_back({"(status <> 0 OR runner_status IS NOT NULL)"});
   }
 
-  // --canceled
-  if (clo.canceled) {
+  // Filters on unfinished jobs (endtime == 0).
+  if (clo.canceled || clo.active || clo.queued || clo.in_flight) {
+    auto live_run_ids = get_live_run_ids(db);
+
     collect_ands.push_back({"endtime = 0"});
+
+    // --canceled: jobs from non-live runs (run crashed before job finished)
+    if (clo.canceled) {
+      collect_ands.push_back({run_id_filter(/*in=*/false, live_run_ids)});
+    }
+
+    // --active: forked jobs (starttime!=0) in a live run
+    if (clo.active) {
+      collect_ands.push_back({"starttime != 0"});
+      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+    }
+
+    // --queued: not-yet-forked jobs (starttime==0) in a live run
+    if (clo.queued) {
+      collect_ands.push_back({"starttime = 0"});
+      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+    }
+
+    // --in-flight: all unfinished jobs (running or queued) in a live run
+    if (clo.in_flight) {
+      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+    }
   }
 
   // Hide introspection jobs by default unless --include-hidden is specified
@@ -324,7 +370,10 @@ void print_help(const char *argv0) {
     << "    --history          Report the cmndline history of all wake commands recorded"  << std::endl
     << "    --failed   -f      Capture jobs which failed last build"                       << std::endl
     << "    --tag      KEY=VAL Capture jobs which are tagged, matching KEY and VAL globs"  << std::endl
-    << "    --canceled         Capture jobs which were canceled in the last build"         << std::endl
+    << "    --canceled         Capture jobs which were canceled (run ended before job finished)" << std::endl
+    << "    --active           Capture jobs currently running in active builds"             << std::endl
+    << "    --queued           Capture jobs queued but not yet launched in active builds"  << std::endl
+    << "    --in-flight        Capture jobs running or queued in active builds"            << std::endl
     << "    --timeline         Report timeline of captured jobs as HTML"                   << std::endl
     << "    --simple-timeline  Report simplified timeline of captured jobs as HTML"        << std::endl
     << "    --verbose  -v      Report metadata, stdout and stderr of captured jobs"        << std::endl
@@ -494,10 +543,10 @@ int main(int argc, char **argv) {
     clo.argv[1] = clo.shebang;
   }
 
-  bool is_db_inspect_capture = !clo.job_ids.empty() || !clo.output_files.empty() ||
-                               !clo.input_files.empty() || !clo.labels.empty() ||
-                               !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
-                               clo.tagdag || clo.canceled || clo.history;
+  bool is_db_inspect_capture =
+      !clo.job_ids.empty() || !clo.output_files.empty() || !clo.input_files.empty() ||
+      !clo.labels.empty() || !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
+      clo.tagdag || clo.canceled || clo.active || clo.queued || clo.in_flight || clo.history;
 
   // DescribePolicy::human() is the default and doesn't have a flag.
   // DescribePolicy::debug() is overloaded and can't be marked as a db flag
