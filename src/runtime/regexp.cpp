@@ -56,7 +56,7 @@ static PRIMFN(prim_re2) {
   STRING(arg0, 0);
   size_t need = reserve_result() + RegExp::reserve();
   runtime.heap.reserve(need);
-  RegExp *regexp = RegExp::claim(runtime.heap, runtime.heap, sp(arg0));
+  RegExp *regexp = RegExp::claim(runtime.heap, runtime.heap, arg0->as_sv());
   if (regexp->exp->ok()) {
     RETURN(claim_result(runtime.heap, true, regexp));
   } else {
