@@ -1,0 +1,2 @@
+PASS: --clean refused while build active
+PASS: --clean succeeded after reaping dead run
