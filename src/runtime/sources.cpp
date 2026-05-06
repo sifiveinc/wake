@@ -337,7 +337,7 @@ static PRIMFN(prim_sources) {
   std::vector<Value *> found;
   for (Promise *i = low; i != high; ++i) {
     String *s = i->coerce<String>();
-    re2::StringPiece piece(s->c_str() + skip, s->size() - skip);
+    std::string_view piece(s->c_str() + skip, s->size() - skip);
     if (RE2::FullMatch(piece, *arg1->exp)) found.push_back(s);
   }
 

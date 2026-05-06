@@ -24,13 +24,13 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "gc.h"
 
 namespace re2 {
 class RE2;
-class StringPiece;
 }  // namespace re2
 
 #define APP_PRECEDENCE 14
@@ -82,6 +82,7 @@ struct String final : public GCObject<String, Value> {
   const char *c_str() const { return static_cast<const char *>(data()); }
   char *c_str() { return static_cast<char *>(data()); }
   std::string as_str() const { return std::string(c_str(), length); }
+  std::string_view as_sv() const { return std::string_view(c_str(), length); }
   size_t size() { return length; }
   bool empty() { return length == 0; }
 
@@ -216,7 +217,7 @@ struct RegExp final : public GCObject<RegExp, DestroyableObject> {
 
   std::shared_ptr<re2::RE2> exp;
 
-  RegExp(Heap &h, const re2::StringPiece &regexp);
+  RegExp(Heap &h, std::string_view regexp);
 
   void format(std::ostream &os, FormatState &state) const override;
   Hash shallow_hash() const override;
