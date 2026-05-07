@@ -232,6 +232,61 @@ std::string run_id_filter(bool in, const std::vector<int> &ids) {
   return q;
 }
 
+// Returns jobs from DB-open runs (end_time IS NULL) that are also proven live by lock probe.
+// Results are ordered by run_id so we probe once per run.
+std::vector<OpenRunJobReflection> get_live_open_run_jobs(Database &db) {
+  auto all = db.get_open_run_jobs();
+  int cur_run = -1;
+  bool cur_live = false;
+  std::vector<OpenRunJobReflection> live;
+  for (auto &j : all) {
+    if (j.run_id != cur_run) {
+      cur_run = j.run_id;
+      cur_live = RunLockProbe::is_live(j.run_id);
+    }
+    if (cur_live) live.push_back(std::move(j));
+  }
+  return live;
+}
+
+void query_ps(Database &db) {
+  const auto jobs = get_live_open_run_jobs(db);
+
+  if (jobs.empty()) {
+    std::cout << "No jobs currently running." << std::endl;
+    return;
+  }
+
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
+
+  auto runs = db.get_runs();
+  std::unordered_map<int, std::string_view> run_cmdlines;
+  for (auto &r : runs)
+    if (!r.end_time) run_cmdlines[r.id] = r.cmdline;
+
+  int cur_run = -1;
+  std::cout << std::left;
+  for (const auto &j : jobs) {
+    if (j.run_id != cur_run) {
+      cur_run = j.run_id;
+      std::cout << "\nRun " << cur_run << ": " << run_cmdlines[cur_run] << std::endl;
+      std::cout << "  " << std::setw(8) << "JOB" << std::setw(12) << "ELAPSED"
+                << "LABEL" << std::endl;
+    }
+    if (j.starttime == 0) {
+      std::cout << "  " << std::setw(8) << j.job_id << std::setw(12) << "[queued]" << j.label
+                << std::endl;
+    } else {
+      int64_t elapsed_ns = now_ns - j.starttime;
+      std::string elapsed = "[" + format_duration(elapsed_ns) + "]";
+      std::cout << "  " << std::setw(8) << j.job_id << std::setw(12) << elapsed << j.label
+                << std::endl;
+    }
+  }
+}
+
 void query_jobs(const CommandLineOptions &clo, Database &db) {
   std::vector<std::vector<std::string>> collect_ands = {};
   std::vector<std::vector<std::string>> collect_input_ands = {};
@@ -319,6 +374,8 @@ void inspect_database(const CommandLineOptions &clo, Database &db) {
   // rest of the queries which operate on the jobs table.
   if (clo.tagdag) {
     output_tagdag(db, clo.tagdag);
+  } else if (clo.ps) {
+    query_ps(db);
   } else if (clo.history) {
     query_runs(db);
   } else {
@@ -368,6 +425,7 @@ void print_help(const char *argv0) {
     << "    --last-used        Capture all jobs used by last build. Regardless of cache"   << std::endl
     << "    --last-executed    Capture all jobs executed by the last build. Skips cache"   << std::endl
     << "    --history          Report the cmndline history of all wake commands recorded"  << std::endl
+    << "    --ps               Show jobs currently running in active wake builds"          << std::endl
     << "    --failed   -f      Capture jobs which failed last build"                       << std::endl
     << "    --tag      KEY=VAL Capture jobs which are tagged, matching KEY and VAL globs"  << std::endl
     << "    --canceled         Capture jobs which were canceled (run ended before job finished)" << std::endl
@@ -553,10 +611,11 @@ int main(int argc, char **argv) {
     clo.argv[1] = clo.shebang;
   }
 
-  bool is_db_inspect_capture =
-      !clo.job_ids.empty() || !clo.output_files.empty() || !clo.input_files.empty() ||
-      !clo.labels.empty() || !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
-      clo.tagdag || clo.canceled || clo.active || clo.queued || clo.in_flight || clo.history;
+  bool is_db_inspect_capture = !clo.job_ids.empty() || !clo.output_files.empty() ||
+                               !clo.input_files.empty() || !clo.labels.empty() ||
+                               !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
+                               clo.tagdag || clo.canceled || clo.active || clo.queued ||
+                               clo.in_flight || clo.history || clo.ps;
 
   // DescribePolicy::human() is the default and doesn't have a flag.
   // DescribePolicy::debug() is overloaded and can't be marked as a db flag
