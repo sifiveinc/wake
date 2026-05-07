@@ -56,10 +56,17 @@ class RunLock {
 namespace RunLockProbe {
 // Check if a run's lock is held by a live process.
 // Returns true if dead, false if alive.
-// On error, return string message.  Consider alive.
-// If dead and the lock file exists, it will be cleaned up.
-wcl::result<bool, std::string> probe_and_cleanup_if_dead(long run_id, int64_t start_time,
-                                                         int64_t current_time);
+// On error, returns string message; conservatively treat as alive.
+// If cleanup=true and the lock file is stale, it will be removed.
+// If cleanup=false, only requires read access.
+wcl::result<bool, std::string> probe(long run_id, int64_t start_time, int64_t current_time,
+                                     bool cleanup);
+
+inline bool is_live(long run_id) {
+  // Treat missing lock files as live.
+  auto probed = probe(run_id, 0, 0, false);
+  return !probed || !*probed;
+}
 }  // namespace RunLockProbe
 
 #endif
