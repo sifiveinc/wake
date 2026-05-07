@@ -269,11 +269,12 @@ void query_jobs(const CommandLineOptions &clo, Database &db) {
     collect_ands.push_back({"(status <> 0 OR runner_status IS NOT NULL)"});
   }
 
-  // Filters on unfinished jobs (endtime == 0).
+  // Filters on unfinished jobs (stat_id is null).
   if (clo.canceled || clo.active || clo.queued || clo.in_flight) {
     auto live_run_ids = get_live_run_ids(db);
-
-    collect_ands.push_back({"endtime = 0"});
+    // finish_job unconditinoally sets stat_id for jobs.
+    // endtime=0 is close but includes jobs that finished.
+    collect_ands.push_back({"stat_id is null"});
 
     // --canceled: jobs from non-live runs (run crashed before job finished)
     if (clo.canceled) {

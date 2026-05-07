@@ -2015,6 +2015,7 @@ std::vector<JobReflection> Database::matching(
                 j.run_id,
                 j.starttime,
                 j.endtime,
+                j.stat_id,
                 j.commandline,
                 j.runner_status,
                 s.status,
