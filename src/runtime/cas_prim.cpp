@@ -33,6 +33,7 @@
 
 #include "cas/cas.h"
 #include "cas/content_hash.h"
+#include "cas/materialize.h"
 #include "prim.h"
 #include "types/data.h"
 #include "types/primfn.h"
@@ -165,16 +166,6 @@ static PRIMFN(prim_cas_materialize_item) {
   INTEGER_MPZ(mtime_sec_mpz, 4);
   INTEGER_MPZ(mtime_nsec_mpz, 5);
 
-  std::string type = type_str->c_str();
-  std::string dest_str = dest_path->c_str();
-
-  // Create parent directories for all types
-  if (auto msg = ensure_parent_dirs(dest_str)) {
-    runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
-    auto err = String::claim(runtime.heap, *msg);
-    RETURN(claim_result(runtime.heap, false, err));
-  }
-
   cas::Cas* store = ctx->get_store();
   if (!store) {
     runtime.heap.reserve(reserve_result() + String::reserve(28));
@@ -182,108 +173,14 @@ static PRIMFN(prim_cas_materialize_item) {
     RETURN(claim_result(runtime.heap, false, err));
   }
 
-  if (type == "file") {
-    // Handle regular file: materialize from CAS (already stored by wakebox), apply timestamps
-    std::string hash_str_val = hash_or_target->c_str();
-    cas::ContentHash hash;
-    std::string parse_error;
-    if (!parse_hash_string(hash_str_val, hash, parse_error)) {
-      std::string msg = parse_error;
-      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
-      auto err = String::claim(runtime.heap, msg);
-      RETURN(claim_result(runtime.heap, false, err));
-    }
-    mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
-    time_t mtime_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
-    long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
+  mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
+  time_t mtime_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
+  long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
 
-    // Materialize from CAS to workspace with timestamps
-    auto mat_result = store->materialize_blob(hash, dest_str.c_str(), mode, mtime_sec, mtime_nsec);
-    if (!mat_result) {
-      std::string msg = "Failed to materialize blob " + hash_str_val + " to " + dest_str;
-      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
-      auto err = String::claim(runtime.heap, msg);
-      RETURN(claim_result(runtime.heap, false, err));
-    }
-
-  } else if (type == "symlink") {
-    cas::ContentHash hash;
-    std::string parse_error;
-    if (!parse_hash_string(hash_or_target->c_str(), hash, parse_error)) {
-      runtime.heap.reserve(reserve_result() + String::reserve(parse_error.size()));
-      auto err = String::claim(runtime.heap, parse_error);
-      RETURN(claim_result(runtime.heap, false, err));
-    }
-
-    auto target_result = store->read_blob(hash);
-    if (!target_result) {
-      std::string msg = "Failed to materialize symlink " + std::string(hash_or_target->c_str()) +
-                        " to " + dest_str;
-      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
-      auto err = String::claim(runtime.heap, msg);
-      RETURN(claim_result(runtime.heap, false, err));
-    }
-
-    // Atomically create symlink via temp+rename
-    std::string temp_path = make_temp_path(dest_str);
-    time_t mtime_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
-    long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
-
-    if (symlink(target_result->c_str(), temp_path.c_str()) != 0) {
-      std::string msg = "Failed to create symlink " + dest_str + ": " + strerror(errno);
-      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
-      auto err = String::claim(runtime.heap, msg);
-      RETURN(claim_result(runtime.heap, false, err));
-    }
-
-    (void)apply_mtime(temp_path, mtime_sec, mtime_nsec, AT_SYMLINK_NOFOLLOW);
-
-    if (auto msg = atomic_replace(temp_path, dest_str, "symlink")) {
-      runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
-      auto err = String::claim(runtime.heap, *msg);
-      RETURN(claim_result(runtime.heap, false, err));
-    }
-
-  } else if (type == "directory") {
-    // Handle directory: create directory with mode
-    mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
-
-    struct stat st;
-    if (stat(dest_str.c_str(), &st) == 0) {
-      if (S_ISDIR(st.st_mode)) {
-        // Directory already exists, just update mode
-        chmod(dest_str.c_str(), mode);
-      } else {
-        // Non-directory at dest — remove it then create directory
-        (void)unlink(dest_str.c_str());
-        if (auto msg = make_dir_or_chmod(dest_str, mode)) {
-          runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
-          auto err = String::claim(runtime.heap, *msg);
-          RETURN(claim_result(runtime.heap, false, err));
-        }
-      }
-    } else {
-      if (auto msg = make_dir_or_chmod(dest_str, mode)) {
-        runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
-        auto err = String::claim(runtime.heap, *msg);
-        RETURN(claim_result(runtime.heap, false, err));
-      }
-    }
-
-    time_t mtime_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
-    long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
-    if (!apply_mtime(dest_str, mtime_sec, mtime_nsec, 0)) {
-      std::string msg =
-          "Failed to update timestamps for directory " + dest_str + ": " + strerror(errno);
-      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
-      auto err = String::claim(runtime.heap, msg);
-      RETURN(claim_result(runtime.heap, false, err));
-    }
-
-  } else {
-    std::string msg = "Unknown item type: " + type;
-    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
-    auto err = String::claim(runtime.heap, msg);
+  if (auto msg = cas::materialize_item(*store, dest_path->c_str(), type_str->c_str(),
+                                       hash_or_target->c_str(), mode, mtime_sec, mtime_nsec)) {
+    runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
+    auto err = String::claim(runtime.heap, *msg);
     RETURN(claim_result(runtime.heap, false, err));
   }
 
