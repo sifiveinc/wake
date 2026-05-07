@@ -81,6 +81,13 @@ struct RunReflection {
   RunReflection() = default;
 };
 
+struct OpenRunJobReflection {
+  int run_id;
+  long job_id;
+  std::string label;
+  int64_t starttime;  // 0 = queued (not yet forked), non-zero = wall-clock ns at fork
+};
+
 struct JobReflection {
   long job;
   bool stale;
@@ -216,6 +223,9 @@ struct Database {
   std::vector<JobTag> get_tags();
 
   std::vector<RunReflection> get_runs() const;
+  // Returns all unfinished jobs (endtime==0) in DB-open runs (end_time IS NULL).
+  // Ordered by run_id, starttime, job_id — queued (starttime==0) sort before running.
+  std::vector<OpenRunJobReflection> get_open_run_jobs() const;
 
   std::vector<FileDependency> get_file_dependencies() const;
 

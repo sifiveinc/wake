@@ -41,6 +41,7 @@ struct CommandLineOptions {
   bool last_use;
   bool last_exe;
   bool history;
+  bool ps;
   bool active;
   bool lsp;
   bool failed;
@@ -143,6 +144,7 @@ struct CommandLineOptions {
       {0, "last-used", GOPT_ARGUMENT_FORBIDDEN},
       {0, "last-executed", GOPT_ARGUMENT_FORBIDDEN},
       {0, "history", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "ps", GOPT_ARGUMENT_FORBIDDEN},
       {0, "active", GOPT_ARGUMENT_FORBIDDEN},
       {0, "queued", GOPT_ARGUMENT_FORBIDDEN},
       {0, "in-flight", GOPT_ARGUMENT_FORBIDDEN},
@@ -208,6 +210,7 @@ struct CommandLineOptions {
     last_use = arg(options, "last")->count || arg(options, "last-used")->count;
     last_exe = arg(options, "last-executed")->count;
     history = arg(options, "history")->count;
+    ps = arg(options, "ps")->count;
     active = arg(options, "active")->count;
     queued = arg(options, "queued")->count;
     in_flight = arg(options, "in-flight")->count;
