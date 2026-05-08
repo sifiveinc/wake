@@ -103,6 +103,7 @@ struct Database::detail {
   sqlite3_stmt *set_run_end_time;
   sqlite3_stmt *get_incomplete_runs;
   sqlite3_stmt *clear_run_files;
+  sqlite3_stmt *set_starttime;
 
   long run_id;
   long gc_watermark;
@@ -159,6 +160,7 @@ struct Database::detail {
         set_run_end_time(0),
         get_incomplete_runs(0),
         clear_run_files(0),
+        set_starttime(0),
         run_id(0),
         gc_watermark(0) {}
 };
@@ -387,8 +389,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_add_stats =
       "insert into stats(hashcode, status, runtime, cputime, membytes, ibytes, obytes)"
       " values(?, ?, ?, ?, ?, ?, ?)";
-  const char *sql_link_stats =
-      "update jobs set stat_id=?, starttime=?, endtime=?, keep=? where job_id=?";
+  const char *sql_link_stats = "update jobs set stat_id=?, endtime=?, keep=? where job_id=?";
   const char *sql_detect_overlap =
       "select f1.path, t2.job_id from filetree t1, filetree t2, files f1, files f2, run_jobs rj"
       " where t1.job_id=?1 and t1.access=2"
@@ -488,6 +489,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_set_run_end_time = "update runs set end_time = ? where run_id = ?";
   const char *sql_get_incomplete_runs = "select run_id, time from runs where end_time is null";
   const char *sql_clear_run_files = "delete from run_files where run_id = ?";
+  const char *sql_set_starttime = "update jobs set starttime=? where job_id=?";
 
 #define PREPARE(sql, member)                                                                     \
   ret = sqlite3_prepare_v2(imp->db, sql, -1, &imp->member, 0);                                   \
@@ -546,6 +548,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_set_run_end_time, set_run_end_time);
   PREPARE(sql_get_incomplete_runs, get_incomplete_runs);
   PREPARE(sql_clear_run_files, clear_run_files);
+  PREPARE(sql_set_starttime, set_starttime);
 
   return "";
 }
@@ -613,6 +616,7 @@ void Database::close() {
   FINALIZE(set_run_end_time);
   FINALIZE(get_incomplete_runs);
   FINALIZE(clear_run_files);
+  FINALIZE(set_starttime);
 
   imp->run_lock.reset();
 
@@ -1279,10 +1283,9 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   bind_integer(why, imp->add_stats, 7, reality.obytes);
   single_step(why, imp->add_stats, imp->debugdb);
   bind_integer(why, imp->link_stats, 1, sqlite3_last_insert_rowid(imp->db));
-  bind_integer(why, imp->link_stats, 2, starttime);
-  bind_integer(why, imp->link_stats, 3, endtime);
-  bind_integer(why, imp->link_stats, 4, keep ? 1 : 0);
-  bind_integer(why, imp->link_stats, 5, job);
+  bind_integer(why, imp->link_stats, 2, endtime);
+  bind_integer(why, imp->link_stats, 3, keep ? 1 : 0);
+  bind_integer(why, imp->link_stats, 4, job);
   single_step(why, imp->link_stats, imp->debugdb);
 
   // Grab the visible set.
@@ -1984,10 +1987,10 @@ std::vector<JobReflection> Database::matching(
   // This query creates a subtable of the following shape:
   //
   // clang-format off
-  // | job_id | label | run_id | endtime | commandline | runner_status | status | runtime |       tags       |
-  // -----------------------------------------------------------------------------------------------------------
-  // |    1   |  foo  |   1    |  1234   | ls lah .    | NULL          |   0    |   2.8   | <d>a=b<d>c=d<d>  |
-  // |    2   |  bar  |   1    |  0000   | cat f.txt   | "Job failed"  |   0    |   0.0   |      null        |
+  // | job_id | label | run_id | starttime | endtime | stat_id | commandline | runner_status | status | runtime |       tags       |
+  // -------------------------------------------------------------------------------------------------------------------------------
+  // |    1   |  foo  |   1    |   12340   |  12350  |   42    | ls lah .    | NULL          |   0    |   2.8   | <d>a=b<d>c=d<d>  |
+  // |    2   |  bar  |   1    |   0       |  0      |  NULL   | cat f.txt   | "Job failed"  |   0    |   0.0   |      null        |
   // clang-format on
   //
   // The subtable is constructed by joining the jobs table with the minimal set of other dependent
@@ -2010,7 +2013,9 @@ std::vector<JobReflection> Database::matching(
                 j.job_id,
                 j.label,
                 j.run_id,
+                j.starttime,
                 j.endtime,
+                j.stat_id,
                 j.commandline,
                 j.runner_status,
                 s.status,
@@ -2163,6 +2168,15 @@ std::vector<RunReflection> Database::get_runs() const {
   finish_stmt("Could not retrieve runs", imp->get_all_runs, imp->debugdb);
   end_txn();
   return out;
+}
+
+void Database::start_job(long job, int64_t starttime) {
+  const char *why = "Could not record job start time";
+  begin_rw_txn();
+  bind_integer(why, imp->set_starttime, 1, starttime);
+  bind_integer(why, imp->set_starttime, 2, job);
+  single_step(why, imp->set_starttime, imp->debugdb);
+  end_txn();
 }
 
 std::vector<std::pair<std::string, int>> Database::get_interleaved_output(long job_id) const {
