@@ -85,6 +85,8 @@ inline const char *getWakeSchemaSQLTxn() {
          "  modified integer not null,"
          "  unique(job_id, access, file_id) on conflict ignore);"
          "create index if not exists filesearch on filetree(file_id, access, job_id);"
+         "create index if not exists "  // TODO: replace above?"
+         "  filetree_fileid_modified_access on filetree(file_id, modified, access, job_id);"
          "create table if not exists log("
          "  log_id     integer primary key autoincrement,"
          "  job_id     integer not null references jobs(job_id) on delete cascade,"
