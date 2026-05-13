@@ -104,7 +104,6 @@ struct Database::detail {
   sqlite3_stmt *get_incomplete_runs;
   sqlite3_stmt *clear_run_files;
   sqlite3_stmt *set_starttime;
-  sqlite3_stmt *get_open_run_jobs;
 
   long run_id;
   long gc_watermark;
@@ -162,7 +161,6 @@ struct Database::detail {
         get_incomplete_runs(0),
         clear_run_files(0),
         set_starttime(0),
-        get_open_run_jobs(0),
         run_id(0),
         gc_watermark(0) {}
 };
@@ -492,13 +490,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_get_incomplete_runs = "select run_id, time from runs where end_time is null";
   const char *sql_clear_run_files = "delete from run_files where run_id = ?";
   const char *sql_set_starttime = "update jobs set starttime=? where job_id=?";
-  const char *sql_get_open_run_jobs =
-      "select rj.run_id, j.job_id, j.label, j.starttime"
-      " from run_jobs rj"
-      " join jobs j on rj.job_id = j.job_id"
-      " join runs r on rj.run_id = r.run_id"
-      " where r.end_time is null and j.stat_id is null"
-      " order by rj.run_id, j.starttime, j.job_id";
 
 #define PREPARE(sql, member)                                                                     \
   ret = sqlite3_prepare_v2(imp->db, sql, -1, &imp->member, 0);                                   \
@@ -558,7 +549,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_get_incomplete_runs, get_incomplete_runs);
   PREPARE(sql_clear_run_files, clear_run_files);
   PREPARE(sql_set_starttime, set_starttime);
-  PREPARE(sql_get_open_run_jobs, get_open_run_jobs);
 
   return "";
 }
@@ -627,7 +617,6 @@ void Database::close() {
   FINALIZE(get_incomplete_runs);
   FINALIZE(clear_run_files);
   FINALIZE(set_starttime);
-  FINALIZE(get_open_run_jobs);
 
   imp->run_lock.reset();
 
@@ -1963,7 +1952,7 @@ std::string collapse_and(const std::vector<std::vector<std::string>> &ands, int 
   return out;
 }
 
-std::vector<JobReflection> Database::matching(
+static std::string build_matching_id_query(
     const std::vector<std::vector<std::string>> &core_filters,
     std::vector<std::vector<std::string>> input_file_filters,
     std::vector<std::vector<std::string>> output_file_filters) {
@@ -2063,6 +2052,16 @@ std::vector<JobReflection> Database::matching(
         collapse_and(core_filters, 1);
   }
 
+  return id_query;
+}
+
+std::vector<JobReflection> Database::matching(
+    const std::vector<std::vector<std::string>> &core_filters,
+    std::vector<std::vector<std::string>> input_file_filters,
+    std::vector<std::vector<std::string>> output_file_filters) {
+  auto id_query = build_matching_id_query(core_filters, std::move(input_file_filters),
+                                          std::move(output_file_filters));
+
   // Adapts the id_query to match the columns needed to create a JobReflection
   std::string query =
       "SELECT j.job_id, j.label, j.directory, j.commandline, j.environment, j.stack, j.stdin, "
@@ -2091,6 +2090,47 @@ std::vector<JobReflection> Database::matching(
   end_txn();
 
   sqlite3_finalize(stmt);
+  return out;
+}
+
+std::vector<OpenRunJobReflection> Database::matching_open_runs(
+    const std::vector<std::vector<std::string>> &core_filters,
+    std::vector<std::vector<std::string>> input_file_filters,
+    std::vector<std::vector<std::string>> output_file_filters) {
+  auto id_query = build_matching_id_query(core_filters, std::move(input_file_filters),
+                                          std::move(output_file_filters));
+
+  auto query = R"(
+    SELECT rj.run_id, j.job_id, j.label, j.starttime
+    FROM run_jobs rj
+    JOIN jobs j ON rj.job_id = j.job_id
+    JOIN runs r on rj.run_id = r.run_id
+    WHERE r.end_time IS NULL and j.stat_id IS NULL and j.job_id IN (
+  )" + id_query +
+               R"()
+    ORDER BY rj.run_id, j.starttime, j.job_id;
+  )";
+
+  sqlite3_stmt *stmt;
+  if (sqlite3_prepare_v2(imp->db, query.c_str(), -1, &stmt, 0) != SQLITE_OK) {
+    std::string out = std::string("sqlite3_prepare_v2 (dyn ps): ") + sqlite3_errmsg(imp->db);
+    std::cerr << out << std::endl;
+    sqlite3_finalize(stmt);
+    return {};
+  }
+
+  std::vector<OpenRunJobReflection> out;
+  begin_ro_txn();
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    auto run_id = sqlite3_column_int(stmt, 0);
+    auto job_id = sqlite3_column_int64(stmt, 1);
+    auto label = rip_column(stmt, 2);
+    auto starttime = sqlite3_column_int64(stmt, 3);
+    out.emplace_back(OpenRunJobReflection{run_id, job_id, std::move(label), starttime});
+  }
+  sqlite3_finalize(stmt);
+  end_txn();
+
   return out;
 }
 
@@ -2188,22 +2228,6 @@ void Database::start_job(long job, int64_t starttime) {
   bind_integer(why, imp->set_starttime, 2, job);
   single_step(why, imp->set_starttime, imp->debugdb);
   end_txn();
-}
-
-std::vector<OpenRunJobReflection> Database::get_open_run_jobs() const {
-  std::vector<OpenRunJobReflection> out;
-  begin_ro_txn();
-  while (sqlite3_step(imp->get_open_run_jobs) == SQLITE_ROW) {
-    OpenRunJobReflection j;
-    j.run_id = sqlite3_column_int(imp->get_open_run_jobs, 0);
-    j.job_id = sqlite3_column_int64(imp->get_open_run_jobs, 1);
-    j.label = rip_column(imp->get_open_run_jobs, 2);
-    j.starttime = sqlite3_column_int64(imp->get_open_run_jobs, 3);
-    out.emplace_back(std::move(j));
-  }
-  finish_stmt("Could not retrieve open run jobs", imp->get_open_run_jobs, imp->debugdb);
-  end_txn();
-  return out;
 }
 
 std::vector<std::pair<std::string, int>> Database::get_interleaved_output(long job_id) const {
