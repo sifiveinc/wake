@@ -1234,7 +1234,7 @@ int main(int argc, char **argv) {
   db.clean();
 
   if (!gc_dead_cas_blobs(*cas_ctx.get_store(), db))
-    std::cerr << "CAS GC encountered errors (build result unaffected)" << std::endl;
+    std::cerr << "CAS GC encountered errors (run result unaffected)" << std::endl;
 
   return pass ? 0 : 1;
 }
