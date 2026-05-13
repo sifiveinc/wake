@@ -69,6 +69,8 @@ struct CommandLineOptions {
   bool clean;
   bool list_outputs;
   bool include_hidden;
+  bool leaves;
+  const char *checkout_to;
   std::optional<bool> log_header_align;
   std::optional<bool> cache_miss_on_failure;
 
@@ -101,6 +103,7 @@ struct CommandLineOptions {
   std::vector<std::vector<std::string>> output_files = {};
   std::vector<std::vector<std::string>> labels = {};
   std::vector<std::vector<std::string>> tags = {};
+  std::vector<std::vector<std::string>> run_ids = {};
 
   int argc;
   char **argv;
@@ -112,6 +115,7 @@ struct CommandLineOptions {
     std::vector<char *> output_files_buffer(argc_in, nullptr);
     std::vector<char *> labels_buffer(argc_in, nullptr);
     std::vector<char *> tags_buffer(argc_in, nullptr);
+    std::vector<char *> run_ids_buffer(argc_in, nullptr);
 
     // clang-format off
     struct option options[] {
@@ -138,6 +142,7 @@ struct CommandLineOptions {
       {'o', "output", GOPT_ARGUMENT_REQUIRED | GOPT_REPEATABLE_VALUE, output_files_buffer.data(), (unsigned int)argc_in},
       {0, "label", GOPT_ARGUMENT_REQUIRED | GOPT_REPEATABLE_VALUE, labels_buffer.data(), (unsigned int)argc_in},
       {0, "tag", GOPT_ARGUMENT_REQUIRED | GOPT_REPEATABLE_VALUE, tags_buffer.data(), (unsigned int)argc_in},
+      {0, "run", GOPT_ARGUMENT_REQUIRED | GOPT_REPEATABLE_VALUE, run_ids_buffer.data(), (unsigned int)argc_in},
       {'l', "last", GOPT_ARGUMENT_FORBIDDEN},
       {0, "last-used", GOPT_ARGUMENT_FORBIDDEN},
       {0, "last-executed", GOPT_ARGUMENT_FORBIDDEN},
@@ -188,6 +193,8 @@ struct CommandLineOptions {
       {0, "user-config", GOPT_ARGUMENT_REQUIRED},
       {':', "shebang", GOPT_ARGUMENT_REQUIRED},
       {0, "include-hidden", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "leaves", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "checkout-to", GOPT_ARGUMENT_REQUIRED},
       {0, 0, GOPT_LAST}
     };
     // clang-format on
@@ -236,6 +243,9 @@ struct CommandLineOptions {
     clean = arg(options, "clean")->count;
     list_outputs = arg(options, "list-outputs")->count;
     include_hidden = arg(options, "include-hidden")->count;
+    leaves = arg(options, "leaves")->count;
+
+    checkout_to = arg(options, "checkout-to")->argument;
 
     percent_str = arg(options, "percent")->argument;
     jobs_str = arg(options, "jobs")->argument;
@@ -311,6 +321,13 @@ struct CommandLineOptions {
       std::vector<std::string> parts = wcl::split_by_fn(
           ',', line.begin(), line.end(), [](auto a, auto b) { return std::string(a, b); });
       tags.emplace_back(std::move(parts));
+    }
+
+    for (unsigned int i = 0; i < arg(options, "run")->count; i++) {
+      std::string line(run_ids_buffer[i]);
+      std::vector<std::string> parts = wcl::split_by_fn(
+          ',', line.begin(), line.end(), [](auto a, auto b) { return std::string(a, b); });
+      run_ids.emplace_back(std::move(parts));
     }
 
     if (!percent_str) {
