@@ -232,25 +232,88 @@ std::string run_id_filter(bool in, const std::vector<int> &ids) {
   return q;
 }
 
-// Returns jobs from DB-open runs (end_time IS NULL) that are also proven live by lock probe.
-// Results are ordered by run_id so we probe once per run.
-std::vector<OpenRunJobReflection> get_live_open_run_jobs(Database &db) {
-  auto all = db.get_open_run_jobs();
-  int cur_run = -1;
-  bool cur_live = false;
-  std::vector<OpenRunJobReflection> live;
-  for (auto &j : all) {
-    if (j.run_id != cur_run) {
-      cur_run = j.run_id;
-      cur_live = RunLockProbe::is_live(j.run_id);
-    }
-    if (cur_live) live.push_back(std::move(j));
+void build_query_filters(const CommandLineOptions &clo, Database &db,
+                         std::vector<std::vector<std::string>> &collect_ands,
+                         std::vector<std::vector<std::string>> &collect_input_ands,
+                         std::vector<std::vector<std::string>> &collect_output_ands) {
+  // Process --job
+  make_and_group(clo.job_ids, "cast(job_id as TEXT)", "", collect_ands);
+
+  // --label
+  make_and_group(clo.labels, "label", "", collect_ands);
+
+  // --input
+  make_and_group(clo.input_files, "path", "", collect_input_ands);
+
+  // --output
+  make_and_group(clo.output_files, "path", "", collect_output_ands);
+
+  // --tag
+  make_and_group(clo.tags, "tags", "<d>", collect_ands);
+
+  // --last-exe
+  if (clo.last_exe) {
+    collect_ands.push_back({"run_id == (select max(run_id) from runs where end_time is not null)"});
   }
-  return live;
+
+  // --last-use
+  if (clo.last_use) {
+    collect_ands.push_back(
+        {"job_id in (select job_id from run_jobs where run_id = "
+         "(select max(run_id) from runs where end_time is not null))"});
+  }
+
+  // --failed
+  if (clo.failed) {
+    collect_ands.push_back({"(status <> 0 OR runner_status IS NOT NULL)"});
+  }
+
+  // Filters on unfinished jobs (stat_id is null).
+  bool is_in_flight = clo.in_flight || clo.ps;
+  if (clo.canceled || clo.active || clo.queued || is_in_flight) {
+    auto live_run_ids = get_live_run_ids(db);
+    // finish_job unconditinoally sets stat_id for jobs.
+    // endtime=0 is close but includes jobs that finished.
+    collect_ands.push_back({"stat_id is null"});
+
+    // --canceled: jobs from non-live runs (run crashed before job finished)
+    if (clo.canceled) {
+      collect_ands.push_back({run_id_filter(/*in=*/false, live_run_ids)});
+    }
+
+    // --active: forked jobs (starttime!=0) in a live run
+    if (clo.active) {
+      collect_ands.push_back({"starttime != 0"});
+      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+    }
+
+    // --queued: not-yet-forked jobs (starttime==0) in a live run
+    if (clo.queued) {
+      collect_ands.push_back({"starttime = 0"});
+      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+    }
+
+    // --in-flight (or --ps): all unfinished jobs (running or queued) in a live run
+    if (is_in_flight) {
+      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+    }
+  }
+
+  // Hide introspection jobs by default unless --include-hidden is specified
+  if (!clo.include_hidden) {
+    hide_internal_jobs(collect_ands);
+  }
 }
 
-void query_ps(Database &db) {
-  const auto jobs = get_live_open_run_jobs(db);
+void query_ps(const CommandLineOptions &clo, Database &db) {
+  std::vector<std::vector<std::string>> collect_ands;
+  std::vector<std::vector<std::string>> collect_input_ands;
+  std::vector<std::vector<std::string>> collect_output_ands;
+
+  build_query_filters(clo, db, collect_ands, collect_input_ands, collect_output_ands);
+
+  const auto jobs = db.matching_open_runs(collect_ands, std::move(collect_input_ands),
+                                          std::move(collect_output_ands));
 
   if (jobs.empty()) {
     std::cout << "No jobs currently running." << std::endl;
@@ -288,78 +351,14 @@ void query_ps(Database &db) {
 }
 
 void query_jobs(const CommandLineOptions &clo, Database &db) {
-  std::vector<std::vector<std::string>> collect_ands = {};
-  std::vector<std::vector<std::string>> collect_input_ands = {};
-  std::vector<std::vector<std::string>> collect_output_ands = {};
+  std::vector<std::vector<std::string>> collect_ands;
+  std::vector<std::vector<std::string>> collect_input_ands;
+  std::vector<std::vector<std::string>> collect_output_ands;
 
-  // Process --job
-  make_and_group(clo.job_ids, "cast(job_id as TEXT)", "", collect_ands);
+  build_query_filters(clo, db, collect_ands, collect_input_ands, collect_output_ands);
 
-  // --label
-  make_and_group(clo.labels, "label", "", collect_ands);
-
-  // --input
-  make_and_group(clo.input_files, "path", "", collect_input_ands);
-
-  // --output
-  make_and_group(clo.output_files, "path", "", collect_output_ands);
-
-  // --tag
-  make_and_group(clo.tags, "tags", "<d>", collect_ands);
-
-  // --last-exe
-  if (clo.last_exe) {
-    collect_ands.push_back({"run_id == (select max(run_id) from runs where end_time is not null)"});
-  }
-
-  // --last-use
-  if (clo.last_use) {
-    collect_ands.push_back(
-        {"job_id in (select job_id from run_jobs where run_id = "
-         "(select max(run_id) from runs where end_time is not null))"});
-  }
-
-  // --failed
-  if (clo.failed) {
-    collect_ands.push_back({"(status <> 0 OR runner_status IS NOT NULL)"});
-  }
-
-  // Filters on unfinished jobs (stat_id is null).
-  if (clo.canceled || clo.active || clo.queued || clo.in_flight) {
-    auto live_run_ids = get_live_run_ids(db);
-    // finish_job unconditinoally sets stat_id for jobs.
-    // endtime=0 is close but includes jobs that finished.
-    collect_ands.push_back({"stat_id is null"});
-
-    // --canceled: jobs from non-live runs (run crashed before job finished)
-    if (clo.canceled) {
-      collect_ands.push_back({run_id_filter(/*in=*/false, live_run_ids)});
-    }
-
-    // --active: forked jobs (starttime!=0) in a live run
-    if (clo.active) {
-      collect_ands.push_back({"starttime != 0"});
-      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
-    }
-
-    // --queued: not-yet-forked jobs (starttime==0) in a live run
-    if (clo.queued) {
-      collect_ands.push_back({"starttime = 0"});
-      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
-    }
-
-    // --in-flight: all unfinished jobs (running or queued) in a live run
-    if (clo.in_flight) {
-      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
-    }
-  }
-
-  // Hide introspection jobs by default unless --include-hidden is specified
-  if (!clo.include_hidden) {
-    hide_internal_jobs(collect_ands);
-  }
-
-  auto matching_jobs = db.matching(collect_ands, collect_input_ands, collect_output_ands);
+  auto matching_jobs =
+      db.matching(collect_ands, std::move(collect_input_ands), std::move(collect_output_ands));
 
   if (matching_jobs.empty()) {
     std::cerr << "No jobs matched query" << std::endl;
@@ -375,7 +374,7 @@ void inspect_database(const CommandLineOptions &clo, Database &db) {
   if (clo.tagdag) {
     output_tagdag(db, clo.tagdag);
   } else if (clo.ps) {
-    query_ps(db);
+    query_ps(clo, db);
   } else if (clo.history) {
     query_runs(db);
   } else {

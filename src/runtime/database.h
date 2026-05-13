@@ -223,9 +223,14 @@ struct Database {
   std::vector<JobTag> get_tags();
 
   std::vector<RunReflection> get_runs() const;
-  // Returns all unfinished jobs (endtime==0) in DB-open runs (end_time IS NULL).
+
+  // Returns all unfinished jobs matching the provided filters.
   // Ordered by run_id, starttime, job_id — queued (starttime==0) sort before running.
-  std::vector<OpenRunJobReflection> get_open_run_jobs() const;
+  // Additional filtering needed to determine if runs are "actually" live.
+  std::vector<OpenRunJobReflection> matching_open_runs(
+      const std::vector<std::vector<std::string>> &core_filters,
+      std::vector<std::vector<std::string>> input_file_filters,
+      std::vector<std::vector<std::string>> output_file_filters);
 
   std::vector<FileDependency> get_file_dependencies() const;
 
