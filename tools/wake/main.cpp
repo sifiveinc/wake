@@ -508,6 +508,33 @@ static void cleanup_stale_staging(const std::string &staging_dir) {
   }
 }
 
+// Remove blobs from CAS that are dead according to DB.
+static bool gc_dead_cas_blobs(cas::Cas &cas, Database &db) {
+  bool pass = true;
+  // Grab list of hashes in CAS.
+  // Since CAS can be added to while scanning, this may not be a perfect snapshot.  That's okay.
+  auto disk_hashes = cas.enumerate_blobs_strings();
+  // Ask DB to check the hashes for liveness, and under RW lock callback.
+  // If unlink() is too slow in the future, instead rename to the side and remove outside lock.
+  db.gc_if_dead(disk_hashes, [&cas, &pass](auto &&dead_hashes) {
+    for (auto &dh : dead_hashes) {
+      auto hash = cas::ContentHash::from_hex(dh);
+      if (!hash) {
+        std::cerr << "Error generating hash for dead hash string!" << std::endl;
+        exit(1);
+      }
+      // Ignore not found: our listing might contain duplicates, and other runs
+      // may have removed the blob by now.
+      if (auto err = cas.remove_blob(*hash); err && *err != cas::CASError::NotFound) {
+        std::cerr << "Failure removing blob for '" << dh << "': " << cas::cas_error_to_string(*err)
+                  << std::endl;
+        pass = false;
+      }
+    }
+  });
+  return pass;
+}
+
 int main(int argc, char **argv) {
   // !!! XXX: Temporary guard for helping users combining this with transition-only wake code
   // to ensure they don't accidentally use inappropriately.
@@ -1262,5 +1289,9 @@ int main(int argc, char **argv) {
 
   db.finish_run();
   db.clean();
+
+  if (!gc_dead_cas_blobs(*cas_ctx.get_store(), db))
+    std::cerr << "CAS GC encountered errors (build result unaffected)" << std::endl;
+
   return pass ? 0 : 1;
 }
