@@ -305,4 +305,35 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
 
   return wcl::make_result<bool, CASError>(true);
 }
+
+std::vector<std::string> Cas::enumerate_blobs_strings() const {
+  std::vector<std::string> result;
+  std::error_code ec;
+
+  if (fs::is_directory(blobs_dir_, ec)) {
+    for (const auto& prefix_entry : fs::directory_iterator(blobs_dir_, ec)) {
+      if (ec || !prefix_entry.is_directory()) continue;
+      std::string prefix = prefix_entry.path().filename().string();
+      if (prefix.size() != 2) continue;
+
+      for (const auto& blob_entry : fs::directory_iterator(prefix_entry.path(), ec)) {
+        if (ec || !blob_entry.is_regular_file()) continue;
+        std::string suffix = blob_entry.path().filename().string();
+        if (suffix.size() != 62) continue;
+
+        result.push_back(prefix + suffix);
+      }
+    }
+  }
+  return result;
+}
+
+std::optional<CASError> Cas::remove_blob(const ContentHash& hash) {
+  std::string blob = blob_path(hash);
+  std::error_code ec;
+  if (!fs::remove(blob, ec)) return CASError::NotFound;
+  if (ec) return CASError::IOError;
+  return std::nullopt;
+}
+
 }  // namespace cas
