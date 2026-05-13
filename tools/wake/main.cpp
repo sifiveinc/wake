@@ -170,7 +170,11 @@ void make_and_group(const std::vector<std::vector<std::string>> &query, const st
 }
 
 void hide_internal_jobs(std::vector<std::vector<std::string>> &out) {
-  out.push_back({"tags NOT LIKE '%<d>inspect.visibility=hidden<d>%'", "tags IS NULL"});
+  // Use a NOT IN subquery instead of LIKE on concatenated tags.
+  // This avoids the expensive tag concatenation on the common path.
+  out.push_back(
+      {"core.job_id NOT IN (SELECT job_id FROM tags\n"
+       "                    WHERE uri = 'inspect.visibility' AND content = 'hidden')"});
 }
 
 static std::string format_duration(int64_t nanos) {
@@ -232,79 +236,126 @@ std::string run_id_filter(bool in, const std::vector<int> &ids) {
   return q;
 }
 
-void query_jobs(const CommandLineOptions &clo, Database &db) {
-  std::vector<std::vector<std::string>> collect_ands = {};
-  std::vector<std::vector<std::string>> collect_input_ands = {};
-  std::vector<std::vector<std::string>> collect_output_ands = {};
+MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database &db) {
+  MatchingQueryFilters filters;
 
   // Process --job
-  make_and_group(clo.job_ids, "cast(job_id as TEXT)", "", collect_ands);
+  make_and_group(clo.job_ids, "cast(job_id as TEXT)", "", filters.core_filters);
 
   // --label
-  make_and_group(clo.labels, "label", "", collect_ands);
+  make_and_group(clo.labels, "label", "", filters.core_filters);
 
   // --input
-  make_and_group(clo.input_files, "path", "", collect_input_ands);
+  make_and_group(clo.input_files, "path", "", filters.input_file_filters);
 
   // --output
-  make_and_group(clo.output_files, "path", "", collect_output_ands);
+  make_and_group(clo.output_files, "path", "", filters.output_file_filters);
 
-  // --tag
-  make_and_group(clo.tags, "tags", "<d>", collect_ands);
+  // --tag (uses the concatenated tags column with LIKE)
+  if (!clo.tags.empty()) {
+    make_and_group(clo.tags, "tags", "<d>", filters.core_filters);
+    filters.needs_tag_concat = true;  // Mark that we need the expensive GROUP BY
+  }
 
   // --last-exe
   if (clo.last_exe) {
-    collect_ands.push_back({"run_id == (select max(run_id) from runs where end_time is not null)"});
+    filters.core_filters.push_back(
+        {"run_id == (select max(run_id) from runs where end_time is not null)"});
   }
 
   // --last-use
   if (clo.last_use) {
-    collect_ands.push_back(
+    filters.core_filters.push_back(
         {"job_id in (select job_id from run_jobs where run_id = "
          "(select max(run_id) from runs where end_time is not null))"});
   }
 
   // --failed
   if (clo.failed) {
-    collect_ands.push_back({"(status <> 0 OR runner_status IS NOT NULL)"});
+    filters.core_filters.push_back({"(status <> 0 OR runner_status IS NOT NULL)"});
   }
 
   // Filters on unfinished jobs (stat_id is null).
-  if (clo.canceled || clo.active || clo.queued || clo.in_flight) {
+  bool is_in_flight = clo.in_flight || clo.ps;
+  if (clo.canceled || clo.active || clo.queued || is_in_flight) {
     auto live_run_ids = get_live_run_ids(db);
     // finish_job unconditinoally sets stat_id for jobs.
     // endtime=0 is close but includes jobs that finished.
-    collect_ands.push_back({"stat_id is null"});
+    filters.core_filters.push_back({"stat_id is null"});
 
     // --canceled: jobs from non-live runs (run crashed before job finished)
     if (clo.canceled) {
-      collect_ands.push_back({run_id_filter(/*in=*/false, live_run_ids)});
+      filters.core_filters.push_back({run_id_filter(/*in=*/false, live_run_ids)});
     }
 
     // --active: forked jobs (starttime!=0) in a live run
     if (clo.active) {
-      collect_ands.push_back({"starttime != 0"});
-      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+      filters.core_filters.push_back({"starttime != 0"});
+      filters.core_filters.push_back({run_id_filter(/*in=*/true, live_run_ids)});
     }
 
     // --queued: not-yet-forked jobs (starttime==0) in a live run
     if (clo.queued) {
-      collect_ands.push_back({"starttime = 0"});
-      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+      filters.core_filters.push_back({"starttime = 0"});
+      filters.core_filters.push_back({run_id_filter(/*in=*/true, live_run_ids)});
     }
 
-    // --in-flight: all unfinished jobs (running or queued) in a live run
-    if (clo.in_flight) {
-      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+    // --in-flight (or --ps): all unfinished jobs (running or queued) in a live run
+    if (is_in_flight) {
+      filters.core_filters.push_back({run_id_filter(/*in=*/true, live_run_ids)});
     }
   }
 
   // Hide introspection jobs by default unless --include-hidden is specified
   if (!clo.include_hidden) {
-    hide_internal_jobs(collect_ands);
+    hide_internal_jobs(filters.core_filters);
   }
 
-  auto matching_jobs = db.matching(collect_ands, collect_input_ands, collect_output_ands);
+  return filters;
+}
+
+void query_ps(const CommandLineOptions &clo, Database &db) {
+  auto filters = build_query_filters(clo, db);
+  const auto jobs = db.matching_open_runs(std::move(filters));
+
+  if (jobs.empty()) {
+    std::cout << "No jobs currently running." << std::endl;
+    return;
+  }
+
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
+
+  auto runs = db.get_runs();
+  std::unordered_map<int, std::string_view> run_cmdlines;
+  for (auto &r : runs)
+    if (!r.end_time) run_cmdlines[r.id] = r.cmdline;
+
+  int cur_run = -1;
+  std::cout << std::left;
+  for (const auto &j : jobs) {
+    if (j.run_id != cur_run) {
+      cur_run = j.run_id;
+      std::cout << "\nRun " << cur_run << ": " << run_cmdlines[cur_run] << std::endl;
+      std::cout << "  " << std::setw(8) << "JOB" << std::setw(12) << "ELAPSED"
+                << "LABEL" << std::endl;
+    }
+    if (j.starttime == 0) {
+      std::cout << "  " << std::setw(8) << j.job_id << std::setw(12) << "[queued]" << j.label
+                << std::endl;
+    } else {
+      int64_t elapsed_ns = now_ns - j.starttime;
+      std::string elapsed = "[" + format_duration(elapsed_ns) + "]";
+      std::cout << "  " << std::setw(8) << j.job_id << std::setw(12) << elapsed << j.label
+                << std::endl;
+    }
+  }
+}
+
+void query_jobs(const CommandLineOptions &clo, Database &db) {
+  auto filters = build_query_filters(clo, db);
+  auto matching_jobs = db.matching(std::move(filters));
 
   if (matching_jobs.empty()) {
     std::cerr << "No jobs matched query" << std::endl;
@@ -319,6 +370,8 @@ void inspect_database(const CommandLineOptions &clo, Database &db) {
   // rest of the queries which operate on the jobs table.
   if (clo.tagdag) {
     output_tagdag(db, clo.tagdag);
+  } else if (clo.ps) {
+    query_ps(clo, db);
   } else if (clo.history) {
     query_runs(db);
   } else {
@@ -368,6 +421,7 @@ void print_help(const char *argv0) {
     << "    --last-used        Capture all jobs used by last build. Regardless of cache"   << std::endl
     << "    --last-executed    Capture all jobs executed by the last build. Skips cache"   << std::endl
     << "    --history          Report the cmndline history of all wake commands recorded"  << std::endl
+    << "    --ps               Show jobs currently running in active wake builds"          << std::endl
     << "    --failed   -f      Capture jobs which failed last build"                       << std::endl
     << "    --tag      KEY=VAL Capture jobs which are tagged, matching KEY and VAL globs"  << std::endl
     << "    --canceled         Capture jobs which were canceled (run ended before job finished)" << std::endl
@@ -553,10 +607,11 @@ int main(int argc, char **argv) {
     clo.argv[1] = clo.shebang;
   }
 
-  bool is_db_inspect_capture =
-      !clo.job_ids.empty() || !clo.output_files.empty() || !clo.input_files.empty() ||
-      !clo.labels.empty() || !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
-      clo.tagdag || clo.canceled || clo.active || clo.queued || clo.in_flight || clo.history;
+  bool is_db_inspect_capture = !clo.job_ids.empty() || !clo.output_files.empty() ||
+                               !clo.input_files.empty() || !clo.labels.empty() ||
+                               !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
+                               clo.tagdag || clo.canceled || clo.active || clo.queued ||
+                               clo.in_flight || clo.history || clo.ps;
 
   // DescribePolicy::human() is the default and doesn't have a flag.
   // DescribePolicy::debug() is overloaded and can't be marked as a db flag

@@ -1952,14 +1952,11 @@ std::string collapse_and(const std::vector<std::vector<std::string>> &ands, int 
   return out;
 }
 
-std::vector<JobReflection> Database::matching(
-    const std::vector<std::vector<std::string>> &core_filters,
-    std::vector<std::vector<std::string>> input_file_filters,
-    std::vector<std::vector<std::string>> output_file_filters) {
+static std::string build_matching_id_query(MatchingQueryFilters filters) {
   std::string input_file_join = "";
-  if (!input_file_filters.empty()) {
-    input_file_filters.push_back({"access = 1"});
-    std::string conds = collapse_and(input_file_filters, 3);
+  if (!filters.input_file_filters.empty()) {
+    filters.input_file_filters.push_back({"access = 1"});
+    std::string conds = collapse_and(filters.input_file_filters, 3);
     input_file_join =
         "        INNER JOIN (\n"
         "            SELECT filetree.job_id FROM filetree\n"
@@ -1971,9 +1968,9 @@ std::vector<JobReflection> Database::matching(
   }
 
   std::string output_file_join = "";
-  if (!output_file_filters.empty()) {
-    output_file_filters.push_back({"access = 2"});
-    std::string conds = collapse_and(output_file_filters, 3);
+  if (!filters.output_file_filters.empty()) {
+    filters.output_file_filters.push_back({"access = 2"});
+    std::string conds = collapse_and(filters.output_file_filters, 3);
     output_file_join =
         "        INNER JOIN (\n"
         "            SELECT filetree.job_id FROM filetree\n"
@@ -1984,31 +1981,13 @@ std::vector<JobReflection> Database::matching(
         conds + "\n" + "        ) ft_output ON core.job_id = ft_output.job_id\n";
   }
 
-  // This query creates a subtable of the following shape:
-  //
-  // clang-format off
-  // | job_id | label | run_id | starttime | endtime | stat_id | commandline | runner_status | status | runtime |       tags       |
-  // -------------------------------------------------------------------------------------------------------------------------------
-  // |    1   |  foo  |   1    |   12340   |  12350  |   42    | ls lah .    | NULL          |   0    |   2.8   | <d>a=b<d>c=d<d>  |
-  // |    2   |  bar  |   1    |   0       |  0      |  NULL   | cat f.txt   | "Job failed"  |   0    |   0.0   |      null        |
-  // clang-format on
-  //
-  // The subtable is constructed by joining the jobs table with the minimal set of other dependent
-  // tables with the following extra processing excluding input_files and output_files which are
-  // too expensive to include.
-  // 1. tags are flattened from two columns (uri, content) to one column (tags) with a = separator
-  // 2. tags are group_concat'd into a single row per job. <d> is
-  //    used as a deliminator between each value. The deliminator is also placed at the beginning
-  //    and end of each row so that queries don't need to special case the first/last entry.
-  //
-  // Any inspection flag/user code may add any WHERE expression conditions to the main query using
-  // the columns of the subtable for fine grain filters.
-  //
-  // For example, the query below will return all jobs that exited with status code 0 and where
-  // tagged with key = foo, value = var
-  //   SELECT job_id FROM **SUBTABLE**
-  //   WHERE status = 0 AND tags like '%<d>foo=bar<d>%'
-  std::string core_table = R"delim(        (
+  // Build the core table based on what features the filters need.
+  // Performance optimization: skip expensive GROUP BY + tag concatenation if not needed.
+  std::string core_table;
+
+  if (filters.needs_tag_concat) {
+    // Full query with GROUP BY for tag concatenation (needed for LIKE queries on tags)
+    core_table = R"delim(        (
             SELECT
                 j.job_id,
                 j.label,
@@ -2034,23 +2013,51 @@ std::vector<JobReflection> Database::matching(
                 j.job_id
         ) core
 )delim";
+  } else {
+    // Simplified query without tag concatenation (much faster!)
+    core_table = R"delim(        (
+            SELECT
+                j.job_id,
+                j.label,
+                j.run_id,
+                j.starttime,
+                j.endtime,
+                j.stat_id,
+                j.commandline,
+                j.runner_status,
+                s.status,
+                s.runtime
+            FROM jobs j
+            LEFT JOIN (
+                SELECT stat_id, status, runtime FROM stats
+            ) s
+            ON j.stat_id=s.stat_id
+        ) core
+)delim";
+  }
 
   std::string subtable = core_table + input_file_join + output_file_join;
 
-  // This query wraps the subtable, applies the requested filters, and returns the matching jobs
+  // This query selects from the subtable, applies the requested filters,
+  // and returns matching job_ids.
   std::string id_query =
       "    SELECT core.job_id\n"
-      "    FROM\n"
-      "    (\n" +
-      subtable + "    )";
+      "    FROM\n" +
+      subtable;
 
-  if (!core_filters.empty()) {
+  if (!filters.core_filters.empty()) {
     id_query +=
         "\n"
         "    WHERE\n"
         "        " +
-        collapse_and(core_filters, 1);
+        collapse_and(filters.core_filters, 1);
   }
+
+  return id_query;
+}
+
+std::vector<JobReflection> Database::matching(MatchingQueryFilters filters) {
+  auto id_query = build_matching_id_query(std::move(filters));
 
   // Adapts the id_query to match the columns needed to create a JobReflection
   std::string query =
@@ -2080,6 +2087,43 @@ std::vector<JobReflection> Database::matching(
   end_txn();
 
   sqlite3_finalize(stmt);
+  return out;
+}
+
+std::vector<OpenRunJobReflection> Database::matching_open_runs(MatchingQueryFilters filters) {
+  auto id_query = build_matching_id_query(std::move(filters));
+
+  auto query = R"(
+    SELECT rj.run_id, j.job_id, j.label, j.starttime
+    FROM run_jobs rj
+    JOIN jobs j ON rj.job_id = j.job_id
+    JOIN runs r on rj.run_id = r.run_id
+    WHERE r.end_time IS NULL and j.stat_id IS NULL and j.job_id IN (
+  )" + id_query +
+               R"()
+    ORDER BY rj.run_id, j.starttime, j.job_id;
+  )";
+
+  sqlite3_stmt *stmt;
+  if (sqlite3_prepare_v2(imp->db, query.c_str(), -1, &stmt, 0) != SQLITE_OK) {
+    std::string out = std::string("sqlite3_prepare_v2 (dyn ps): ") + sqlite3_errmsg(imp->db);
+    std::cerr << out << std::endl;
+    sqlite3_finalize(stmt);
+    return {};
+  }
+
+  std::vector<OpenRunJobReflection> out;
+  begin_ro_txn();
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    auto run_id = sqlite3_column_int(stmt, 0);
+    auto job_id = sqlite3_column_int64(stmt, 1);
+    auto label = rip_column(stmt, 2);
+    auto starttime = sqlite3_column_int64(stmt, 3);
+    out.emplace_back(OpenRunJobReflection{run_id, job_id, std::move(label), starttime});
+  }
+  sqlite3_finalize(stmt);
+  end_txn();
+
   return out;
 }
 
