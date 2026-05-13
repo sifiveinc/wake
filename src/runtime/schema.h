@@ -45,6 +45,7 @@ inline const char *getWakeSchemaSQLTxn() {
          "create unique index if not exists file_path_hash_type_mode on files(path, hash, type, "
          "mode);"
          "create index if not exists filenames on files(path);"
+         "create index if not exists hashes on files(hash);"
          "create table if not exists stats("
          "  stat_id    integer primary key autoincrement,"
          "  hashcode   integer not null,"  // on collision, prefer largest stat_id (ie: newest)

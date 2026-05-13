@@ -105,6 +105,7 @@ struct Database::detail {
   sqlite3_stmt *get_incomplete_runs;
   sqlite3_stmt *clear_run_files;
   sqlite3_stmt *set_starttime;
+  sqlite3_stmt *get_dead_hashes;
 
   long run_id;
   long gc_watermark;
@@ -163,6 +164,7 @@ struct Database::detail {
         get_incomplete_runs(0),
         clear_run_files(0),
         set_starttime(0),
+        get_dead_hashes(0),
         run_id(0),
         gc_watermark(0) {}
 };
@@ -496,6 +498,28 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_get_incomplete_runs = "select run_id, time from runs where end_time is null";
   const char *sql_clear_run_files = "delete from run_files where run_id = ?";
   const char *sql_set_starttime = "update jobs set starttime=? where job_id=?";
+  const char *sql_get_dead_hashes =
+      "with disk_batch(hash) as ("
+      " VALUES "
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?))"
+      "select d.hash from disk_batch d where d.hash is not null and not exists ("
+      "  select 1 from files where hash=d.hash"
+      ")";
 
 #define PREPARE(sql, member)                                                                     \
   ret = sqlite3_prepare_v2(imp->db, sql, -1, &imp->member, 0);                                   \
@@ -556,6 +580,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_get_incomplete_runs, get_incomplete_runs);
   PREPARE(sql_clear_run_files, clear_run_files);
   PREPARE(sql_set_starttime, set_starttime);
+  PREPARE(sql_get_dead_hashes, get_dead_hashes);
 
   return "";
 }
@@ -625,6 +650,7 @@ void Database::close() {
   FINALIZE(get_incomplete_runs);
   FINALIZE(clear_run_files);
   FINALIZE(set_starttime);
+  FINALIZE(get_dead_hashes);
 
   imp->run_lock.reset();
 
@@ -742,6 +768,16 @@ static void bind_double(const char *why, sqlite3_stmt *stmt, int index, double x
   ret = sqlite3_bind_double(stmt, index, x);
   if (ret != SQLITE_OK) {
     std::cerr << why << "; sqlite3_bind_double(" << index
+              << "): " << sqlite3_errmsg(sqlite3_db_handle(stmt)) << std::endl;
+    exit(1);
+  }
+}
+
+static void bind_null(const char *why, sqlite3_stmt *stmt, int index) {
+  int ret;
+  ret = sqlite3_bind_null(stmt, index);
+  if (ret != SQLITE_OK) {
+    std::cerr << why << "; sqlite3_bind_null(" << index
               << "): " << sqlite3_errmsg(sqlite3_db_handle(stmt)) << std::endl;
     exit(1);
   }
@@ -2200,4 +2236,38 @@ std::vector<FileDependency> Database::get_file_dependencies() const {
   auto out = get_all_file_dependencies_impl(this, imp->get_file_dependency);
   end_txn();
   return out;
+}
+
+void Database::gc_if_dead(const std::vector<std::string> &hashes,
+                          const std::function<void(std::vector<std::string>)> &callback) {
+  constexpr size_t BATCH_SIZE = 256;            // number of hashes per query, must match statement!
+  constexpr size_t TXN_DEAD_SIZE = 1ULL << 11;  // transaction limit for dead hashes
+  constexpr size_t TXN_HASHES = 1ULL << 13;     // transaction limit for total hashes checked
+  size_t idx = 0;
+  size_t n = hashes.size();
+  const char *why = "Could not lookup dead hashes";
+  while (idx < n) {
+    std::vector<std::string> dead;
+    size_t hashes_count = 0;
+    begin_rw_txn();
+    // Check batches of hashes until hit one of two limits.
+    while (idx < n && dead.size() < TXN_DEAD_SIZE && hashes_count < TXN_HASHES) {
+      for (size_t off = 0; off < BATCH_SIZE; ++off) {
+        auto t = idx + off;
+        if (t < n)
+          bind_string(why, imp->get_dead_hashes, off + 1, hashes[t]);
+        else
+          bind_null(why, imp->get_dead_hashes, off + 1);
+      }
+      idx += BATCH_SIZE;
+      hashes_count += BATCH_SIZE;
+      while (sqlite3_step(imp->get_dead_hashes) == SQLITE_ROW) {
+        dead.emplace_back(rip_column(imp->get_dead_hashes, 0));
+      }
+      finish_stmt(why, imp->get_dead_hashes, imp->debugdb);
+    }
+
+    if (!dead.empty()) callback(std::move(dead));
+    end_txn();
+  }
 }
