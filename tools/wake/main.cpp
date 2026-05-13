@@ -170,7 +170,11 @@ void make_and_group(const std::vector<std::vector<std::string>> &query, const st
 }
 
 void hide_internal_jobs(std::vector<std::vector<std::string>> &out) {
-  out.push_back({"tags NOT LIKE '%<d>inspect.visibility=hidden<d>%'", "tags IS NULL"});
+  // Use a NOT IN subquery instead of LIKE on concatenated tags.
+  // This avoids the expensive tag concatenation on the common path.
+  out.push_back(
+      {"core.job_id NOT IN (SELECT job_id FROM tags\n"
+       "                    WHERE uri = 'inspect.visibility' AND content = 'hidden')"});
 }
 
 static std::string format_duration(int64_t nanos) {
@@ -232,40 +236,43 @@ std::string run_id_filter(bool in, const std::vector<int> &ids) {
   return q;
 }
 
-void build_query_filters(const CommandLineOptions &clo, Database &db,
-                         std::vector<std::vector<std::string>> &collect_ands,
-                         std::vector<std::vector<std::string>> &collect_input_ands,
-                         std::vector<std::vector<std::string>> &collect_output_ands) {
+MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database &db) {
+  MatchingQueryFilters filters;
+
   // Process --job
-  make_and_group(clo.job_ids, "cast(job_id as TEXT)", "", collect_ands);
+  make_and_group(clo.job_ids, "cast(job_id as TEXT)", "", filters.core_filters);
 
   // --label
-  make_and_group(clo.labels, "label", "", collect_ands);
+  make_and_group(clo.labels, "label", "", filters.core_filters);
 
   // --input
-  make_and_group(clo.input_files, "path", "", collect_input_ands);
+  make_and_group(clo.input_files, "path", "", filters.input_file_filters);
 
   // --output
-  make_and_group(clo.output_files, "path", "", collect_output_ands);
+  make_and_group(clo.output_files, "path", "", filters.output_file_filters);
 
-  // --tag
-  make_and_group(clo.tags, "tags", "<d>", collect_ands);
+  // --tag (uses the concatenated tags column with LIKE)
+  if (!clo.tags.empty()) {
+    make_and_group(clo.tags, "tags", "<d>", filters.core_filters);
+    filters.needs_tag_concat = true;  // Mark that we need the expensive GROUP BY
+  }
 
   // --last-exe
   if (clo.last_exe) {
-    collect_ands.push_back({"run_id == (select max(run_id) from runs where end_time is not null)"});
+    filters.core_filters.push_back(
+        {"run_id == (select max(run_id) from runs where end_time is not null)"});
   }
 
   // --last-use
   if (clo.last_use) {
-    collect_ands.push_back(
+    filters.core_filters.push_back(
         {"job_id in (select job_id from run_jobs where run_id = "
          "(select max(run_id) from runs where end_time is not null))"});
   }
 
   // --failed
   if (clo.failed) {
-    collect_ands.push_back({"(status <> 0 OR runner_status IS NOT NULL)"});
+    filters.core_filters.push_back({"(status <> 0 OR runner_status IS NOT NULL)"});
   }
 
   // Filters on unfinished jobs (stat_id is null).
@@ -274,46 +281,42 @@ void build_query_filters(const CommandLineOptions &clo, Database &db,
     auto live_run_ids = get_live_run_ids(db);
     // finish_job unconditinoally sets stat_id for jobs.
     // endtime=0 is close but includes jobs that finished.
-    collect_ands.push_back({"stat_id is null"});
+    filters.core_filters.push_back({"stat_id is null"});
 
     // --canceled: jobs from non-live runs (run crashed before job finished)
     if (clo.canceled) {
-      collect_ands.push_back({run_id_filter(/*in=*/false, live_run_ids)});
+      filters.core_filters.push_back({run_id_filter(/*in=*/false, live_run_ids)});
     }
 
     // --active: forked jobs (starttime!=0) in a live run
     if (clo.active) {
-      collect_ands.push_back({"starttime != 0"});
-      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+      filters.core_filters.push_back({"starttime != 0"});
+      filters.core_filters.push_back({run_id_filter(/*in=*/true, live_run_ids)});
     }
 
     // --queued: not-yet-forked jobs (starttime==0) in a live run
     if (clo.queued) {
-      collect_ands.push_back({"starttime = 0"});
-      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+      filters.core_filters.push_back({"starttime = 0"});
+      filters.core_filters.push_back({run_id_filter(/*in=*/true, live_run_ids)});
     }
 
     // --in-flight (or --ps): all unfinished jobs (running or queued) in a live run
     if (is_in_flight) {
-      collect_ands.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+      filters.core_filters.push_back({run_id_filter(/*in=*/true, live_run_ids)});
     }
   }
 
   // Hide introspection jobs by default unless --include-hidden is specified
   if (!clo.include_hidden) {
-    hide_internal_jobs(collect_ands);
+    hide_internal_jobs(filters.core_filters);
   }
+
+  return filters;
 }
 
 void query_ps(const CommandLineOptions &clo, Database &db) {
-  std::vector<std::vector<std::string>> collect_ands;
-  std::vector<std::vector<std::string>> collect_input_ands;
-  std::vector<std::vector<std::string>> collect_output_ands;
-
-  build_query_filters(clo, db, collect_ands, collect_input_ands, collect_output_ands);
-
-  const auto jobs = db.matching_open_runs(collect_ands, std::move(collect_input_ands),
-                                          std::move(collect_output_ands));
+  auto filters = build_query_filters(clo, db);
+  const auto jobs = db.matching_open_runs(std::move(filters));
 
   if (jobs.empty()) {
     std::cout << "No jobs currently running." << std::endl;
@@ -351,14 +354,8 @@ void query_ps(const CommandLineOptions &clo, Database &db) {
 }
 
 void query_jobs(const CommandLineOptions &clo, Database &db) {
-  std::vector<std::vector<std::string>> collect_ands;
-  std::vector<std::vector<std::string>> collect_input_ands;
-  std::vector<std::vector<std::string>> collect_output_ands;
-
-  build_query_filters(clo, db, collect_ands, collect_input_ands, collect_output_ands);
-
-  auto matching_jobs =
-      db.matching(collect_ands, std::move(collect_input_ands), std::move(collect_output_ands));
+  auto filters = build_query_filters(clo, db);
+  auto matching_jobs = db.matching(std::move(filters));
 
   if (matching_jobs.empty()) {
     std::cerr << "No jobs matched query" << std::endl;

@@ -128,6 +128,18 @@ struct FileDependency {
   JAST to_json() const;
 };
 
+// Encapsulates filter conditions for job matching queries.
+// Tracks both the filter vectors and metadata about what database features they require.
+struct MatchingQueryFilters {
+  // Filter vectors: outer vec = AND groups, inner vec = OR conditions within each group
+  std::vector<std::vector<std::string>> core_filters;
+  std::vector<std::vector<std::string>> input_file_filters;
+  std::vector<std::vector<std::string>> output_file_filters;
+
+  // Metadata: what features do the filters require?
+  bool needs_tag_concat = false;  // True if filters use the concatenated 'tags' column (e.g., LIKE)
+};
+
 struct Database {
   struct detail;
   std::unique_ptr<detail> imp;
@@ -212,12 +224,8 @@ struct Database {
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode);
 
-  // In core_filters, the outer vec is a set of filters to be AND'd together, inner vec is a set of
-  // queries to be OR'd together. This holds for input_file_filters and output_file_filters as well
-  // but is less useful as its restricted to the column 'path' in the files table.
-  std::vector<JobReflection> matching(const std::vector<std::vector<std::string>> &core_filters,
-                                      std::vector<std::vector<std::string>> input_file_filters,
-                                      std::vector<std::vector<std::string>> output_file_filters);
+  // Returns all jobs matching the provided filters.
+  std::vector<JobReflection> matching(MatchingQueryFilters filters);
 
   std::vector<JobEdge> get_edges();
   std::vector<JobTag> get_tags();
@@ -227,10 +235,7 @@ struct Database {
   // Returns all unfinished jobs matching the provided filters.
   // Ordered by run_id, starttime, job_id — queued (starttime==0) sort before running.
   // Additional filtering needed to determine if runs are "actually" live.
-  std::vector<OpenRunJobReflection> matching_open_runs(
-      const std::vector<std::vector<std::string>> &core_filters,
-      std::vector<std::vector<std::string>> input_file_filters,
-      std::vector<std::vector<std::string>> output_file_filters);
+  std::vector<OpenRunJobReflection> matching_open_runs(MatchingQueryFilters filters);
 
   std::vector<FileDependency> get_file_dependencies() const;
 
