@@ -1,0 +1,14 @@
+export def job1 Unit =
+    makeExecPlan ("sh", "-c", "echo job1 > shared.txt", Nil) Nil
+    | setPlanLabel "gc-cas: job1"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutput
+
+export def job2 Unit =
+    makeExecPlan ("sh", "-c", "echo job2 > shared.txt", Nil) Nil
+    | setPlanLabel "gc-cas: job2"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutput
+
