@@ -247,6 +247,9 @@ struct Database {
   // bool=true if error present, false if NULL
   std::pair<bool, std::string> get_runner_status(long job_id);
 
+  void gc_if_dead(const std::vector<std::string> &hashes,
+                  const std::function<void(std::vector<std::string>)> &callback);
+
  private:
   void begin_ro_txn() const;
   void begin_rw_txn() const;
