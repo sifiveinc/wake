@@ -454,6 +454,19 @@ static void cleanup_stale_staging(const std::string &staging_dir) {
 }
 
 // Remove blobs from CAS that are dead according to DB.
+//
+// INVARIANT (load-bearing for CAS GC safety):
+//   A CAS blob is only written to disk AFTER its `files` row is committed, and
+//   any in-flight file not yet recorded in `filetree` is guarded by a `run_files`
+//   row for the current run. `finish_run()` clears this run's `run_files` entries
+//   only after all `finish_job`s have committed their `filetree` rows, so the
+//   set "reachable from files via filetree or run_files" is never empty for a
+//   live file in the window where another wake could race.
+//
+// From this it follows that: a hash present on disk but absent from `files`
+// is truly dead. Both `delete_orphan_files` (DB side) and this routine
+// (filesystem side) rely on that. Inverting the write order (blob-before-row)
+// or clearing run_files before finish_job completes would break both.
 static bool gc_dead_cas_blobs(cas::Cas &cas, Database &db) {
   bool pass = true;
   // Grab list of hashes in CAS.
