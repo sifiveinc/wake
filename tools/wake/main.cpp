@@ -72,6 +72,7 @@
 #include "util/file.h"
 #include "util/shell.h"
 #include "util/term.h"
+#include "util/unlink.h"
 
 #ifndef VERSION
 #include "version.h"
@@ -775,6 +776,9 @@ int main(int argc, char **argv) {
 
       // Clean up lock directory (only succeeds if empty, which is safe)
       (void)rmdir(".wake/locks");
+
+      // Remove: wakebox JSON, leftover staging, CAS.
+      (void)deep_unlink(AT_FDCWD, ".build");
     });
 
     if (!cleaned) {
