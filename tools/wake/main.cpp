@@ -41,6 +41,8 @@
 #include <set>
 #include <sstream>
 
+#include "cas/cas.h"
+#include "cas/materialize.h"
 #include "cli_options.h"
 #include "describe.h"
 #include "dst/bind.h"
@@ -257,6 +259,9 @@ MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database
     filters.needs_tag_concat = true;  // Mark that we need the expensive GROUP BY
   }
 
+  // --run
+  make_and_group(clo.run_ids, "cast(run_id as TEXT)", "", filters.core_filters);
+
   // --last-exe
   if (clo.last_exe) {
     filters.core_filters.push_back(
@@ -365,10 +370,73 @@ void query_jobs(const CommandLineOptions &clo, Database &db) {
   describe(matching_jobs, get_describe_policy(clo), db);
 }
 
-void inspect_database(const CommandLineOptions &clo, Database &db) {
+void checkout_filtered(const CommandLineOptions &clo, Database &db, CASContext &cas_ctx) {
+  // checkout_to should always be set if this function is called
+  assert(clo.checkout_to);
+
+  // Build filters to select jobs
+  auto filters = build_query_filters(clo, db);
+
+  std::string dest = clo.checkout_to;
+
+  // Destination must not exist or must be an empty directory.
+  struct stat st;
+  if (stat(dest.c_str(), &st) == 0) {
+    if (!S_ISDIR(st.st_mode)) {
+      std::cerr << "error: destination '" << dest << "' exists and is not a directory" << std::endl;
+      exit(1);
+    }
+    std::error_code ec;
+    auto it = std::filesystem::directory_iterator(dest, ec);
+    if (!ec && it != std::filesystem::directory_iterator()) {
+      std::cerr << "error: destination '" << dest << "' is not empty" << std::endl;
+      exit(1);
+    }
+  } else {
+    std::error_code ec;
+    std::filesystem::create_directories(dest, ec);
+    if (ec) {
+      std::cerr << "error: cannot create '" << dest << "': " << ec.message() << std::endl;
+      exit(1);
+    }
+  }
+
+  assert(cas_ctx.has_store());
+  auto &store = *cas_ctx.get_store();
+
+  // Get outputs from selected jobs using filters directly
+  auto outputs = db.get_job_outputs(std::move(filters), clo.leaves);
+  if (outputs.empty()) {
+    std::cout << "No outputs found matching filters" << std::endl;
+    return;
+  }
+
+  int files_written = 0;
+  std::string dest_path = dest + "/";
+  unsigned dest_prefix_len = dest_path.length();
+  for (auto &f : outputs) {
+    dest_path.resize(dest_prefix_len);
+    dest_path += f.path;
+    time_t mtime_sec = (time_t)(f.modified / 1000000000LL);
+    long mtime_nsec = (long)(f.modified % 1000000000LL);
+
+    if (auto msg = cas::materialize_item(store, dest_path, f.type, f.hash, (mode_t)f.mode,
+                                         mtime_sec, mtime_nsec)) {
+      std::cerr << "error: " << *msg << std::endl;
+      exit(1);
+    }
+    if (f.type != "directory") ++files_written;
+  }
+
+  std::cout << "Checked out " << files_written << " file(s) -> " << dest << std::endl;
+}
+
+void inspect_database(const CommandLineOptions &clo, Database &db, CASContext &cas_ctx) {
   // tagdag and history are db inspection queries, but are very different from the
   // rest of the queries which operate on the jobs table.
-  if (clo.tagdag) {
+  if (clo.checkout_to) {
+    checkout_filtered(clo, db, cas_ctx);
+  } else if (clo.tagdag) {
     output_tagdag(db, clo.tagdag);
   } else if (clo.ps) {
     query_ps(clo, db);
@@ -422,6 +490,9 @@ void print_help(const char *argv0) {
     << "    --last-executed    Capture all jobs executed by the last build. Skips cache"   << std::endl
     << "    --history          Report the cmndline history of all wake commands recorded"  << std::endl
     << "    --ps               Show jobs currently running in active wake builds"          << std::endl
+    << "    --checkout-to DIR  Materialize outputs of filtered jobs to destination"        << std::endl
+    << "    --leaves           With --checkout-to: only terminal outputs (not consumed by other jobs)" << std::endl
+    << "    --run      RUN_ID  Filter jobs by run ID (can be combined with other filters)" << std::endl
     << "    --failed   -f      Capture jobs which failed last build"                       << std::endl
     << "    --tag      KEY=VAL Capture jobs which are tagged, matching KEY and VAL globs"  << std::endl
     << "    --canceled         Capture jobs which were canceled (run ended before job finished)" << std::endl
@@ -647,11 +718,11 @@ int main(int argc, char **argv) {
     clo.argv[1] = clo.shebang;
   }
 
-  bool is_db_inspect_capture = !clo.job_ids.empty() || !clo.output_files.empty() ||
-                               !clo.input_files.empty() || !clo.labels.empty() ||
-                               !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
-                               clo.tagdag || clo.canceled || clo.active || clo.queued ||
-                               clo.in_flight || clo.history || clo.ps;
+  bool is_db_inspect_capture =
+      !clo.job_ids.empty() || !clo.output_files.empty() || !clo.input_files.empty() ||
+      !clo.labels.empty() || !clo.tags.empty() || !clo.run_ids.empty() || clo.last_use ||
+      clo.last_exe || clo.failed || clo.tagdag || clo.canceled || clo.active || clo.queued ||
+      clo.in_flight || clo.history || clo.ps || clo.checkout_to;
 
   // DescribePolicy::human() is the default and doesn't have a flag.
   // DescribePolicy::debug() is overloaded and can't be marked as a db flag
@@ -896,8 +967,11 @@ int main(int argc, char **argv) {
     db.entropy(&sip_key[0], 2);
   }
 
+  const std::string cas_dir = ".build/cas";
+  CASContext cas_ctx(cas_dir);
+
   if (is_db_inspection) {
-    inspect_database(clo, db);
+    inspect_database(clo, db, cas_ctx);
     return 0;
   }
 
@@ -1136,9 +1210,6 @@ int main(int argc, char **argv) {
                     clo.batch);
   StringInfo info(clo.verbose, clo.debug, clo.quiet, VERSION_STR, wcl::make_canonical(wake_cwd),
                   cmdline);
-
-  const std::string cas_dir = ".build/cas";
-  CASContext cas_ctx(cas_dir);
 
   PrimMap pmap = prim_register_all(&info, &jobtable, &cas_ctx);
 

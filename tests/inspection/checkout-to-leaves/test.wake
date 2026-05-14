@@ -1,0 +1,21 @@
+package test_wake
+
+from wake import _
+
+# Two-job pipeline: jobA produces intermediate.txt, jobB consumes it and writes final.txt.
+# With --leaves, only final.txt is a leaf output; intermediate.txt is consumed within the run.
+def jobA _: Result Path Error =
+    makeExecPlan ("sh", "-c", "printf intermediate-data > intermediate.txt", Nil) Nil
+    | setPlanLabel "job-a"
+    | runJobWith defaultRunner
+    | getJobOutput
+
+export def build _: Result Path Error =
+    require Pass intermediate = jobA Unit
+
+    makeExecPlan
+    ("sh", "-c", "cat intermediate.txt > final.txt && printf X-final >> final.txt", Nil)
+    (intermediate, Nil)
+    | setPlanLabel "job-b"
+    | runJobWith defaultRunner
+    | getJobOutput

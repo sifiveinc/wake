@@ -1,0 +1,10 @@
+package test_wake
+
+from wake import _
+
+# Single-job build that produces "hello.txt" with known content.
+export def build _: Result Path Error =
+    makeExecPlan ("sh", "-c", "printf hello-world > hello.txt", Nil) Nil
+    | setPlanLabel "build-hello"
+    | runJobWith defaultRunner
+    | getJobOutput

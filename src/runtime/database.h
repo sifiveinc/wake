@@ -237,6 +237,13 @@ struct Database {
   // Additional filtering needed to determine if runs are "actually" live.
   std::vector<OpenRunJobReflection> matching_open_runs(MatchingQueryFilters filters);
 
+  // Returns all output files (access=2) for jobs matching the provided filters.
+  // If leaves=true, only returns outputs that are not consumed as inputs within each job's run.
+  // Leaves computation always excludes hidden jobs from input consideration.
+  // Returns outputs ordered by path, with duplicates removed (last modified wins).
+  std::vector<FileReflection> get_job_outputs(MatchingQueryFilters filters,
+                                              bool leaves = false) const;
+
   std::vector<FileDependency> get_file_dependencies() const;
 
   std::vector<std::pair<std::string, int>> get_interleaved_output(long job_id) const;

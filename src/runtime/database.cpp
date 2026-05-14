@@ -2268,6 +2268,92 @@ void Database::start_job(long job, int64_t starttime) {
   end_txn();
 }
 
+std::vector<FileReflection> Database::get_job_outputs(MatchingQueryFilters filters,
+                                                      bool leaves) const {
+  // Build the job ID subquery using the same filter mechanism as matching()
+  auto id_query = build_matching_id_query(std::move(filters));
+
+  std::string query;
+  if (leaves) {
+    // Per-run leaves: outputs from selected jobs that aren't consumed within their respective runs.
+    // Always excludes hidden jobs from input consideration.
+    query = R"(
+      WITH filtered_jobs AS (
+)" + id_query +
+            R"(
+      ),
+      hidden_jobs AS (
+        SELECT job_id FROM tags
+        WHERE uri = 'inspect.visibility' AND content = 'hidden'
+      ),
+      job_runs AS (
+        SELECT DISTINCT rj.run_id
+        FROM run_jobs rj
+        WHERE rj.job_id IN (SELECT job_id FROM filtered_jobs)
+      ),
+      run_inputs AS (
+        SELECT DISTINCT f.path, rj.run_id
+        FROM filetree t
+        JOIN files f ON f.file_id = t.file_id
+        JOIN run_jobs rj ON rj.job_id = t.job_id
+        LEFT JOIN hidden_jobs hj ON hj.job_id = t.job_id
+        WHERE rj.run_id IN (SELECT run_id FROM job_runs)
+          AND t.access IN (0, 1)
+          AND hj.job_id IS NULL
+      )
+      SELECT f.path, f.hash, f.type, f.mode, MAX(t.modified) as modified
+      FROM filetree t
+      JOIN files f ON f.file_id = t.file_id
+      JOIN run_jobs rj ON rj.job_id = t.job_id
+      LEFT JOIN run_inputs ri ON ri.path = f.path AND ri.run_id = rj.run_id
+      WHERE t.job_id IN (SELECT job_id FROM filtered_jobs)
+        AND t.access = 2
+        AND ri.path IS NULL
+      GROUP BY f.path
+      ORDER BY f.path
+    )";
+  } else {
+    // All outputs from selected jobs
+    query = R"(
+      WITH filtered_jobs AS (
+)" + id_query +
+            R"(
+      )
+      SELECT f.path, f.hash, f.type, f.mode, MAX(t.modified) as modified
+      FROM filetree t
+      JOIN files f ON f.file_id = t.file_id
+      WHERE t.job_id IN (SELECT job_id FROM filtered_jobs)
+        AND t.access = 2
+      GROUP BY f.path
+      ORDER BY f.path
+    )";
+  }
+
+  sqlite3_stmt *stmt;
+  if (sqlite3_prepare_v2(imp->db, query.c_str(), -1, &stmt, 0) != SQLITE_OK) {
+    std::string err =
+        std::string("sqlite3_prepare_v2 (get_job_outputs): ") + sqlite3_errmsg(imp->db);
+    std::cerr << err << std::endl;
+    return {};
+  }
+
+  std::vector<FileReflection> out;
+  begin_ro_txn();
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    std::string path = rip_column(stmt, 0);
+    std::string hash = rip_column(stmt, 1);
+    std::string type = rip_column(stmt, 2);
+    long mode = sqlite3_column_int64(stmt, 3);
+    long modified = sqlite3_column_int64(stmt, 4);
+    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
+  }
+  finish_stmt("Could not query job outputs", stmt, imp->debugdb);
+  sqlite3_finalize(stmt);
+  end_txn();
+
+  return out;
+}
+
 std::vector<std::pair<std::string, int>> Database::get_interleaved_output(long job_id) const {
   begin_ro_txn();
   auto out = get_interleaved_output_impl(this, job_id);
