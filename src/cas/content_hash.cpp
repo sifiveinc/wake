@@ -24,6 +24,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
+
+#include "blake2/blake2.h"
 #include "wcl/unique_fd.h"
 
 namespace cas {
@@ -77,13 +80,13 @@ wcl::result<ContentHash, wcl::posix_error_t> ContentHash::from_file(const std::s
 }
 
 wcl::result<ContentHash, ContentHashError> ContentHash::from_hex(const std::string& hex) {
-  if (hex.size() != 64) {
+  if (hex.size() != HASH_HEX_LEN) {
     return wcl::make_error<ContentHash, ContentHashError>(ContentHashError::InvalidHexLength);
   }
 
   ContentHash hash;
   uint8_t* bytes = reinterpret_cast<uint8_t*>(hash.data);
-  for (size_t i = 0; i < 32; ++i) {
+  for (size_t i = 0; i < (HASH_HEX_LEN >> 1U); ++i) {
     uint8_t high = hex_to_nibble(hex[i * 2]);
     uint8_t low = hex_to_nibble(hex[i * 2 + 1]);
     if (high == 0xFF || low == 0xFF) {
@@ -96,9 +99,9 @@ wcl::result<ContentHash, ContentHashError> ContentHash::from_hex(const std::stri
 
 std::string ContentHash::to_hex() const {
   std::string result;
-  result.reserve(64);
+  result.reserve(HASH_HEX_LEN);
   const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
-  for (size_t i = 0; i < 32; ++i) {
+  for (size_t i = 0; i < (HASH_HEX_LEN >> 1U); ++i) {
     // Extract high nibble (upper 4 bits) and convert to hex
     result += nibble_to_hex((bytes[i] >> 4) & 0x0F);
     // Extract low nibble (lower 4 bits) and convert to hex
@@ -108,18 +111,14 @@ std::string ContentHash::to_hex() const {
 }
 
 bool ContentHash::operator==(const ContentHash& other) const {
-  return data[0] == other.data[0] && data[1] == other.data[1] && data[2] == other.data[2] &&
-         data[3] == other.data[3];
+  return std::equal(data, data + NUM_HASH_ELEMENTS, other.data, other.data + NUM_HASH_ELEMENTS);
 }
 
 bool ContentHash::operator!=(const ContentHash& other) const { return !(*this == other); }
 
 bool ContentHash::operator<(const ContentHash& other) const {
-  for (int i = 0; i < 4; ++i) {
-    if (data[i] < other.data[i]) return true;
-    if (data[i] > other.data[i]) return false;
-  }
-  return false;
+  return std::lexicographical_compare(data, data + NUM_HASH_ELEMENTS, other.data,
+                                      other.data + NUM_HASH_ELEMENTS);
 }
 
 }  // namespace cas

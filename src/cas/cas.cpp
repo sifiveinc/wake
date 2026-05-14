@@ -36,19 +36,20 @@ namespace fs = std::filesystem;
 
 namespace cas {
 
-// Global counter for unique temp file names during materialization
-// Used to avoid collisions when multiple processes materialize files concurrently
-static std::atomic<uint64_t> g_materialize_counter{0};
+static constexpr unsigned SHARD_LEN = 2U;
+static_assert(SHARD_LEN < HASH_HEX_LEN, "hash length must be longer than shard length");
+
+// Global counter for unique temp file names when ingesting files.
 static std::atomic<uint64_t> g_store_counter{0};
 // Helper functions for hash-based directory sharding
 static std::string hash_prefix(const ContentHash& hash) {
   std::string hex = hash.to_hex();
-  return hex.substr(0, 2);
+  return hex.substr(0, SHARD_LEN);
 }
 
 static std::string hash_suffix(const ContentHash& hash) {
   std::string hex = hash.to_hex();
-  return hex.substr(2);
+  return hex.substr(SHARD_LEN);
 }
 
 std::string cas_error_to_string(CASError error) {
@@ -314,12 +315,12 @@ std::vector<std::string> Cas::enumerate_blobs_strings() const {
     for (const auto& prefix_entry : fs::directory_iterator(blobs_dir_, ec)) {
       if (ec || !prefix_entry.is_directory()) continue;
       std::string prefix = prefix_entry.path().filename().string();
-      if (prefix.size() != 2) continue;
+      if (prefix.size() != SHARD_LEN) continue;
 
       for (const auto& blob_entry : fs::directory_iterator(prefix_entry.path(), ec)) {
         if (ec || !blob_entry.is_regular_file()) continue;
         std::string suffix = blob_entry.path().filename().string();
-        if (suffix.size() != 62) continue;
+        if (suffix.size() != (HASH_HEX_LEN - SHARD_LEN)) continue;
 
         result.push_back(prefix + suffix);
       }
