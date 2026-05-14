@@ -22,9 +22,9 @@
 #include <optional>
 #include <string>
 
-#include "cas.h"
-
 namespace cas {
+
+class Cas;
 
 // Materialize a single item from CAS (or create symlink/directory) at dest_path.
 // Creates parent directories as needed.

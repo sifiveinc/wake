@@ -31,6 +31,7 @@
 #include <optional>
 #include <string>
 
+#include "cas.h"
 #include "util/mkdir_parents.h"
 
 namespace cas {
