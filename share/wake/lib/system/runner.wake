@@ -177,32 +177,11 @@ export def localRunner: Runner =
 
     makeRunner "local" run
 
-tuple WorkspaceStagingResult =
-    export StagingRoot: Option String
-    export StagingItems: List StagingItem
-
-# Decodes the JSON emitted by wake-stage into the staging root and staged output metadata.
-def parseWorkspaceStagingResult (body: String): Result WorkspaceStagingResult Error =
-    require Pass content = parseJSONBody body
-    else failWithError "Failed to parse workspace staging result JSON"
-
-    def stagingRoot =
-        content // `staging_root`
-        | getJString
-
-    require Pass stagingItems = parseStagingFiles content
-    else failWithError "Failed to decode staged outputs from workspace staging helper output"
-
-    Pass (WorkspaceStagingResult stagingRoot stagingItems)
-
-def workspaceStageTool =
-    "{wakePath}/../lib/wake/wake-stage"
-
 def workspaceStageBase =
     ".build/staging/{str wakePid}"
 
-# Stages a declared workspace-output list with wake-stage and returns the full staged output
-# metadata plus any helper paths that should be cleaned later.
+# Stages a declared workspace-output list and returns the full staged output metadata
+# plus any helper paths that should be cleaned later.
 #
 # Assumes all outputs already exist at their final workspace paths (e.g. produced by a local job
 # or written directly by the runner), so the returned StagedOutputs always has
@@ -212,7 +191,13 @@ def workspaceStageBase =
 # filteredOutputPaths: the published subset of allOutputPaths, i.e. those exposed via getJobOutputs
 # baseCleanableOutputs: additional paths (beyond staging artifacts) to include in the cleanup list,
 export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String): Result (Pair StagedOutputs (List String)) Error =
-    # Normalize paths so string comparisons and wake-stage path lookups are consistent
+    # Snapshots each listed workspace output (reflink/copy for files, readlink for symlinks,
+    # mode capture for directories) into a fresh stage.XXXXXX/ subdirectory of stagingBase and
+    # returns (stagingRoot, list of (destPath, type, stagingPathOrTarget, mode, mtimeSec, mtimeNsec)).
+    # On any failure the staging directory is cleaned up before returning Fail.
+    def stage_outputs_prim pathsLines stagingBase = prim "stage_outputs"
+
+    # Normalize paths so string comparisons and prim path lookups are consistent
     def normAllOutputPaths = map simplify allOutputPaths
     def normFilteredOutputPaths = map simplify filteredOutputPaths
 
@@ -225,67 +210,34 @@ export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPa
     if empty normAllOutputPaths then
         Pass (Pair (StagedOutputs normFilteredOutputPaths False Nil None (\_ Unit)) baseCleanableOutputs)
     else
-        require True = access workspaceStageTool xOK
-        else failWithError "workspace staging helper {workspaceStageTool} is not executable"
+        # Convert one flat tuple (destPath, type, stagingPathOrTarget, mode, mtimeSec, mtimeNsec)
+        # back into the StagingItem ADT.
+        def buildStagingItem entry =
+            def Pair destPath rest1 = entry
+            def Pair itemType rest2 = rest1
+            def Pair stagingPathOrTarget rest3 = rest2
+            def Pair mode rest4 = rest3
+            def Pair mtimeSec mtimeNsec = rest4
 
-        def stageInputsLen = len normAllOutputPaths
-        def stageInputsBytes = sum (map strlen normAllOutputPaths)
-        def useStageStdinFile = stageInputsBytes >= 1900000 || stageInputsLen >= 12000
-        def stageCommandBase = "{workspaceStageTool}", "--staging-base", workspaceStageBase, Nil
+            match itemType
+                "file" ->
+                    Pass (StagingFile (StagingFileOutput destPath stagingPathOrTarget mode mtimeSec mtimeNsec))
+                "symlink" ->
+                    Pass (StagingSymlink (StagingSymlinkOutput destPath stagingPathOrTarget mtimeSec mtimeNsec))
+                "directory" ->
+                    Pass (StagingDirectory (StagingDirectoryOutput destPath mode mtimeSec mtimeNsec))
+                t -> failWithError "Unknown staging entry type from stage_outputs prim: {t}"
 
-        require Pass stagePlanPair = match useStageStdinFile
-            True ->
-                def stageStdinContent = catWith "\n" normAllOutputPaths
+        require Pass (Pair stagingRoot rawEntries) =
+            stage_outputs_prim (catWith "\n" normAllOutputPaths) workspaceStageBase
+            | rmapFail (\msg failWithError "workspace staging failed: {msg}")
 
-                def stageStdinFilePath =
-                    ".build/tmp/workspace.stage.{str wakePid}.{hashString stageStdinContent}.stdin"
+        require Pass stagingItems =
+            rawEntries
+            | map buildStagingItem
+            | findFail
 
-                require Pass stdinFile = write stageStdinFilePath stageStdinContent
-
-                makeExecPlan (stageCommandBase ++ ("@", Nil)) (stdinFile,)
-                | setPlanStdin stdinFile.getPathName
-                | Pass
-                |< (\plan Pair plan (Some stageStdinFilePath))
-            False ->
-                makeExecPlan (stageCommandBase ++ normAllOutputPaths) Nil
-                | Pass
-                |< (\plan Pair plan None)
-        else failWithError "Failed to prepare workspace staging helper"
-
-        def Pair stagePlan maybeStageStdinFilePath = stagePlanPair
-
-        def stageJob =
-            stagePlan
-            | setPlanLabel "stage: {str stageInputsLen} outputs"
-            | setPlanStdout logNever
-            | setPlanStderr logNever
-            | setPlanPersistence ReRun
-            | setPlanEcho logDebug
-            | runJobWith localRunner
-            | setJobInspectVisibilityHidden
-
-        require Exited 0 = getJobStatus stageJob
-        else
-            require Pass stderr = getJobFailedStderr stageJob
-            else failWithError "workspace staging helper failed"
-
-            failWithError "workspace staging helper failed: {stderr}"
-
-        require Pass stdout = getJobStdout stageJob
-        else failWithError "Failed to read workspace staging helper output"
-
-        # Clean up the temporary stdin file if we created one.
-        def unlink _ = prim "unlink"
-
-        def _ = match maybeStageStdinFilePath
-            Some stageStdinFilePath -> unlink stageStdinFilePath
-            None -> Unit
-
-        require Pass (WorkspaceStagingResult stagingRoot stagingItems) =
-            parseWorkspaceStagingResult stdout
-        else failWithError "Failed to decode workspace staging helper output"
-
-        # The helper must account for every staged output path before we hand staged
+        # The prim must account for every staged output path before we hand staged
         # metadata back to job.wake for hashing/finalization.
         def stagedOutputPaths =
             stagingItems
@@ -294,17 +246,13 @@ export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPa
         require True = subset scmp normAllOutputPaths stagedOutputPaths
         else failWithError "Missing staged metadata for workspace outputs"
 
-        def stagingRootOutputs = match stagingRoot
-            Some root -> root, Nil
-            None -> Nil
-
         def cleanableOutputs =
-            (baseCleanableOutputs ++ stagedOutputPaths ++ stagingRootOutputs)
+            (baseCleanableOutputs ++ stagedOutputPaths ++ (stagingRoot, Nil))
             | distinctBy scmp
 
         Pass (
             Pair
-            (StagedOutputs normFilteredOutputPaths False stagingItems stagingRoot (\_ Unit))
+            (StagedOutputs normFilteredOutputPaths False stagingItems (Some stagingRoot) (\_ Unit))
             cleanableOutputs
         )
 
@@ -316,7 +264,7 @@ export def workspaceRunner: Runner =
         def publishedOutputPaths = fnOutputs Nil
 
         # Run the underlying workspace command exactly once, but suppress direct output reporting.
-        # workspaceRunner will report outputs only after wake-stage snapshots them.
+        # workspaceRunner will report outputs only after the staging prim snapshots them.
         def localInput =
             RunnerInput
             label

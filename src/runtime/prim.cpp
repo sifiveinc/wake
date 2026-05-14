@@ -30,6 +30,7 @@
 
 #include "cas_prim.h"
 #include "optimizer/ssa.h"
+#include "stage_prim.h"
 #include "status.h"
 #include "tuple.h"
 #include "types/datatype.h"
@@ -205,6 +206,7 @@ PrimMap prim_register_all(StringInfo *info, JobTable *jobtable, CASContext *cas_
   prim_register_json(pmap);
   prim_register_job(jobtable, pmap);
   prim_register_sources(pmap);
+  prim_register_stage(pmap);
   if (cas_ctx) {
     prim_register_cas(cas_ctx, pmap);
   }

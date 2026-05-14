@@ -18,11 +18,12 @@
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 
+#include "stage_prim.h"
+
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <cerrno>
-#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -31,19 +32,16 @@
 #include <string>
 #include <vector>
 
-#include "json/json5.h"
+#include "prim.h"
+#include "types/data.h"
+#include "types/primfn.h"
 #include "util/mkdir_parents.h"
+#include "value.h"
 #include "wcl/file_ops.h"
 
 namespace fs = std::filesystem;
 
 namespace {
-
-struct Args {
-  std::string staging_base;
-  bool read_stdin = false;
-  std::vector<std::string> output_paths;
-};
 
 enum class EntryType { File, Symlink, Directory };
 
@@ -65,52 +63,6 @@ struct CleanupRoot {
     fs::remove_all(root, ec);
   }
 };
-
-void print_usage(const char* argv0) {
-  std::cerr << "usage: " << argv0 << " --staging-base <path> [@|<output-path>...]\n";
-}
-
-bool parse_args(int argc, char** argv, Args& out) {
-  for (int i = 1; i < argc; ++i) {
-    std::string arg = argv[i];
-    auto next_value = [&](const char* flag, std::string& dest) -> bool {
-      if (i + 1 >= argc) {
-        std::cerr << "missing value for " << flag << "\n";
-        return false;
-      }
-      dest = argv[++i];
-      return true;
-    };
-
-    if (arg == "--staging-base") {
-      if (!next_value("--staging-base", out.staging_base)) return false;
-    } else if (arg == "--help" || arg == "-h") {
-      print_usage(argv[0]);
-      return false;
-    } else if (arg == "@") {
-      out.read_stdin = true;
-    } else {
-      out.output_paths.push_back(arg);
-    }
-  }
-
-  if (out.staging_base.empty()) {
-    std::cerr << "--staging-base is required\n";
-    return false;
-  }
-
-  if (out.read_stdin && !out.output_paths.empty()) {
-    std::cerr << "'@' cannot be combined with explicit output paths\n";
-    return false;
-  }
-
-  if (!out.read_stdin && out.output_paths.empty()) {
-    std::cerr << "at least one output path or '@' is required\n";
-    return false;
-  }
-
-  return true;
-}
 
 bool is_valid_workspace_relative_path(const std::string& path) {
   if (path.empty()) return false;
@@ -235,65 +187,126 @@ std::vector<StageEntry> stage_outputs(const std::vector<std::string>& output_pat
   return entries;
 }
 
-std::string render_json(const std::string& stage_root, const std::vector<StageEntry>& entries) {
-  std::ostringstream out;
-  out << "{\"staging_root\":\"" << json_escape(stage_root) << "\",\"staging_files\":{";
-
-  bool first = true;
-  for (const auto& entry : entries) {
-    if (!first) out << ",";
-    first = false;
-
-    out << "\"" << json_escape(entry.dest_path) << "\":{";
-    switch (entry.type) {
-      case EntryType::File:
-        out << "\"type\":\"file\""
-            << ",\"staging_path\":\"" << json_escape(entry.staging_path_or_target) << "\""
-            << ",\"mode\":" << (entry.mode & 07777) << ",\"mtime_sec\":" << entry.mtime.tv_sec
-            << ",\"mtime_nsec\":" << entry.mtime.tv_nsec;
-        break;
-      case EntryType::Symlink:
-        out << "\"type\":\"symlink\""
-            << ",\"target\":\"" << json_escape(entry.staging_path_or_target) << "\""
-            << ",\"mtime_sec\":" << entry.mtime.tv_sec << ",\"mtime_nsec\":" << entry.mtime.tv_nsec;
-        break;
-      case EntryType::Directory:
-        out << "\"type\":\"directory\""
-            << ",\"mode\":" << (entry.mode & 07777) << ",\"mtime_sec\":" << entry.mtime.tv_sec
-            << ",\"mtime_nsec\":" << entry.mtime.tv_nsec;
-        break;
-    }
-    out << "}";
+const char* type_name(EntryType t) {
+  switch (t) {
+    case EntryType::File:
+      return "file";
+    case EntryType::Symlink:
+      return "symlink";
+    case EntryType::Directory:
+      return "directory";
   }
-
-  out << "}}";
-  return out.str();
+  return "";
 }
+
+// Build a 6-tuple via nested Pairs (claim_tuple5 covers up to 5; nest one more Pair on top).
+Value* claim_tuple6(Heap& h, Value* a, Value* b, Value* c, Value* d, Value* e, Value* f) {
+  return claim_tuple2(h, a, claim_tuple5(h, b, c, d, e, f));
+}
+
+inline size_t reserve_tuple6() { return reserve_tuple2() + reserve_tuple5(); }
 
 }  // namespace
 
-int main(int argc, char** argv) {
-  Args args;
-  if (!parse_args(argc, argv, args)) {
-    return 1;
-  }
+// prim "stage_outputs" pathsLines stagingBase -> Result (Pair String (List Entry)) String
+// where Entry = (destPath, type, stagingPathOrTarget, mode, mtimeSec, mtimeNsec)
+// pathsLines: newline-separated workspace-relative output paths.
+// stagingBase: directory under which a fresh `stage.XXXXXX/` is created (mkdtemp).
+// On any failure the staging directory (if created) is removed via CleanupRoot's destructor.
+static PRIMTYPE(type_stage_outputs) {
+  // Entry tuple: 6 nested Pairs.
+  TypeVar e1, e2, e3, e4, e5;
+  Data::typePair.clone(e1);
+  Data::typePair.clone(e2);
+  Data::typePair.clone(e3);
+  Data::typePair.clone(e4);
+  Data::typePair.clone(e5);
+  e1[0].unify(Data::typeString);  // destPath
+  e1[1].unify(e2);
+  e2[0].unify(Data::typeString);  // type
+  e2[1].unify(e3);
+  e3[0].unify(Data::typeString);  // stagingPathOrTarget
+  e3[1].unify(e4);
+  e4[0].unify(Data::typeInteger);  // mode
+  e4[1].unify(e5);
+  e5[0].unify(Data::typeInteger);  // mtimeSec
+  e5[1].unify(Data::typeInteger);  // mtimeNsec
+
+  TypeVar entryList;
+  Data::typeList.clone(entryList);
+  entryList[0].unify(e1);
+
+  TypeVar outerPair;
+  Data::typePair.clone(outerPair);
+  outerPair[0].unify(Data::typeString);  // staging_root
+  outerPair[1].unify(entryList);
+
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(outerPair);
+  result[1].unify(Data::typeString);
+
+  return args.size() == 2 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
+         out->unify(result);
+}
+
+static PRIMFN(prim_stage_outputs) {
+  EXPECT(2);
+  STRING(paths_arg, 0);
+  STRING(staging_base_arg, 1);
+
+  auto fail = [&](const std::string& msg) {
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    auto err = String::claim(runtime.heap, msg);
+    RETURN(claim_result(runtime.heap, false, err));
+  };
 
   try {
-    CleanupRoot cleanup;
-    cleanup.root = create_stage_root(args.staging_base);
+    std::stringstream paths_stream(std::string(paths_arg->c_str(), paths_arg->size()));
+    std::vector<std::string> output_paths = read_input_paths(paths_stream);
 
-    std::vector<std::string> output_paths = args.output_paths;
-    if (args.read_stdin) {
-      output_paths = read_input_paths(std::cin);
+    CleanupRoot cleanup;
+    if (!output_paths.empty()) {
+      cleanup.root = create_stage_root(staging_base_arg->c_str());
     }
     std::vector<StageEntry> entries = stage_outputs(output_paths, cleanup.root.string());
-    std::string json = render_json(cleanup.root.string(), entries);
-    std::cout << json << std::endl;
+
+    // Build wake values from the staged entries.
+    size_t need = reserve_result() + reserve_tuple2() +
+                  String::reserve(cleanup.root.string().size()) + reserve_list(entries.size());
+    for (const auto& e : entries) {
+      need += reserve_tuple6() + String::reserve(e.dest_path.size()) +
+              String::reserve(strlen(type_name(e.type))) +
+              String::reserve(e.staging_path_or_target.size()) + Integer::reserve(e.mode) +
+              Integer::reserve(e.mtime.tv_sec) + Integer::reserve(e.mtime.tv_nsec);
+    }
+    runtime.heap.reserve(need);
+
+    std::vector<Value*> entry_values;
+    entry_values.reserve(entries.size());
+    for (const auto& e : entries) {
+      Value* dest_v = String::claim(runtime.heap, e.dest_path);
+      Value* type_v = String::claim(runtime.heap, type_name(e.type));
+      Value* sp_v = String::claim(runtime.heap, e.staging_path_or_target);
+      Value* mode_v = Integer::claim(runtime.heap, MPZ(static_cast<long>(e.mode)));
+      Value* msec_v = Integer::claim(runtime.heap, MPZ(static_cast<long>(e.mtime.tv_sec)));
+      Value* mnsec_v = Integer::claim(runtime.heap, MPZ(static_cast<long>(e.mtime.tv_nsec)));
+      entry_values.push_back(
+          claim_tuple6(runtime.heap, dest_v, type_v, sp_v, mode_v, msec_v, mnsec_v));
+    }
+
+    Value* root_v = String::claim(runtime.heap, cleanup.root.string());
+    Value* list_v = claim_list(runtime.heap, entry_values.size(), entry_values.data());
+    Value* outer = claim_tuple2(runtime.heap, root_v, list_v);
 
     cleanup.keep = true;
-    return 0;
+    RETURN(claim_result(runtime.heap, true, outer));
   } catch (const std::exception& ex) {
-    std::cerr << ex.what() << std::endl;
-    return 1;
+    fail(ex.what());
+    return;
   }
+}
+
+void prim_register_stage(PrimMap& pmap) {
+  prim_register(pmap, "stage_outputs", prim_stage_outputs, type_stage_outputs, PRIM_IMPURE);
 }
