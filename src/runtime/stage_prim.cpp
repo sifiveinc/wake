@@ -26,9 +26,8 @@
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
-#include <iostream>
+#include <istream>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -108,11 +107,11 @@ std::vector<std::string> read_input_paths(std::istream& in) {
   return paths;
 }
 
-std::string create_stage_root(const std::string& staging_base) {
+wcl::result<std::string, std::string> create_stage_root(const std::string& staging_base) {
   int err = mkdir_with_parents(staging_base, 0755);
   if (err != 0) {
-    throw std::runtime_error("failed to create staging base " + staging_base + ": " +
-                             strerror(err));
+    return wcl::result_error<std::string>("failed to create staging base " + staging_base + ": " +
+                                          strerror(err));
   }
 
   std::string templ = staging_base + "/stage.XXXXXX";
@@ -121,25 +120,27 @@ std::string create_stage_root(const std::string& staging_base) {
 
   char* created = mkdtemp(buffer.data());
   if (!created) {
-    throw std::runtime_error("mkdtemp(" + templ + "): " + strerror(errno));
+    return wcl::result_error<std::string>("mkdtemp(" + templ + "): " + strerror(errno));
   }
 
-  return created;
+  return wcl::result_value<std::string>(std::string(created));
 }
 
-std::vector<StageEntry> stage_outputs(const std::vector<std::string>& output_paths,
-                                      const std::string& stage_root) {
+wcl::result<std::vector<StageEntry>, std::string> stage_outputs(
+    const std::vector<std::string>& output_paths, const std::string& stage_root) {
   std::vector<StageEntry> entries;
   size_t next_stage_id = 0;
 
   for (const auto& dest_path : output_paths) {
     if (!is_valid_workspace_relative_path(dest_path)) {
-      throw std::runtime_error("invalid workspace-relative output path: " + dest_path);
+      return wcl::result_error<std::vector<StageEntry>>("invalid workspace-relative output path: " +
+                                                        dest_path);
     }
 
     struct stat st;
     if (lstat(dest_path.c_str(), &st) != 0) {
-      throw std::runtime_error("lstat(" + dest_path + "): " + strerror(errno));
+      return wcl::result_error<std::vector<StageEntry>>("lstat(" + dest_path +
+                                                        "): " + strerror(errno));
     }
 
     if (S_ISREG(st.st_mode)) {
@@ -147,8 +148,8 @@ std::vector<StageEntry> stage_outputs(const std::vector<std::string>& output_pat
       auto copy_result = wcl::reflink_or_copy_file(dest_path, staging_path,
                                                    static_cast<mode_t>(st.st_mode & 07777));
       if (!copy_result) {
-        throw std::runtime_error("failed to stage file " + dest_path + ": " +
-                                 strerror(copy_result.error()));
+        return wcl::result_error<std::vector<StageEntry>>("failed to stage file " + dest_path +
+                                                          ": " + strerror(copy_result.error()));
       }
 
       entries.push_back(StageEntry{
@@ -161,7 +162,7 @@ std::vector<StageEntry> stage_outputs(const std::vector<std::string>& output_pat
     } else if (S_ISLNK(st.st_mode)) {
       auto target_result = read_symlink_target(dest_path);
       if (!target_result) {
-        throw std::runtime_error(target_result.error());
+        return wcl::make_error<std::vector<StageEntry>, std::string>(target_result.error());
       }
 
       entries.push_back(StageEntry{
@@ -180,11 +181,11 @@ std::vector<StageEntry> stage_outputs(const std::vector<std::string>& output_pat
           st.st_mtim,
       });
     } else {
-      throw std::runtime_error("unsupported output type for " + dest_path);
+      return wcl::result_error<std::vector<StageEntry>>("unsupported output type for " + dest_path);
     }
   }
 
-  return entries;
+  return wcl::result_value<std::string>(std::move(entries));
 }
 
 const char* type_name(EntryType t) {
@@ -261,50 +262,56 @@ static PRIMFN(prim_stage_outputs) {
     RETURN(claim_result(runtime.heap, false, err));
   };
 
-  try {
-    std::stringstream paths_stream(std::string(paths_arg->c_str(), paths_arg->size()));
-    std::vector<std::string> output_paths = read_input_paths(paths_stream);
+  std::stringstream paths_stream(std::string(paths_arg->c_str(), paths_arg->size()));
+  std::vector<std::string> output_paths = read_input_paths(paths_stream);
 
-    CleanupRoot cleanup;
-    if (!output_paths.empty()) {
-      cleanup.root = create_stage_root(staging_base_arg->c_str());
+  CleanupRoot cleanup;
+  if (!output_paths.empty()) {
+    auto root_result = create_stage_root(staging_base_arg->c_str());
+    if (!root_result) {
+      fail(root_result.error());
+      return;
     }
-    std::vector<StageEntry> entries = stage_outputs(output_paths, cleanup.root.string());
+    cleanup.root = *root_result;
+  }
 
-    // Build wake values from the staged entries.
-    size_t need = reserve_result() + reserve_tuple2() +
-                  String::reserve(cleanup.root.string().size()) + reserve_list(entries.size());
-    for (const auto& e : entries) {
-      need += reserve_tuple6() + String::reserve(e.dest_path.size()) +
-              String::reserve(strlen(type_name(e.type))) +
-              String::reserve(e.staging_path_or_target.size()) + Integer::reserve(e.mode) +
-              Integer::reserve(e.mtime.tv_sec) + Integer::reserve(e.mtime.tv_nsec);
-    }
-    runtime.heap.reserve(need);
-
-    std::vector<Value*> entry_values;
-    entry_values.reserve(entries.size());
-    for (const auto& e : entries) {
-      Value* dest_v = String::claim(runtime.heap, e.dest_path);
-      Value* type_v = String::claim(runtime.heap, type_name(e.type));
-      Value* sp_v = String::claim(runtime.heap, e.staging_path_or_target);
-      Value* mode_v = Integer::claim(runtime.heap, MPZ(static_cast<long>(e.mode)));
-      Value* msec_v = Integer::claim(runtime.heap, MPZ(static_cast<long>(e.mtime.tv_sec)));
-      Value* mnsec_v = Integer::claim(runtime.heap, MPZ(static_cast<long>(e.mtime.tv_nsec)));
-      entry_values.push_back(
-          claim_tuple6(runtime.heap, dest_v, type_v, sp_v, mode_v, msec_v, mnsec_v));
-    }
-
-    Value* root_v = String::claim(runtime.heap, cleanup.root.string());
-    Value* list_v = claim_list(runtime.heap, entry_values.size(), entry_values.data());
-    Value* outer = claim_tuple2(runtime.heap, root_v, list_v);
-
-    cleanup.keep = true;
-    RETURN(claim_result(runtime.heap, true, outer));
-  } catch (const std::exception& ex) {
-    fail(ex.what());
+  auto entries_result = stage_outputs(output_paths, cleanup.root.string());
+  if (!entries_result) {
+    fail(entries_result.error());
     return;
   }
+  const auto& entries = *entries_result;
+
+  // Build wake values from the staged entries.
+  size_t need = reserve_result() + reserve_tuple2() +
+                String::reserve(cleanup.root.string().size()) + reserve_list(entries.size());
+  for (const auto& e : entries) {
+    need += reserve_tuple6() + String::reserve(e.dest_path.size()) +
+            String::reserve(strlen(type_name(e.type))) +
+            String::reserve(e.staging_path_or_target.size()) + Integer::reserve(e.mode) +
+            Integer::reserve(e.mtime.tv_sec) + Integer::reserve(e.mtime.tv_nsec);
+  }
+  runtime.heap.reserve(need);
+
+  std::vector<Value*> entry_values;
+  entry_values.reserve(entries.size());
+  for (const auto& e : entries) {
+    Value* dest_v = String::claim(runtime.heap, e.dest_path);
+    Value* type_v = String::claim(runtime.heap, type_name(e.type));
+    Value* sp_v = String::claim(runtime.heap, e.staging_path_or_target);
+    Value* mode_v = Integer::claim(runtime.heap, MPZ(static_cast<long>(e.mode)));
+    Value* msec_v = Integer::claim(runtime.heap, MPZ(static_cast<long>(e.mtime.tv_sec)));
+    Value* mnsec_v = Integer::claim(runtime.heap, MPZ(static_cast<long>(e.mtime.tv_nsec)));
+    entry_values.push_back(
+        claim_tuple6(runtime.heap, dest_v, type_v, sp_v, mode_v, msec_v, mnsec_v));
+  }
+
+  Value* root_v = String::claim(runtime.heap, cleanup.root.string());
+  Value* list_v = claim_list(runtime.heap, entry_values.size(), entry_values.data());
+  Value* outer = claim_tuple2(runtime.heap, root_v, list_v);
+
+  cleanup.keep = true;
+  RETURN(claim_result(runtime.heap, true, outer));
 }
 
 void prim_register_stage(PrimMap& pmap) {
