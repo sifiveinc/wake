@@ -31,22 +31,21 @@
 #include <optional>
 #include <string>
 
-#include "content_hash.h"
 #include "util/mkdir_parents.h"
 
-// Global counter for unique temp file names during materialization
-// Used to avoid collisions when multiple processes materialize files concurrently
+namespace cas {
+
+// Global counter for unique temp file names during materialization.
+// Used to avoid collisions when multiple processes materialize files concurrently.
 static std::atomic<uint64_t> g_materialize_counter{0};
 
-namespace {
-
-static std::string make_temp_path(const std::string& dest) {
+std::string make_temp_path(const std::string& dest) {
   return dest + "." + std::to_string(getpid()) + "." +
          std::to_string(g_materialize_counter.fetch_add(1));
 }
 
-static std::optional<std::string> atomic_replace(const std::string& temp, const std::string& dest,
-                                                 const std::string& label) {
+std::optional<std::string> atomic_replace(const std::string& temp, const std::string& dest,
+                                          const std::string& label) {
   std::error_code ec;
   std::filesystem::rename(temp, dest, ec);
   if (!ec) return std::nullopt;
@@ -54,7 +53,7 @@ static std::optional<std::string> atomic_replace(const std::string& temp, const 
   return "Failed to place " + label + " " + dest + ": " + ec.message();
 }
 
-static bool apply_mtime(const std::string& path, time_t sec, long nsec, int flags) {
+bool apply_mtime(const std::string& path, time_t sec, long nsec, int flags) {
   if (sec == 0 && nsec == 0) return true;
   struct timespec times[2];
   times[0].tv_sec = 0;
@@ -64,7 +63,7 @@ static bool apply_mtime(const std::string& path, time_t sec, long nsec, int flag
   return utimensat(AT_FDCWD, path.c_str(), times, flags) == 0;
 }
 
-static std::optional<std::string> make_dir_or_chmod(const std::string& path, mode_t mode) {
+std::optional<std::string> make_dir_or_chmod(const std::string& path, mode_t mode) {
   if (mkdir(path.c_str(), mode) != 0) {
     if (errno == EEXIST) {
       chmod(path.c_str(), mode);
@@ -75,16 +74,12 @@ static std::optional<std::string> make_dir_or_chmod(const std::string& path, mod
   return std::nullopt;
 }
 
-static std::optional<std::string> ensure_parent_dirs(const std::string& dest) {
+std::optional<std::string> ensure_parent_dirs(const std::string& dest) {
   std::filesystem::path parent = std::filesystem::path(dest).parent_path();
   if (!parent.empty() && mkdir_with_parents(parent.string(), 0755) != 0)
     return "Failed to create parent directories for " + dest;
   return std::nullopt;
 }
-
-}  // namespace
-
-namespace cas {
 
 std::optional<std::string> materialize_item(Cas& store, const std::string& dest_path,
                                             const std::string& type,
@@ -115,16 +110,17 @@ std::optional<std::string> materialize_item(Cas& store, const std::string& dest_
     if (auto msg = atomic_replace(temp_path, dest_path, "symlink")) return msg;
 
   } else if (type == "directory") {
+    mode_t dir_mode = mode & 07777;
     struct stat st;
     if (stat(dest_path.c_str(), &st) == 0) {
       if (S_ISDIR(st.st_mode)) {
-        chmod(dest_path.c_str(), mode);
+        chmod(dest_path.c_str(), dir_mode);
       } else {
         (void)unlink(dest_path.c_str());
-        if (auto msg = make_dir_or_chmod(dest_path, mode)) return msg;
+        if (auto msg = make_dir_or_chmod(dest_path, dir_mode)) return msg;
       }
     } else {
-      if (auto msg = make_dir_or_chmod(dest_path, mode)) return msg;
+      if (auto msg = make_dir_or_chmod(dest_path, dir_mode)) return msg;
     }
 
     if (!apply_mtime(dest_path, mtime_sec, mtime_nsec, 0))

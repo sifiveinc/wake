@@ -37,4 +37,27 @@ std::optional<std::string> materialize_item(Cas& store, const std::string& dest_
                                             const std::string& hash_or_target, mode_t mode,
                                             time_t mtime_sec, long mtime_nsec);
 
+// Shared placement primitives, used by materialize_item and other code that places
+// files/symlinks/directories atomically (e.g. staged-workspace materialization in cas_prim).
+
+// Unique temp path adjacent to dest. PID + counter avoids collisions across concurrent processes.
+std::string make_temp_path(const std::string& dest);
+
+// Place temp at dest via a single rename(). Always cleans up temp on failure.
+// Returns nullopt on success, error string on failure.
+std::optional<std::string> atomic_replace(const std::string& temp, const std::string& dest,
+                                          const std::string& label);
+
+// Set mtime on path. No-op when sec == 0 && nsec == 0. flags is passed through to utimensat
+// (use AT_SYMLINK_NOFOLLOW for symlink temps). Returns false on failure.
+bool apply_mtime(const std::string& path, time_t sec, long nsec, int flags);
+
+// mkdir(path, mode). On EEXIST (concurrent process won), fall back to chmod.
+// Returns nullopt on success, error string on failure.
+std::optional<std::string> make_dir_or_chmod(const std::string& path, mode_t mode);
+
+// Ensure parent directories of dest exist at mode 0755.
+// Returns nullopt on success, error string on failure.
+std::optional<std::string> ensure_parent_dirs(const std::string& dest);
+
 }  // namespace cas
