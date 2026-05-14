@@ -57,7 +57,7 @@ TEST(content_hash_from_string_empty, "cas") {
   auto hash = ContentHash::from_string("");
 
   // Empty string should still produce a valid hash
-  EXPECT_EQUAL(hash.to_hex().length(), 64u);
+  EXPECT_EQUAL(hash.to_hex().length(), HASH_HEX_LEN);
 }
 
 TEST(content_hash_hex_roundtrip, "cas") {
@@ -73,8 +73,8 @@ TEST(content_hash_to_hex_length, "cas") {
   auto hash = ContentHash::from_string("test");
   std::string hex = hash.to_hex();
 
-  // BLAKE2b-256 produces 64 hex characters
-  EXPECT_EQUAL(hex.length(), 64u);
+  // BLAKE2b-256 produces 64 (HASH_HEX_LEN) hex characters
+  EXPECT_EQUAL(hex.length(), HASH_HEX_LEN);
 }
 
 TEST(content_hash_to_hex_valid_chars, "cas") {
