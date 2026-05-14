@@ -19,6 +19,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "content_hash.h"
 #include "wcl/result.h"
@@ -80,6 +81,12 @@ class Cas {
   wcl::result<bool, CASError> materialize_blob(const ContentHash& hash,
                                                const std::string& dest_path, mode_t mode,
                                                time_t mtime_sec, long mtime_nsec) const;
+
+  // Enumerate all blobs present in the store.  Best-effort / ignores problems.
+  std::vector<std::string> enumerate_blobs_strings() const;
+
+  // Remove blob from CAS.  Be careful.
+  std::optional<CASError> remove_blob(const ContentHash& hash);
 
  private:
   std::string root_;
