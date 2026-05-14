@@ -148,6 +148,10 @@ def jobSignature cmd res fni fno keep =
 # Process staged outputs: partition into published/unpublished, prepare hashes, store in the DB,
 # ingest published items into CAS, and materialize all items to the workspace.
 # Returns the list of stored PreparedStagingItems on success.
+# INVARIANT: 1) DB told about files ("intent", guards for run duration), strictly before
+#            2) storing into CAS, which must be completed before
+#            3) registered as stored ("reality", tied to jobs that use them).
+#            This is critical for GC safety.
 def materializeJobOutputs (prefix: String) (outputs: StagedOutputs): Result (List PreparedStagingItem) Error =
     def needsWorkspaceMaterialization = outputs.getStagedOutputsNeedsWorkspaceMaterialization
 
