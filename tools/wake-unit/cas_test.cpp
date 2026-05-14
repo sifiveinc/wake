@@ -389,3 +389,48 @@ TEST(cas_store_file_and_symlink_same_payload_same_hash, "cas") {
   fs::remove(input_file);
   fs::remove_all(store_path);
 }
+
+TEST(cas_store_enumerate, "cas") {
+  std::string store_path = "cas_test_store10";
+  fs::remove_all(store_path);
+
+  auto store_result = Cas::open(store_path);
+  ASSERT_TRUE((bool)store_result);
+  auto& store = *store_result;
+
+  auto hash_result = store.store_blob("foo");
+  ASSERT_TRUE((bool)hash_result);
+
+  auto hash2_result = store.store_blob("bar");
+  ASSERT_TRUE((bool)hash2_result);
+
+  auto blobs = store.enumerate_blobs_strings();
+  ASSERT_EQUAL(blobs.size(), 2U);
+
+  // Ordering may be reliable, sort both before checking.
+  std::vector<std::string> hashes;
+  hashes.push_back(hash_result->to_hex());
+  hashes.push_back(hash2_result->to_hex());
+
+  std::sort(hashes.begin(), hashes.end());
+  std::sort(blobs.begin(), blobs.end());
+
+  EXPECT_EQUAL(blobs[0], hashes[0]);
+  EXPECT_EQUAL(blobs[1], hashes[1]);
+
+  fs::remove_all(store_path);
+}
+
+TEST(cas_store_enumerate_empty, "cas") {
+  std::string store_path = "cas_test_store11";
+  fs::remove_all(store_path);
+
+  auto store_result = Cas::open(store_path);
+  ASSERT_TRUE((bool)store_result);
+  auto& store = *store_result;
+
+  auto blobs = store.enumerate_blobs_strings();
+  EXPECT_TRUE(blobs.empty());
+
+  fs::remove_all(store_path);
+}
