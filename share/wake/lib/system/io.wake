@@ -302,7 +302,7 @@ export def installAs (dest: String) (file: Path): Result Path Error =
 
     if matches `/.*` sdest || matches `\.\./.*` sdest then
         # Out-of-workspace destination: bypass workspace staging.
-        # wake-stage only supports workspace-relative paths; absolute or ../-escaped targets
+        # workspace staging only supports workspace-relative paths; absolute or ../-escaped targets
         # don't belong in the CAS or hash DB.
         # TODO: Remove this bypass, and enforce installAs to deal with workspace file paths only.
         def job =
