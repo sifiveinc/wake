@@ -203,5 +203,5 @@ void prim_register_time(PrimMap &pmap) {
   prim_register(pmap, "get_time", prim_get_time, type_get_time, PRIM_ORDERED);
   prim_register(pmap, "format_time", prim_format_time, type_format_time, PRIM_PURE);
   prim_register(pmap, "time_to_nanos", prim_time_to_nanos, type_time_to_nanos, PRIM_PURE);
-  prim_register(pmap, "time_print", prim_time_print, type_time_print, PRIM_ORDERED);
+  prim_register(pmap, "time_print", prim_time_print, type_time_print, PRIM_IMPURE);
 }
