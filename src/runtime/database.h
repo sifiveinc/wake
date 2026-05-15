@@ -18,7 +18,6 @@
 #ifndef DATABASE_H
 #define DATABASE_H
 
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -28,6 +27,7 @@
 
 #include "json/json5.h"
 #include "run_lock.h"
+#include "wcl/function_ref.h"
 
 struct FileReflection {
   std::string path;
@@ -219,7 +219,7 @@ struct Database {
   // Returns false if there are incomplete runs (active builds).
   // The check, DB clear, and file deletion (via callback) all happen
   // within the same transaction to prevent races with new builds.
-  bool clear_jobs_if_safe(std::function<void(std::vector<std::string>)> delete_files);
+  bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
 
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode);
@@ -248,7 +248,7 @@ struct Database {
   std::pair<bool, std::string> get_runner_status(long job_id);
 
   void gc_if_dead(const std::vector<std::string> &hashes,
-                  const std::function<void(std::vector<std::string>)> &callback);
+                  wcl::function_ref<void(std::vector<std::string>)> callback);
 
  private:
   void begin_ro_txn() const;

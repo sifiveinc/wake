@@ -1447,7 +1447,7 @@ std::vector<std::string> Database::clear_jobs() {
   return out;
 }
 
-bool Database::clear_jobs_if_safe(std::function<void(std::vector<std::string>)> delete_files) {
+bool Database::clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files) {
   const char *why = "Could not clear jobs";
   std::vector<std::string> out;
 
@@ -2283,7 +2283,7 @@ std::vector<FileDependency> Database::get_file_dependencies() const {
 }
 
 void Database::gc_if_dead(const std::vector<std::string> &hashes,
-                          const std::function<void(std::vector<std::string>)> &callback) {
+                          wcl::function_ref<void(std::vector<std::string>)> callback) {
   constexpr size_t BATCH_SIZE = 256;            // number of hashes per query, must match statement!
   constexpr size_t TXN_DEAD_SIZE = 1ULL << 11;  // transaction limit for dead hashes
   constexpr size_t TXN_HASHES = 1ULL << 13;     // transaction limit for total hashes checked
