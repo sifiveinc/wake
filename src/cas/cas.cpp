@@ -30,6 +30,7 @@
 #include <optional>
 #include <sstream>
 
+#include "materialize.h"
 #include "wcl/file_ops.h"
 
 namespace fs = std::filesystem;
@@ -275,7 +276,7 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
   }
 
   // Copy to temp file first, then atomically rename to destination.
-  std::string temp_path = dest_path + "." + std::to_string(getpid());
+  std::string temp_path = make_temp_path(dest_path);
   auto copy_result = wcl::reflink_or_copy_file(src_path, temp_path, mode, reflink_supported_);
   if (!copy_result) {
     fs::remove(temp_path, ec);
