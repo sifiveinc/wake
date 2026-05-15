@@ -155,8 +155,8 @@ static PRIMTYPE(type_format_time) {
 }
 
 // Print a timestamped message: format Time, prepend to message, write to stream
-// The timezone is specified by the TZ environment variable, or the local machine timezone if TZ is unset.
-// Args: format, time, stream, message
+// The timezone is specified by the TZ environment variable, or the local machine timezone if TZ is
+// unset. Args: format, time, stream, message
 static PRIMFN(prim_time_print) {
   EXPECT(4);
   STRING(format, 0);
