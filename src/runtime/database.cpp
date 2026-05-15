@@ -919,17 +919,34 @@ void Database::reap_dead_runs() {
 }
 
 void Database::clean() {
-  const char *why = "Could not compute critical path";
-  begin_rw_txn();
-  bind_integer(why, imp->revtop_order, 1, imp->run_id);
-  while (sqlite3_step(imp->revtop_order) == SQLITE_ROW) {
-    bind_integer(why, imp->setcrit_path, 1, sqlite3_column_int64(imp->revtop_order, 0));
-    single_step(why, imp->setcrit_path, imp->debugdb);
-  }
-  finish_stmt(why, imp->revtop_order, imp->debugdb);
+  // Critical path update.  Chunked to avoid holding writer lock.
+  {
+    const char *why = "Could not compute critical path";
+    std::vector<int64_t> job_ids;
+    begin_ro_txn();
+    bind_integer(why, imp->revtop_order, 1, imp->run_id);
+    while (sqlite3_step(imp->revtop_order) == SQLITE_ROW) {
+      job_ids.push_back(sqlite3_column_int64(imp->revtop_order, 0));
+    }
+    finish_stmt(why, imp->revtop_order, imp->debugdb);
+    end_txn();
 
+    constexpr size_t CHUNK_SIZE = 1000;
+    for (size_t i = 0; i < job_ids.size(); i += CHUNK_SIZE) {
+      size_t end = std::min(i + CHUNK_SIZE, job_ids.size());
+      begin_rw_txn();
+      for (size_t j = i; j < end; ++j) {
+        bind_integer(why, imp->setcrit_path, 1, job_ids[j]);
+        single_step(why, imp->setcrit_path, imp->debugdb);
+      }
+      end_txn();
+    }
+  }
+
+  begin_rw_txn();
+  const char *why = "Could not clean database jobs";
   bind_integer(why, imp->delete_jobs, 1, imp->gc_watermark);
-  single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
+  single_step(why, imp->delete_jobs, imp->debugdb);
   single_step("Could not clean orphan files", imp->delete_orphan_files, imp->debugdb);
   single_step("Could not clean database dups", imp->delete_dups, imp->debugdb);
   single_step("Could not clean database stats", imp->delete_stats, imp->debugdb);
