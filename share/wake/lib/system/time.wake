@@ -101,22 +101,20 @@ export def printTimeLnLevel (format: String) (time: Time) (logLevel: LogLevel) (
 
     (\f \t \s \m prim "time_print") format time name "{message}\n"
 
-# printTsLn: Print a local-timezone ISO 8601 timestamped message at report level.
+# printTimeLn: Print a ISO 8601 timestamped message at report level.
 #
 # Output: [2026-04-07T01:15:07-0700] message
 #
 # Example:
-#   printTsLn (getTime Unit) "build started"
-export def printTsLn (time: Time) (message: String): Unit =
+#   printTimeLn (getTime Unit) "build started"
+export def printTimeLn (time: Time) (message: String): Unit =
     printTimeLnLevel '[%Y-%m-%dT%H:%M:%S%.3f%z]' time logReport message
 
-# printCurrentTsLn: Print a local-timezone ISO 8601 timestamped message at report level.
-# Automatically captures the current time.
+# printCurrentTimeLn: Print an ISO 8601 timestamped message at report level using the current time.
 #
 # Output: [2026-04-07T01:15:07-0700] message
 #
 # Example:
-#   printCurrentTsLn "build started"
-export def printCurrentTsLn (message: String): Unit =
-    printTsLn (getTime Unit) message
-
+#   printCurrentTimeLn "build started"
+export def printCurrentTimeLn (message: String): Unit =
+    printTimeLn (getTime Unit) message
