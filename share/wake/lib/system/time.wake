@@ -85,24 +85,21 @@ export def timeToSeconds (time: Time): Double =
 
 # printTimeLnLevel: Print a message with a timestamp prefix at a given log level.
 #
-# The timestamp is formatted using strftime format specifiers in the specified
-# timezone. Use "UTC" for UTC output, or an IANA timezone name. Empty string
-# uses the local machine timezone.
+# The timestamp is formatted using strftime format specifiers in the timezone
+# specified by the TZ environment variable, or the local machine timezone if TZ is unset.
 #
 # Arguments:
 #   format   - strftime format string for the timestamp
-#   timezone - IANA timezone name (e.g., "UTC", "America/Los_Angeles")
 #   time     - Time value to format
 #   logLevel - LogLevel to print at
 #   message  - message to print
 #
 # Example:
-#   printTimeLnLevel "%H:%M:%S" "UTC" (getTime Unit) logWarning "something happened"
-#   printTimeLnLevel "%H:%M:%S" "America/Los_Angeles" (getTime Unit) logReport "hello"
-export def printTimeLnLevel (format: String) (timezone: String) (time: Time) (logLevel: LogLevel) (message: String): Unit =
+#   printTimeLnLevel "%H:%M:%S" (getTime Unit) logWarning "something happened"
+export def printTimeLnLevel (format: String) (time: Time) (logLevel: LogLevel) (message: String): Unit =
     def LogLevel name = logLevel
 
-    (\f \tz \t \s \m prim "time_print") format timezone time name "{message}\n"
+    (\f \t \s \m prim "time_print") format time name "{message}\n"
 
 # printTsLn: Print a local-timezone ISO 8601 timestamped message at report level.
 #
@@ -111,7 +108,7 @@ export def printTimeLnLevel (format: String) (timezone: String) (time: Time) (lo
 # Example:
 #   printTsLn (getTime Unit) "build started"
 export def printTsLn (time: Time) (message: String): Unit =
-    printTimeLnLevel '[%Y-%m-%dT%H:%M:%S%.3f%z]' '' time logReport message
+    printTimeLnLevel '[%Y-%m-%dT%H:%M:%S%.3f%z]' time logReport message
 
 # printCurrentTsLn: Print a local-timezone ISO 8601 timestamped message at report level.
 # Automatically captures the current time.

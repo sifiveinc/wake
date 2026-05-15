@@ -154,21 +154,21 @@ static PRIMTYPE(type_format_time) {
          out->unify(Data::typeString);
 }
 
-// Print a timestamped message: format Time with timezone, prepend to message, write to stream
-// Args: format, timezone, time, stream, message
+// Print a timestamped message: format Time, prepend to message, write to stream
+// The timezone is specified by the TZ environment variable, or the local machine timezone if TZ is unset.
+// Args: format, time, stream, message
 static PRIMFN(prim_time_print) {
-  EXPECT(5);
+  EXPECT(4);
   STRING(format, 0);
-  STRING(timezone, 1);
 
-  HeapObject *time_obj = args[2];
+  HeapObject *time_obj = args[1];
   REQUIRE(typeid(*time_obj) == typeid(Time));
   Time *time = static_cast<Time *>(time_obj);
 
-  STRING(stream, 3);
-  STRING(message, 4);
+  STRING(stream, 2);
+  STRING(message, 3);
 
-  std::string ts = format_time_str(format->c_str(), time->nanoseconds, timezone->c_str());
+  std::string ts = format_time_str(format->c_str(), time->nanoseconds, "");
 
   runtime.heap.reserve(reserve_unit());
   status_get_generic_stream(stream->c_str()) << ts << message->as_str();
@@ -176,9 +176,9 @@ static PRIMFN(prim_time_print) {
 }
 
 static PRIMTYPE(type_time_print) {
-  return args.size() == 5 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
-         args[2]->unify(Data::typeTime) && args[3]->unify(Data::typeString) &&
-         args[4]->unify(Data::typeString) && out->unify(Data::typeUnit);
+  return args.size() == 4 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeTime) &&
+         args[2]->unify(Data::typeString) && args[3]->unify(Data::typeString) &&
+         out->unify(Data::typeUnit);
 }
 
 // Extract nanoseconds from a Time value as an Integer
