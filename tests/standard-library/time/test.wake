@@ -36,12 +36,12 @@ export def testTimeLibrary _ =
     else False
 
     # Test printTimeLnLevel runs without error
-    def _ = printTimeLnLevel '%H:%M:%S%Z' 'America/Los_Angeles' (getTime Unit) logReport 'printTimeLnLevel test'
+    def _ = printTimeLnLevel '%H:%M:%S%Z' (getTime Unit) logReport 'printTimeLnLevel test'
 
-    # Test printTsLn (local tz)
-    def _ = printTsLn (getTime Unit) 'printTsLn test'
+    # Test printTimeLn (local tz)
+    def _ = printTimeLn (getTime Unit) 'printTimeLn test'
 
-    # Test printCurrentTsLn (local tz, auto time)
-    def _ = printCurrentTsLn 'printCurrentTsLn test'
+    # Test printCurrentTimeLn (local tz, auto time)
+    def _ = printCurrentTimeLn 'printCurrentTimeLn test'
 
     True
