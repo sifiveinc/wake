@@ -52,6 +52,19 @@ PASSED:
   filepath_range_only_slash
   filepath_range_two_slash
   filepath_relative_to
+  function_ref_const_lambda
+  function_ref_copy_assignment
+  function_ref_copy_constructor
+  function_ref_function_pointer
+  function_ref_function_reference
+  function_ref_functor
+  function_ref_lambda_capture
+  function_ref_multiple_params
+  function_ref_mutable_lambda
+  function_ref_optional_return
+  function_ref_return_conversion
+  function_ref_stateless_lambda
+  function_ref_void_return
   iterator_split_by_empty
   iterator_split_by_no_delim
   iterator_split_by_nominal
