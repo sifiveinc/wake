@@ -221,6 +221,12 @@ struct Database {
   // within the same transaction to prevent races with new builds.
   bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
 
+  // Remove DB records for jobs that reference any file failing exists().
+  // exists() receives the workspace path and stored type ("file"/"symlink"/"directory").
+  // Returns the number of jobs pruned, or empty if refused due to active builds.
+  std::optional<size_t> prune_to_workspace(
+      wcl::function_ref<bool(const std::string &path, const std::string &type)> exists);
+
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode);
 

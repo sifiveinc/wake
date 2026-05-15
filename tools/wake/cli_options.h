@@ -67,6 +67,7 @@ struct CommandLineOptions {
   bool queued;
   bool in_flight;
   bool clean;
+  bool prune;
   bool list_outputs;
   bool include_hidden;
   std::optional<bool> log_header_align;
@@ -176,6 +177,7 @@ struct CommandLineOptions {
       {0, "stdout", GOPT_ARGUMENT_REQUIRED},
       {0, "stderr", GOPT_ARGUMENT_REQUIRED},
       {0, "clean", GOPT_ARGUMENT_FORBIDDEN },
+      {0, "prune", GOPT_ARGUMENT_FORBIDDEN },
       {0, "list-outputs", GOPT_ARGUMENT_FORBIDDEN },
       {0, "fd:3", GOPT_ARGUMENT_REQUIRED},
       {0, "fd:4", GOPT_ARGUMENT_REQUIRED},
@@ -236,6 +238,7 @@ struct CommandLineOptions {
     simple = arg(options, "simple")->count;
     canceled = arg(options, "canceled")->count;
     clean = arg(options, "clean")->count;
+    prune = arg(options, "prune")->count;
     list_outputs = arg(options, "list-outputs")->count;
     include_hidden = arg(options, "include-hidden")->count;
 

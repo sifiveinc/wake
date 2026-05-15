@@ -1,0 +1,4 @@
+PASS: deleted output pruned
+PASS: present output kept
+PASS: content-changed output not pruned
+PASS: type-mismatch output pruned

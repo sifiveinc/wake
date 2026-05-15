@@ -414,6 +414,7 @@ void print_help(const char *argv0) {
     << "    --init        DIR  Create or replace a wake.db in the specified directory"     << std::endl
     << "    --list-outputs     List all job outputs"                                       << std::endl
     << "    --clean            Delete all job outputs"                                     << std::endl
+    << "    --prune            Remove DB entries for jobs whose files no longer exist"     << std::endl
     << "    --input    -i FILE Capture jobs which read FILE. (repeat for multiple files)"  << std::endl
     << "    --output   -o FILE Capture jobs which wrote FILE. (repeat for multiple files)" << std::endl
     << "    --label       GLOB Capture jobs where label matches GLOB"                      << std::endl
@@ -900,6 +901,30 @@ int main(int argc, char **argv) {
     db.checkpoint(/*blocking=*/true);
 
     return delete_error ? 1 : 0;
+  }
+
+  if (clo.prune) {
+    db.reap_dead_runs();
+    auto result =
+        db.prune_to_workspace([](const std::string &path, const std::string &stored_type) {
+          struct stat st;
+          if (lstat(path.c_str(), &st) != 0) return false;
+          if (stored_type == "directory") return S_ISDIR(st.st_mode);
+          if (stored_type == "symlink") return S_ISLNK(st.st_mode);
+          return S_ISREG(st.st_mode);
+        });
+    if (!result) {
+      std::cerr << "error: cannot prune while builds are in progress" << std::endl;
+      std::cerr << "hint: use 'wake --history' to see active runs" << std::endl;
+      return 1;
+    }
+    std::cout << "Pruned " << *result << " job(s) with missing files." << std::endl;
+    CASContext cas_ctx(".build/cas");
+    if (cas_ctx.has_store()) {
+      if (!gc_dead_cas_blobs(*cas_ctx.get_store(), db))
+        std::cerr << "CAS GC encountered errors (prune result unaffected)" << std::endl;
+    }
+    return 0;
   }
 
   // seed the keyed hash function
