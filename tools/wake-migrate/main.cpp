@@ -509,6 +509,18 @@ static std::vector<Migration> get_migrations() {
        },
        "Add run_files table for guarding files during active runs"},
 
+      // Version 14 -> 15: Replace filesearch index with a wider ordering that
+      // also covers (file_id, access, modified) lookups used by setcrit_path.
+      // The new prefix (file_id, access) subsumes the old filesearch.
+      {14, 15,
+       [](sqlite3* db) -> bool {
+         if (!exec_sql(db, "DROP INDEX IF EXISTS filesearch;")) return false;
+         return exec_sql(db,
+                         "CREATE INDEX IF NOT EXISTS filetree_search "
+                         "ON filetree(file_id, access, modified, job_id);");
+       },
+       "Replace filesearch index with (file_id, access, modified, job_id)"},
+
   };
 }
 
