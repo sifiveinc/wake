@@ -83,6 +83,7 @@ static std::string expand_subsecond_formats(const char *fmt, int64_t nanoseconds
 // Format a Time's nanoseconds using strftime with sub-second expansion.
 // If timezone is nullptr, uses UTC (gmtime_r). Otherwise sets TZ and uses localtime_r.
 // Empty string timezone means system default (unset TZ).
+// Invalid timezone inputs will fallback to using UTC
 static std::string format_time_str(const char *fmt, int64_t nanoseconds, const char *timezone) {
   std::chrono::nanoseconds nanos_duration(nanoseconds);
   std::chrono::system_clock::time_point tp(
