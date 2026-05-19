@@ -48,10 +48,10 @@ export def getTime (_: a): Time =
 # Examples:
 #   formatTime "%Y-%m-%d" (getTime Unit)              # "2026-03-10"
 #   formatTime "%Y-%m-%d %H:%M:%S" (getTime Unit)     # "2026-03-10 08:15:07"
+#   formatTime "%H:%M:%S:%f" (getTime Unit)           # "08:15:07:123456789" 
+#   formatTime "%H:%M:%S%.f" (getTime Unit)           # "08:15:07.02649" (trimmed)
 #   formatTime "%H:%M:%S%.3f" (getTime Unit)          # "08:15:07.026" (milliseconds)
 #   formatTime "%H:%M:%S%.6f" (getTime Unit)          # "08:15:07.026490" (microseconds)
-#   formatTime "%H:%M:%S%3f" (getTime Unit)           # "08:15:07026" (no dot)
-#   formatTime "%H:%M:%S%.f" (getTime Unit)           # "08:15:07.02649" (trimmed)
 export def formatTime (format: String) (time: Time): String =
     (\f \t prim "format_time") format time
 
@@ -103,7 +103,7 @@ export def printTimeLnLevel (format: String) (time: Time) (logLevel: LogLevel) (
 
 # printTimeLn: Print a ISO 8601 timestamped message at report level.
 #
-# Output: [2026-04-07T01:15:07-0700] message
+# Output: [2026-04-07T01:15:07-0700]<message>
 #
 # Example:
 #   printTimeLn (getTime Unit) "build started"

@@ -25,6 +25,16 @@ export def testTimeLibrary _ =
     require True = (strlen formatted > 0)
     else False
 
+    # Test that %%f is not expanded as a sub-second specifier
+    def double_pct = formatTime '%%f' now
+    require True = (double_pct ==* '%f')
+    else False
+
+    # Test that %%S is not expanded during sub-second parsing 
+    def double_pct = formatTime '%%S' now
+    require True = (double_pct ==* '%S')
+    else False
+
     # Test getTimeISO returns a non-empty string
     def iso = getTimeISO Unit
     require True = (strlen iso > 0)

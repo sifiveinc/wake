@@ -32,7 +32,8 @@
 #include "value.h"
 
 // Pre-process a format string to expand %f sub-second specifiers before passing to strftime.
-// Supported: %f (9 digits), %.f (trimmed), %.Nf (dot + N digits), %Nf (N digits) where N is 1-9
+// Supported: %f (9 digits), %.f (dot + trimmed), %.Nf (dot + N digits), %Nf (N digits) where N is
+// 1-9
 static std::string expand_subsecond_formats(const char *fmt, int64_t nanoseconds) {
   int64_t sub_nanos = nanoseconds % 1000000000LL;
   if (sub_nanos < 0) sub_nanos += 1000000000LL;
@@ -72,6 +73,10 @@ static std::string expand_subsecond_formats(const char *fmt, int64_t nanoseconds
       // %f — all 9 digits, no dot
       result.append(nanos_str, 9);
       p += 1;
+    } else if (p[1] == '%') {
+      // %% — pass through escaped percent for strftime
+      result += "%%";
+      p += 1;
     } else {
       // Not a sub-second specifier — pass through for strftime
       result += '%';
@@ -82,7 +87,7 @@ static std::string expand_subsecond_formats(const char *fmt, int64_t nanoseconds
 
 // Format a Time's nanoseconds using strftime with sub-second expansion.
 // If timezone is nullptr, uses UTC (gmtime_r). Otherwise sets TZ and uses localtime_r.
-// Empty string timezone means system default (unset TZ).
+// Empty string timezone means system default.
 // Invalid timezone inputs will fallback to using UTC
 static std::string format_time_str(const char *fmt, int64_t nanoseconds, const char *timezone) {
   std::chrono::nanoseconds nanos_duration(nanoseconds);
