@@ -77,6 +77,7 @@ pub async fn add_job(
                             path: Set(out_symlink.path),
                             link: Set(out_symlink.link),
                             job_id: Set(job_id),
+                            hash: Set(out_symlink.hash),
                         })
                         .collect(),
                 )

@@ -36,6 +36,16 @@ pub trait JobKeyHash {
             hasher.update(file.path.as_bytes());
             hasher.update(&file.hash.len().to_le_bytes());
             hasher.update(file.hash.as_bytes());
+            // Skip when `type` is empty so old-client keys (no type/mode) hash exactly
+            // as before, preserving their cache. New-client keys mix in type+mode and
+            // land in a disjoint namespace, fixing the symlink-vs-file collision.
+            //
+            // TODO: Remove this check once all clients have been migrated to the newer version.
+            if !file.r#type.is_empty() {
+                hasher.update(&file.r#type.len().to_le_bytes());
+                hasher.update(file.r#type.as_bytes());
+                hasher.update(&file.mode.to_le_bytes());
+            }
         }
         hasher.finalize().to_string()
     }
@@ -45,6 +55,11 @@ pub trait JobKeyHash {
 pub struct VisibleFile {
     pub path: String,
     pub hash: String,
+    // Absent in old client payloads; defaults keep old keys unchanged.
+    #[serde(rename = "type", default)]
+    pub r#type: String,
+    #[serde(default)]
+    pub mode: i32,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -66,6 +81,9 @@ pub struct Dir {
 pub struct Symlink {
     pub path: String,
     pub link: String,
+    // Absent in old client payloads; "" means no CAS hash available (legacy entry).
+    #[serde(default)]
+    pub hash: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -321,4 +339,49 @@ pub struct DashboardStatsResponse {
     pub most_space_efficient_jobs: Vec<DashboardStatsSizeRuntimeValueJob>,
     pub most_space_use_jobs: Vec<DashboardStatsSizeRuntimeValueJob>,
     pub blob_use_by_store: Vec<DashboardStatsBlobUseByStore>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vf(path: &str, hash: &str, ty: &str, mode: i32) -> VisibleFile {
+        VisibleFile {
+            path: path.to_string(),
+            hash: hash.to_string(),
+            r#type: ty.to_string(),
+            mode,
+        }
+    }
+
+    fn payload_with_visible(visible_files: Vec<VisibleFile>) -> ReadJobPayload {
+        ReadJobPayload {
+            cmd: vec![],
+            env: vec![],
+            cwd: "/".to_string(),
+            stdin: "".to_string(),
+            is_atty: false,
+            hidden_info: "".to_string(),
+            visible_files,
+        }
+    }
+
+    /// Symlink-vs-file collision regression test.
+    ///
+    /// Asserts that two visible files with identical path and content hash but
+    /// different `type` and `mode` produce distinct RSC job keys.
+    #[test]
+    fn symlink_vs_file_with_same_content_hash_no_longer_collide() {
+        let same_content_hash = "abc123";
+        let same_path = "tools/cc";
+
+        let as_file = payload_with_visible(vec![vf(same_path, same_content_hash, "regular_file", 0o644)]);
+        let as_symlink = payload_with_visible(vec![vf(same_path, same_content_hash, "symlink", 0o777)]);
+
+        assert_ne!(
+            as_file.hash(),
+            as_symlink.hash(),
+            "VisibleFile entries with same path+hash but different type/mode must hash to different RSC keys"
+        );
+    }
 }

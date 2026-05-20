@@ -285,16 +285,20 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
     reflink_supported_ = false;
   }
 
-  // Apply timestamp to temp file before rename
-  struct timespec times[2];
-  times[0].tv_sec = 0;
-  times[0].tv_nsec = UTIME_OMIT;  // Don't change atime
-  times[1].tv_sec = mtime_sec;
-  times[1].tv_nsec = mtime_nsec;
+  // Apply timestamp to temp file before rename. (0, 0) is a sentinel meaning
+  // "leave the kernel-set mtime from the reflink/copy" — matches the convention
+  // in cas_prim.cpp::apply_mtime.
+  if (mtime_sec != 0 || mtime_nsec != 0) {
+    struct timespec times[2];
+    times[0].tv_sec = 0;
+    times[0].tv_nsec = UTIME_OMIT;  // Don't change atime
+    times[1].tv_sec = mtime_sec;
+    times[1].tv_nsec = mtime_nsec;
 
-  if (utimensat(AT_FDCWD, temp_path.c_str(), times, 0) != 0) {
-    fs::remove(temp_path, ec);
-    return wcl::make_error<bool, CASError>(CASError::IOError);
+    if (utimensat(AT_FDCWD, temp_path.c_str(), times, 0) != 0) {
+      fs::remove(temp_path, ec);
+      return wcl::make_error<bool, CASError>(CASError::IOError);
+    }
   }
 
   // Atomically rename over destination - last one wins

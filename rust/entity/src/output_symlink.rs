@@ -11,6 +11,7 @@ pub struct Model {
     pub link: String,
     pub job_id: Uuid,
     pub created_at: DateTime,
+    pub hash: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
