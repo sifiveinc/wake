@@ -53,7 +53,11 @@ void HeapObject::format(std::ostream &os, const HeapObject *value, bool detailed
     state.current = state.stack.back();
     state.stack.pop_back();
     if (state.current.value) {
-      state.current.value->format(os, state);
+      if (is_small_int(state.current.value)) {
+        os << small_int_value(state.current.value);
+      } else {
+        state.current.value->format(os, state);
+      }
     } else {
       os << term_colour(TERM_RED) << "<future>" << term_normal();
     }
@@ -202,6 +206,9 @@ Integer::Integer(const Integer &i) : length(i.length) {
 }
 
 Integer *Integer::claim(Heap &h, const MPZ &mpz) {
+  int64_t small;
+  if (fits_small_mpz(mpz.value[0], &small))
+    return static_cast<Integer *>(make_small_int(small));
   Integer *out = new (h.claim(reserve(mpz))) Integer(mpz.value[0]._mp_size);
   HeapAgeTracker::setAge(out, 0);
   memcpy(out->data(), mpz.value[0]._mp_d, sizeof(mp_limb_t) * abs(out->length));
@@ -209,6 +216,9 @@ Integer *Integer::claim(Heap &h, const MPZ &mpz) {
 }
 
 Integer *Integer::alloc(Heap &h, const MPZ &mpz) {
+  int64_t small;
+  if (fits_small_mpz(mpz.value[0], &small))
+    return static_cast<Integer *>(make_small_int(small));
   Integer *out = new (h.alloc(reserve(mpz))) Integer(mpz.value[0]._mp_size);
   HeapAgeTracker::setAge(out, 0);
   memcpy(out->data(), mpz.value[0]._mp_d, sizeof(mp_limb_t) * abs(out->length));
@@ -233,6 +243,18 @@ void Integer::format(std::ostream &os, FormatState &state) const { os << str(); 
 
 Hash Integer::shallow_hash() const {
   return Hash(data(), abs(length) * sizeof(mp_limb_t)) ^ TYPE_INTEGER;
+}
+
+// Hash of a tagged small-Integer value, defined to match the heap-form hash
+// of the same numeric value (single-limb absolute value, or empty for zero,
+// XOR TYPE_INTEGER). Allocation canonicalization makes coexistence of the
+// two representations impossible, but the equivalence is the contract.
+Hash small_int_shallow_hash(int64_t v) {
+  mp_limb_t limb = 0;
+  if (v == 0) return Hash(&limb, 0) ^ TYPE_INTEGER;
+  limb = (v > 0) ? static_cast<mp_limb_t>(v)
+                 : static_cast<mp_limb_t>(-static_cast<uint64_t>(v));
+  return Hash(&limb, sizeof(limb)) ^ TYPE_INTEGER;
 }
 
 RootPointer<Double> Double::literal(Heap &h, const char *str) {

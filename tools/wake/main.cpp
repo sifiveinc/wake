@@ -1069,8 +1069,10 @@ int main(int argc, char **argv) {
     HeapObject *v = runtime.output.get();
     if (!v) {
       pass = false;
-    } else if (Record *r = dynamic_cast<Record *>(v)) {
-      if (r->cons->ast.name == "Fail") pass = false;
+    } else if (!is_small_int(v)) {
+      if (Record *r = dynamic_cast<Record *>(v)) {
+        if (r->cons->ast.name == "Fail") pass = false;
+      }
     }
     std::ostream &os = pass ? (std::cout) : (std::cerr);
     if (clo.verbose) {

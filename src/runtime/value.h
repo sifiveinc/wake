@@ -140,6 +140,10 @@ struct String final : public GCObject<String, Value> {
   explicit String(size_t length_);
 };
 
+// Hash of a tagged small-Integer value, defined to match the heap-form hash
+// of the equivalent numeric value.
+Hash small_int_shallow_hash(int64_t v);
+
 // An exception-safe wrapper for mpz_t
 struct MPZ {
   mpz_t value;
@@ -168,6 +172,8 @@ struct Integer final : public GCObject<Integer, Value> {
            (abs(length) * sizeof(mp_limb_t) + sizeof(PadObject) - 1) / sizeof(PadObject);
   }
   static size_t reserve(const MPZ &mpz) {
+    int64_t small;
+    if (fits_small_mpz(mpz.value[0], &small)) return 0;
     return sizeof(Integer) / sizeof(PadObject) +
            (abs(mpz.value[0]._mp_size) * sizeof(mp_limb_t) + sizeof(PadObject) - 1) /
                sizeof(PadObject);
@@ -188,6 +194,37 @@ struct Integer final : public GCObject<Integer, Value> {
   // Never call this during runtime! It can invalidate the heap.
   static RootPointer<Integer> literal(Heap &h, const std::string &str);
 };
+
+// Materialize an mpz_t from either a tagged small-Integer pointer or a heap
+// Integer. The IntegerView owns its own one-limb backing storage; do not let
+// it outlive the mpz_t derived from it.
+struct IntegerView {
+  mp_limb_t limb;
+  __mpz_struct mpz;
+  explicit IntegerView(const HeapObject *p) {
+    if (is_small_int(p)) {
+      int64_t v = small_int_value(p);
+      mpz._mp_d = &limb;
+      mpz._mp_alloc = 1;
+      if (v == 0) {
+        mpz._mp_size = 0;
+        limb = 0;
+      } else if (v > 0) {
+        mpz._mp_size = 1;
+        limb = static_cast<mp_limb_t>(v);
+      } else {
+        mpz._mp_size = -1;
+        limb = static_cast<mp_limb_t>(-static_cast<uint64_t>(v));
+      }
+    } else {
+      mpz = static_cast<const Integer *>(p)->wrap();
+    }
+  }
+};
+
+inline bool is_integer(const HeapObject *p) {
+  return is_small_int(p) || typeid(*p) == typeid(Integer);
+}
 
 #define FIXED 0
 #define SCIENTIFIC 1
