@@ -70,6 +70,8 @@ Top::Top() : packages(), globals(), def_package(nullptr) {
       std::make_pair("Array", SymbolSource(FRAGMENT_CPP_LINE, "Array@builtin", SYM_LEAF)));
   builtin->package.types.insert(
       std::make_pair("Job", SymbolSource(FRAGMENT_CPP_LINE, "Job@builtin", SYM_LEAF)));
+  builtin->package.types.insert(
+      std::make_pair("Time", SymbolSource(FRAGMENT_CPP_LINE, "Time@builtin", SYM_LEAF)));
   builtin->exports = builtin->package;
 }
 

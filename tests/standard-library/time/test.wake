@@ -1,0 +1,57 @@
+from time import _
+
+from wake import _
+
+# Test basic time library functionality
+export def testTimeLibrary _ =
+    # Test getTime returns a time with positive nanoseconds (after epoch)
+    def now = getTime Unit
+    def nanos = timeToNanoseconds now
+    require True = (nanos > 0)
+    else False
+
+    # Test timeToSeconds returns a positive Double
+    def secs = timeToSeconds now
+    require True = (secs >. 0.0)
+    else False
+
+    # Test timeToMilliseconds returns a positive Double
+    def millis = timeToMilliseconds now
+    require True = (millis >. 0.0)
+    else False
+
+    # Test formatTime produces a non-empty string
+    def formatted = formatTime '%Y-%m-%d %H:%M:%S' now
+    require True = (strlen formatted > 0)
+    else False
+
+    # Test that %%f is not expanded as a sub-second specifier
+    def double_pct = formatTime '%%f' now
+    require True = (double_pct ==* '%f')
+    else False
+
+    # Test that %%S is not expanded during sub-second parsing 
+    def double_pct = formatTime '%%S' now
+    require True = (double_pct ==* '%S')
+    else False
+
+    # Test getTimeISO returns a non-empty string
+    def iso = getTimeISO Unit
+    require True = (strlen iso > 0)
+    else False
+
+    # Test format returns nanoseconds as a string
+    def fmt = format now
+    require True = (fmt ==* str nanos)
+    else False
+
+    # Test printTimeLnLevel runs without error
+    def _ = printTimeLnLevel '%H:%M:%S%Z' (getTime Unit) logReport 'printTimeLnLevel test'
+
+    # Test printTimeLn (local tz)
+    def _ = printTimeLn (getTime Unit) 'printTimeLn test'
+
+    # Test printCurrentTimeLn (local tz, auto time)
+    def _ = printCurrentTimeLn 'printCurrentTimeLn test'
+
+    True
