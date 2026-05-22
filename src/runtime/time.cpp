@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
+#include <mutex>
 #include <string>
 
 #include "prim.h"
@@ -100,6 +101,9 @@ static std::string format_time_str(const char *fmt, int64_t nanoseconds, const c
   if (timezone == nullptr) {
     gmtime_r(&seconds, &tm_info);
   } else {
+    static std::mutex tz_mutex;
+    std::lock_guard<std::mutex> lock(tz_mutex);
+
     char *old_tz = getenv("TZ");
     std::string saved_tz;
     bool had_tz = (old_tz != nullptr);
