@@ -1,0 +1,6 @@
+rm: would remove path 'output.txt' from database (not implemented yet)
+rm: would remove path 'foo.txt' from database (not implemented yet)
+rm: would remove path 'bar.txt' from database (not implemented yet)
+rm: would remove path 'baz.txt' from database (not implemented yet)
+rm: would remove path 'glob1.txt' from database (not implemented yet)
+rm: would remove path 'glob2.txt' from database (not implemented yet)

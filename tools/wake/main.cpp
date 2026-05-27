@@ -414,6 +414,7 @@ void print_help(const char *argv0) {
     << "    --init        DIR  Create or replace a wake.db in the specified directory"     << std::endl
     << "    --list-outputs     List all job outputs"                                       << std::endl
     << "    --clean            Delete all job outputs"                                     << std::endl
+    << "    --rm               Remove files/directories from database (paths as arguments)" << std::endl
     << "    --input    -i FILE Capture jobs which read FILE. (repeat for multiple files)"  << std::endl
     << "    --output   -o FILE Capture jobs which wrote FILE. (repeat for multiple files)" << std::endl
     << "    --label       GLOB Capture jobs where label matches GLOB"                      << std::endl
@@ -900,6 +901,17 @@ int main(int argc, char **argv) {
     db.checkpoint(/*blocking=*/true);
 
     return delete_error ? 1 : 0;
+  }
+
+  if (clo.rm) {
+    if (clo.argc < 2) {
+      std::cerr << "error: --rm requires at least one path argument" << std::endl;
+      return 1;
+    }
+    for (int i = 1; i < clo.argc; i++) {
+      std::cout << "rm: would remove path '" << clo.argv[i] << "' from database (not implemented yet)" << std::endl;
+    }
+    return 0;
   }
 
   // seed the keyed hash function
