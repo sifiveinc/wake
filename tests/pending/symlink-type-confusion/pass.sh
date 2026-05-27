@@ -22,3 +22,8 @@ printf 'target' > input
 # Step 3: Run wake again
 echo "=== Run 2: file ==="
 "${WAKE}" --no-tty -x 'test Unit'
+
+# Clean up
+err=$?
+rm -f input
+exit $err

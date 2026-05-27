@@ -6,3 +6,8 @@ WAKE="${WAKE:-wake}"
 
 rm -f overlap.txt wake.db wake.log
 "${WAKE}" -v test
+
+# Clean up
+err=$?
+rm -f .wake-build-lock overlap.txt
+exit $err
