@@ -221,6 +221,17 @@ struct Database {
   // within the same transaction to prevent races with new builds.
   bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
 
+  // Like clear_jobs(), but first checks for active builds atomically.
+  // Returns false if there are incomplete runs (active builds).
+  // The check, DB clear, and file deletion (via callback) all happen
+  // within the same transaction to prevent races with new builds.
+  bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
+
+  // Get output file hashes for a specific path
+  // Returns a vector of (job_id, label, hash) tuples
+  std::vector<std::tuple<long, std::string, std::string>> get_output_hashes(
+      const std::string &path) const;
+
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode);
 

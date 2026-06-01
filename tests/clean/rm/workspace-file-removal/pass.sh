@@ -28,6 +28,7 @@ test -f output.txt || fail "output.txt not created"
 # File should be removed from workspace
 test -f output.txt && fail "output.txt still exists after --rm"
 
+"${WAKE}" --output output.txt --include-hidden
 echo "PASS: workspace file removed" >&2
 
 # Clean up

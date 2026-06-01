@@ -95,6 +95,7 @@ struct Database::detail {
   sqlite3_stmt *remove_all_jobs;
   sqlite3_stmt *get_unhashed_file_paths;
   sqlite3_stmt *insert_unhashed_file;
+  sqlite3_stmt *get_output_hashes_for_path;
   sqlite3_stmt *get_interleaved_output;
   sqlite3_stmt *set_runner_status;
   sqlite3_stmt *get_runner_status;
@@ -154,6 +155,7 @@ struct Database::detail {
         remove_all_jobs(0),
         get_unhashed_file_paths(0),
         insert_unhashed_file(0),
+        get_output_hashes_for_path(0),
         get_interleaved_output(0),
         set_runner_status(0),
         get_runner_status(0),
@@ -484,6 +486,12 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_remove_all_jobs = "delete from jobs";
   const char *sql_get_unhashed_file_paths = "select path from unhashed_files";
   const char *sql_insert_unhashed_file = "insert into unhashed_files(job_id, path) values(?, ?)";
+  const char *sql_get_output_hashes_for_path =
+      "select j.job_id, j.label, f.hash"
+      " from filetree ft"
+      " join files f on f.file_id = ft.file_id"
+      " join jobs j on j.job_id = ft.job_id"
+      " where ft.access = 2 and f.path = ?";
   const char *sql_get_interleaved_output =
       "select l.output, l.descriptor"
       " from log l"
@@ -570,6 +578,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_remove_all_jobs, remove_all_jobs);
   PREPARE(sql_get_unhashed_file_paths, get_unhashed_file_paths);
   PREPARE(sql_insert_unhashed_file, insert_unhashed_file);
+  PREPARE(sql_get_output_hashes_for_path, get_output_hashes_for_path);
   PREPARE(sql_get_interleaved_output, get_interleaved_output);
   PREPARE(sql_set_runner_status, set_runner_status);
   PREPARE(sql_get_runner_status, get_runner_status);
@@ -640,6 +649,7 @@ void Database::close() {
   FINALIZE(remove_all_jobs);
   FINALIZE(get_unhashed_file_paths);
   FINALIZE(insert_unhashed_file);
+  FINALIZE(get_output_hashes_for_path);
   FINALIZE(get_interleaved_output);
   FINALIZE(set_runner_status);
   FINALIZE(get_runner_status);
@@ -1930,6 +1940,25 @@ std::vector<std::string> Database::get_outputs() const {
     out.emplace_back(rip_column(imp->get_unhashed_file_paths, 0));
   }
   finish_stmt(why, imp->get_unhashed_file_paths, imp->debugdb);
+  end_txn();
+
+  return out;
+}
+
+std::vector<std::tuple<long, std::string, std::string>> Database::get_output_hashes(
+    const std::string &path) const {
+  const char *why = "Could not get output hashes";
+  std::vector<std::tuple<long, std::string, std::string>> out;
+
+  begin_ro_txn();
+  bind_string(why, imp->get_output_hashes_for_path, 1, path);
+  while (sqlite3_step(imp->get_output_hashes_for_path) == SQLITE_ROW) {
+    long job_id = sqlite3_column_int64(imp->get_output_hashes_for_path, 0);
+    std::string label = rip_column(imp->get_output_hashes_for_path, 1);
+    std::string hash = rip_column(imp->get_output_hashes_for_path, 2);
+    out.emplace_back(job_id, std::move(label), std::move(hash));
+  }
+  finish_stmt(why, imp->get_output_hashes_for_path, imp->debugdb);
   end_txn();
 
   return out;

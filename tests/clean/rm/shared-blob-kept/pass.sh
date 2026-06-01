@@ -35,8 +35,9 @@ test -f shared2.txt || fail "shared2.txt was removed"
 
 # CAS blob should still exist because shared2.txt references it
 BLOBS_AFTER=$(find .build/cas -type f 2>/dev/null | wc -l)
-test "$BLOBS_BEFORE" != "$BLOBS_AFTER" || fail "CAS blob was removed (had $BLOBS_BEFORE, now $BLOBS_AFTER)"
+test "$BLOBS_BEFORE" = "$BLOBS_AFTER" || fail "CAS blob was removed (had $BLOBS_BEFORE, now $BLOBS_AFTER)"
 
+"${WAKE}" --output 'shared*.txt' --include-hidden
 echo "PASS: shared CAS blob kept" >&2
 
 # Clean up

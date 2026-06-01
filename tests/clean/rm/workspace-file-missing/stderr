@@ -1,1 +1,3 @@
+Job 2 (write: output.txt 0644) outputs 'output.txt' with hash '2d49316473cb68324b3f807c6d88c5618f6a422801f52ee3f6b3c29784504fc0'
+File already removed: output.txt
 PASS: --rm works with missing file

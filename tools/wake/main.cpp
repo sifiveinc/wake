@@ -19,6 +19,11 @@
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 
+// File tree access types (from database.cpp)
+#define VISIBLE 0
+#define INPUT 1
+#define OUTPUT 2
+
 #include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
@@ -49,6 +54,7 @@
 #include "json/json5.h"
 #include "markup.h"
 #include "optimizer/ssa.h"
+#include "rm.h"
 #include "parser/cst.h"
 #include "parser/parser.h"
 #include "parser/syntax.h"
@@ -908,10 +914,22 @@ int main(int argc, char **argv) {
       std::cerr << "error: --rm requires at least one path argument" << std::endl;
       return 1;
     }
-    for (int i = 1; i < clo.argc; i++) {
-      std::cout << "rm: would remove path '" << clo.argv[i] << "' from database (not implemented yet)" << std::endl;
+
+    // Open the database
+    std::string fail = db.open(/*wait=*/false, /*memory=*/false, /*tty=*/isatty(0), /*readonly=*/false);
+    if (!fail.empty()) {
+      std::cerr << "error: " << fail << std::endl;
+      return 1;
     }
-    return 0;
+
+    // Collect all paths to remove
+    std::vector<std::string> paths;
+    for (int i = 1; i < clo.argc; i++) {
+      paths.push_back(clo.argv[i]);
+    }
+
+    // Call the rm implementation
+    return remove_paths(db, paths);
   }
 
   // seed the keyed hash function
