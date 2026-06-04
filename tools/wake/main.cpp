@@ -445,27 +445,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  double heap_factor = 4.0;
-  if (clo.heapf) {
-    char *tail;
-    heap_factor = strtod(clo.heapf, &tail);
-    if (*tail || heap_factor < 1.1) {
-      std::cerr << "Cannot run with " << clo.heapf << " heap-factor (must be >= 1.1)!" << std::endl;
-      return 1;
-    }
-  }
-
-  double heap_pivot_mb = 64.0;
-  if (clo.heappivot) {
-    char *tail;
-    heap_pivot_mb = strtod(clo.heappivot, &tail);
-    if (*tail || heap_pivot_mb < 1.0) {
-      std::cerr << "Cannot run with " << clo.heappivot << " heap-pivot (must be >= 1.0 MB)!"
-                << std::endl;
-      return 1;
-    }
-  }
-
   // Change directory to the location of the invoked script
   // and execute the specified target function
   if (clo.shebang) {
@@ -557,6 +536,27 @@ int main(int argc, char **argv) {
   config_override.log_header_align = clo.log_header_align;
   config_override.cache_miss_on_failure = clo.cache_miss_on_failure;
 
+  if (clo.heapf) {
+    char *tail;
+    double v = strtod(clo.heapf, &tail);
+    if (*tail || v < 1.1) {
+      std::cerr << "Cannot run with " << clo.heapf << " heap-factor (must be >= 1.1)!" << std::endl;
+      return 1;
+    }
+    config_override.heap_factor = v;
+  }
+
+  if (clo.heappivot) {
+    char *tail;
+    double v = strtod(clo.heappivot, &tail);
+    if (*tail || v < 1.0) {
+      std::cerr << "Cannot run with " << clo.heappivot << " heap-pivot (must be >= 1.0 MB)!"
+                << std::endl;
+      return 1;
+    }
+    config_override.heap_pivot_mb = v;
+  }
+
   if (!WakeConfig::init(".wakeroot", config_override)) {
     return 1;
   }
@@ -565,6 +565,9 @@ int main(int argc, char **argv) {
     std::cout << *WakeConfig::get();
     return 0;
   }
+
+  double heap_factor = WakeConfig::get()->heap_factor;
+  double heap_pivot_mb = WakeConfig::get()->heap_pivot_mb;
 
   // Bulk logging
   std::string bulk_dir = WakeConfig::get()->bulk_logging_dir;

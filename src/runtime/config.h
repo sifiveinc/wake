@@ -53,6 +53,10 @@ struct WakeConfigOverrides {
 
   // Lets you specify an alternative user config
   std::optional<std::string> user_config;
+
+  // GC heap tuning
+  std::optional<double> heap_factor;
+  std::optional<double> heap_pivot_mb;
 };
 
 template <class T>
@@ -257,6 +261,42 @@ struct InterpreterRuntimeWarningPolicy {
   }
 };
 
+struct HeapFactorPolicy {
+  using type = double;
+  using input_type = type;
+  static constexpr const char* key = "heap_factor";
+  static constexpr bool allowed_in_wakeroot = true;
+  static constexpr bool allowed_in_userconfig = false;
+  type heap_factor = 4.0;
+  static constexpr type HeapFactorPolicy::*value = &HeapFactorPolicy::heap_factor;
+  static constexpr Override<input_type> override_value = &WakeConfigOverrides::heap_factor;
+  static constexpr const char* env_var = nullptr;
+
+  HeapFactorPolicy() = default;
+  static void set(HeapFactorPolicy& p, const JAST& json);
+  static void set_input(HeapFactorPolicy& p, const input_type& v) { p.*value = v; }
+  static void emit(const HeapFactorPolicy& p, std::ostream& os) { os << p.*value; }
+  static void set_env_var(HeapFactorPolicy& p, const char*) {}
+};
+
+struct HeapPivotPolicy {
+  using type = double;
+  using input_type = type;
+  static constexpr const char* key = "heap_pivot_mb";
+  static constexpr bool allowed_in_wakeroot = true;
+  static constexpr bool allowed_in_userconfig = false;
+  type heap_pivot_mb = 64.0;
+  static constexpr type HeapPivotPolicy::*value = &HeapPivotPolicy::heap_pivot_mb;
+  static constexpr Override<input_type> override_value = &WakeConfigOverrides::heap_pivot_mb;
+  static constexpr const char* env_var = nullptr;
+
+  HeapPivotPolicy() = default;
+  static void set(HeapPivotPolicy& p, const JAST& json);
+  static void set_input(HeapPivotPolicy& p, const input_type& v) { p.*value = v; }
+  static void emit(const HeapPivotPolicy& p, std::ostream& os) { os << p.*value; }
+  static void set_env_var(HeapPivotPolicy& p, const char*) {}
+};
+
 /********************************************************************
  * Generic WakeConfig implementation
  *********************************************************************/
@@ -402,7 +442,8 @@ struct WakeConfigImpl : public Policies... {
 using WakeConfigImplFull =
     WakeConfigImpl<UserConfigPolicy, VersionPolicy, LogHeaderPolicy, LogHeaderSourceWidthPolicy,
                    LabelFilterPolicy, SharedCacheMissOnFailure, LogHeaderAlignPolicy,
-                   BulkLoggingDirPolicy, InterpreterRuntimeWarningPolicy>;
+                   BulkLoggingDirPolicy, InterpreterRuntimeWarningPolicy, HeapFactorPolicy,
+                   HeapPivotPolicy>;
 
 struct WakeConfig final : public WakeConfigImplFull {
   static bool init(const std::string& wakeroot_path, const WakeConfigOverrides& overrides);
