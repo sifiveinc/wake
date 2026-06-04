@@ -72,6 +72,7 @@ struct CommandLineOptions {
   const char *jobs_str;
   const char *memory_str;
   const char *heapf;
+  const char *heappivot;
   const char *profile;
   const char *init;
   const char *chdir;
@@ -124,6 +125,7 @@ struct CommandLineOptions {
       {0, "batch", GOPT_ARGUMENT_FORBIDDEN},
       {0, "fatal-warnings", GOPT_ARGUMENT_FORBIDDEN},
       {0, "heap-factor", GOPT_ARGUMENT_REQUIRED | GOPT_ARGUMENT_NO_HYPHEN},
+      {0, "heap-pivot", GOPT_ARGUMENT_REQUIRED | GOPT_ARGUMENT_NO_HYPHEN},
       {0, "profile-heap", GOPT_ARGUMENT_FORBIDDEN | GOPT_REPEATABLE},
       {0, "profile", GOPT_ARGUMENT_REQUIRED},
       {'C', "chdir", GOPT_ARGUMENT_REQUIRED},
@@ -229,6 +231,7 @@ struct CommandLineOptions {
     jobs_str = arg(options, "jobs")->argument;
     memory_str = arg(options, "memory")->argument;
     heapf = arg(options, "heap-factor")->argument;
+    heappivot = arg(options, "heap-pivot")->argument;
     profile = arg(options, "profile")->argument;
     init = arg(options, "init")->argument;
     chdir = arg(options, "chdir")->argument;

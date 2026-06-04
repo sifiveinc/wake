@@ -266,7 +266,8 @@ void print_help(const char *argv0) {
     << "    --no-wait          Do not wait to obtain database lock; fail immediately"      << std::endl
     << "    --no-workspace     Do not open a database or scan for sources files"           << std::endl
     << "    --fatal-warnings   Do not execute if there are any warnings"                   << std::endl
-    << "    --heap-factor X    Heap-size is X * live data after the last GC (default 4.0)" << std::endl
+    << "    --heap-factor X    GC headroom scale factor: desired = live + X*sqrt(live*pivot) (default 4.0)" << std::endl
+    << "    --heap-pivot  X    Pivot point in MB where GC growth curve transitions (default 64)" << std::endl
     << "    --profile-heap     Report memory consumption on every garbage collection"      << std::endl
     << "    --profile     FILE Report runtime breakdown by stack trace to HTML/JSON file"  << std::endl
     << "    --chdir    -C PATH Locate database and default package starting from PATH"     << std::endl
@@ -450,6 +451,17 @@ int main(int argc, char **argv) {
     heap_factor = strtod(clo.heapf, &tail);
     if (*tail || heap_factor < 1.1) {
       std::cerr << "Cannot run with " << clo.heapf << " heap-factor (must be >= 1.1)!" << std::endl;
+      return 1;
+    }
+  }
+
+  double heap_pivot_mb = 64.0;
+  if (clo.heappivot) {
+    char *tail;
+    heap_pivot_mb = strtod(clo.heappivot, &tail);
+    if (*tail || heap_pivot_mb < 1.0) {
+      std::cerr << "Cannot run with " << clo.heappivot << " heap-pivot (must be >= 1.0 MB)!"
+                << std::endl;
       return 1;
     }
   }
@@ -734,7 +746,7 @@ int main(int argc, char **argv) {
   }
 
   Profile tree;
-  Runtime runtime(clo.profile ? &tree : nullptr, clo.profileh, heap_factor);
+  Runtime runtime(clo.profile ? &tree : nullptr, clo.profileh, heap_factor, heap_pivot_mb);
   bool sources = false;
   {
     auto start = std::chrono::steady_clock::now();
