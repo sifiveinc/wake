@@ -266,7 +266,7 @@ void print_help(const char *argv0) {
     << "    --no-wait          Do not wait to obtain database lock; fail immediately"      << std::endl
     << "    --no-workspace     Do not open a database or scan for sources files"           << std::endl
     << "    --fatal-warnings   Do not execute if there are any warnings"                   << std::endl
-    << "    --heap-factor X    GC headroom scale factor: desired = live + X*sqrt(live*pivot) (default 4.0)" << std::endl
+    << "    --heap-factor X    GC headroom scale factor (default 4.0)"                     << std::endl
     << "    --heap-pivot  X    Pivot point in MB where GC growth curve transitions (default 64)" << std::endl
     << "    --profile-heap     Report memory consumption on every garbage collection"      << std::endl
     << "    --profile     FILE Report runtime breakdown by stack trace to HTML/JSON file"  << std::endl
