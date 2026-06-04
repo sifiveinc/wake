@@ -35,13 +35,15 @@ struct FileReflection {
   std::string hash;
   long mode;
   long modified;  // mtime in nanoseconds
+  bool deleted;   // true if CAS blob has been removed
   FileReflection(std::string &&path_, std::string &&type_, std::string &&hash_, long mode_,
-                 long modified_)
+                 long modified_, bool deleted_ = false)
       : path(std::move(path_)),
         type(std::move(type_)),
         hash(std::move(hash_)),
         mode(mode_),
-        modified(modified_) {}
+        modified(modified_),
+        deleted(deleted_) {}
 };
 
 struct Usage {
@@ -231,6 +233,9 @@ struct Database {
   // Returns a vector of (job_id, label, hash) tuples
   std::vector<std::tuple<long, std::string, std::string>> get_output_hashes(
       const std::string &path) const;
+
+  // Mark a file's blob as deleted in the files table
+  void mark_file_deleted(const std::string &hash);
 
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode);

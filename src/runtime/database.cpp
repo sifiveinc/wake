@@ -96,6 +96,7 @@ struct Database::detail {
   sqlite3_stmt *get_unhashed_file_paths;
   sqlite3_stmt *insert_unhashed_file;
   sqlite3_stmt *get_output_hashes_for_path;
+  sqlite3_stmt *mark_file_deleted;
   sqlite3_stmt *get_interleaved_output;
   sqlite3_stmt *set_runner_status;
   sqlite3_stmt *get_runner_status;
@@ -387,7 +388,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "select output from log where job_id=? and descriptor=? order by log_id";
   const char *sql_replay_log = "select descriptor, output from log where job_id=? order by log_id";
   const char *sql_get_tree =
-      "select f.path, f.hash, f.type, f.mode, t.modified from filetree t, files f"
+      "select f.path, f.hash, f.type, f.mode, t.modified, f.deleted from filetree t, files f"
       " where t.job_id=? and t.access=? and f.file_id=t.file_id order by t.tree_id";
   const char *sql_get_tree_id =
       "select f.path, f.file_id, t.modified from filetree t, files f"
@@ -492,6 +493,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " join files f on f.file_id = ft.file_id"
       " join jobs j on j.job_id = ft.job_id"
       " where ft.access = 2 and f.path = ?";
+  const char *sql_mark_file_deleted = "update files set deleted=1 where hash=?";
   const char *sql_get_interleaved_output =
       "select l.output, l.descriptor"
       " from log l"
@@ -579,6 +581,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_get_unhashed_file_paths, get_unhashed_file_paths);
   PREPARE(sql_insert_unhashed_file, insert_unhashed_file);
   PREPARE(sql_get_output_hashes_for_path, get_output_hashes_for_path);
+  PREPARE(sql_mark_file_deleted, mark_file_deleted);
   PREPARE(sql_get_interleaved_output, get_interleaved_output);
   PREPARE(sql_set_runner_status, set_runner_status);
   PREPARE(sql_get_runner_status, get_runner_status);
@@ -650,6 +653,7 @@ void Database::close() {
   FINALIZE(get_unhashed_file_paths);
   FINALIZE(insert_unhashed_file);
   FINALIZE(get_output_hashes_for_path);
+  FINALIZE(mark_file_deleted);
   FINALIZE(get_interleaved_output);
   FINALIZE(set_runner_status);
   FINALIZE(get_runner_status);
@@ -1181,7 +1185,11 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     std::string type = rip_column(imp->get_tree, 2);
     long mode = sqlite3_column_int64(imp->get_tree, 3);
     long modified = sqlite3_column_int64(imp->get_tree, 4);
-    files.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
+    bool deleted = sqlite3_column_int64(imp->get_tree, 5) != 0;
+    // If the CAS blob is marked deleted or the workspace file doesn't exist, invalidate the cache.
+    if (deleted)
+      out.found = false;
+    files.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified, deleted);
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
 
@@ -1514,7 +1522,8 @@ std::vector<FileReflection> Database::get_tree(int kind, long job) {
     std::string type = rip_column(imp->get_tree, 2);
     long mode = sqlite3_column_int64(imp->get_tree, 3);
     long modified = sqlite3_column_int64(imp->get_tree, 4);
-    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
+    bool deleted = sqlite3_column_int64(imp->get_tree, 5) != 0;
+    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified, deleted);
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
   end_txn();
@@ -1962,6 +1971,14 @@ std::vector<std::tuple<long, std::string, std::string>> Database::get_output_has
   end_txn();
 
   return out;
+}
+
+void Database::mark_file_deleted(const std::string &hash) {
+  const char *why = "Could not mark file as deleted";
+  begin_rw_txn();
+  bind_string(why, imp->mark_file_deleted, 1, hash);
+  single_step(why, imp->mark_file_deleted, imp->debugdb);
+  end_txn();
 }
 
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,

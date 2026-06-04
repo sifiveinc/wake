@@ -509,6 +509,18 @@ static std::vector<Migration> get_migrations() {
        },
        "Add run_files table for guarding files during active runs"},
 
+      // Version 10 -> 11: Add 'deleted' column to the files table.
+      // All existing files are assumed to be present (deleted = 0).
+      {14, 15,
+       [](sqlite3* db) -> bool {
+         if (!has_column(db, "files", "deleted")) {
+           const char* sql = "ALTER TABLE files ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;";
+           return exec_sql(db, sql);
+         }
+         return true;
+       },
+       "Add files.deleted column to retain metadata while allowing CAS space recovery"},
+
   };
 }
 
