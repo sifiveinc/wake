@@ -224,48 +224,6 @@ struct Database {
   // within the same transaction to prevent races with new builds.
   bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
 
-  // Like clear_jobs(), but first checks for active builds atomically.
-  // Returns false if there are incomplete runs (active builds).
-  // The check, DB clear, and file deletion (via callback) all happen
-  // within the same transaction to prevent races with new builds.
-  bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
-
-  // Like clear_jobs(), but first checks for active builds atomically.
-  // Returns false if there are incomplete runs (active builds).
-  // The check, DB clear, and file deletion (via callback) all happen
-  // within the same transaction to prevent races with new builds.
-  bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
-
-  // Like clear_jobs(), but first checks for active builds atomically.
-  // Returns false if there are incomplete runs (active builds).
-  // The check, DB clear, and file deletion (via callback) all happen
-  // within the same transaction to prevent races with new builds.
-  bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
-
-  // Like clear_jobs(), but first checks for active builds atomically.
-  // Returns false if there are incomplete runs (active builds).
-  // The check, DB clear, and file deletion (via callback) all happen
-  // within the same transaction to prevent races with new builds.
-  bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
-
-  // Like clear_jobs(), but first checks for active builds atomically.
-  // Returns false if there are incomplete runs (active builds).
-  // The check, DB clear, and file deletion (via callback) all happen
-  // within the same transaction to prevent races with new builds.
-  bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
-
-  // Like clear_jobs(), but first checks for active builds atomically.
-  // Returns false if there are incomplete runs (active builds).
-  // The check, DB clear, and file deletion (via callback) all happen
-  // within the same transaction to prevent races with new builds.
-  bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
-
-  // Like clear_jobs(), but first checks for active builds atomically.
-  // Returns false if there are incomplete runs (active builds).
-  // The check, DB clear, and file deletion (via callback) all happen
-  // within the same transaction to prevent races with new builds.
-  bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
-
   // Remove files from workspace and CAS within a single exclusive transaction.
   // For each path, finds all jobs that output it, removes the CAS blobs, and marks them as deleted.
   // Does *not* remove blobs which are still referenced by other files.
