@@ -261,6 +261,9 @@ struct InterpreterRuntimeWarningPolicy {
   }
 };
 
+// Controls how aggressively the GC grows the heap after each collection cycle.
+// Floor limit: must be > 1.0 — values at or below 1.0 leave no post-collection
+// headroom and cause GC to loop.
 struct HeapFactorPolicy {
   using type = double;
   using input_type = type;
@@ -279,6 +282,10 @@ struct HeapFactorPolicy {
   static void set_env_var(HeapFactorPolicy& p, const char*) {}
 };
 
+// Sets the live-data size (in MB) at which the GC heap growth switches from linear
+// to sqrt scaling. Also controls the growth rate of the sqrt formula — a larger
+// pivot means larger sqrt growth.
+// Floor limit: must be > 1MB
 struct HeapPivotPolicy {
   using type = double;
   using input_type = type;
