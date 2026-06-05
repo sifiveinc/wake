@@ -1,3 +1,1 @@
-Job 2 (write: unique.txt 0644) outputs 'unique.txt' with hash 'c1f92e6b9611b80c6b51f818744276c22f0dceacc4b8f6642f85ffa01cdddccb'
-Removed file: unique.txt
 PASS: CAS blob removed with last reference

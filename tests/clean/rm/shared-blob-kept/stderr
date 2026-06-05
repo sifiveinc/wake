@@ -1,3 +1,1 @@
-Job 2 (write: shared1.txt 0644) outputs 'shared1.txt' with hash '054fc30e7bcde5106462f526148ca8f4baff40f73cfbc9bfd4cbbdb4b11e70c0'
-Removed file: shared1.txt
 PASS: shared CAS blob kept

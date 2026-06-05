@@ -95,8 +95,6 @@ struct Database::detail {
   sqlite3_stmt *remove_all_jobs;
   sqlite3_stmt *get_unhashed_file_paths;
   sqlite3_stmt *insert_unhashed_file;
-  sqlite3_stmt *get_output_hashes_for_path;
-  sqlite3_stmt *mark_file_deleted;
   sqlite3_stmt *get_interleaved_output;
   sqlite3_stmt *set_runner_status;
   sqlite3_stmt *get_runner_status;
@@ -156,7 +154,6 @@ struct Database::detail {
         remove_all_jobs(0),
         get_unhashed_file_paths(0),
         insert_unhashed_file(0),
-        get_output_hashes_for_path(0),
         get_interleaved_output(0),
         set_runner_status(0),
         get_runner_status(0),
@@ -487,13 +484,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_remove_all_jobs = "delete from jobs";
   const char *sql_get_unhashed_file_paths = "select path from unhashed_files";
   const char *sql_insert_unhashed_file = "insert into unhashed_files(job_id, path) values(?, ?)";
-  const char *sql_get_output_hashes_for_path =
-      "select j.job_id, j.label, f.hash"
-      " from filetree ft"
-      " join files f on f.file_id = ft.file_id"
-      " join jobs j on j.job_id = ft.job_id"
-      " where ft.access = 2 and f.path = ?";
-  const char *sql_mark_file_deleted = "update files set deleted=1 where hash=?";
   const char *sql_get_interleaved_output =
       "select l.output, l.descriptor"
       " from log l"
@@ -580,8 +570,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_remove_all_jobs, remove_all_jobs);
   PREPARE(sql_get_unhashed_file_paths, get_unhashed_file_paths);
   PREPARE(sql_insert_unhashed_file, insert_unhashed_file);
-  PREPARE(sql_get_output_hashes_for_path, get_output_hashes_for_path);
-  PREPARE(sql_mark_file_deleted, mark_file_deleted);
   PREPARE(sql_get_interleaved_output, get_interleaved_output);
   PREPARE(sql_set_runner_status, set_runner_status);
   PREPARE(sql_get_runner_status, get_runner_status);
@@ -652,8 +640,6 @@ void Database::close() {
   FINALIZE(remove_all_jobs);
   FINALIZE(get_unhashed_file_paths);
   FINALIZE(insert_unhashed_file);
-  FINALIZE(get_output_hashes_for_path);
-  FINALIZE(mark_file_deleted);
   FINALIZE(get_interleaved_output);
   FINALIZE(set_runner_status);
   FINALIZE(get_runner_status);
@@ -1954,31 +1940,93 @@ std::vector<std::string> Database::get_outputs() const {
   return out;
 }
 
-std::vector<std::tuple<long, std::string, std::string>> Database::get_output_hashes(
-    const std::string &path) const {
-  const char *why = "Could not get output hashes";
-  std::vector<std::tuple<long, std::string, std::string>> out;
+std::vector<std::tuple<std::string, std::string>> Database::remove_files(
+    cas::Cas *cas, const std::vector<std::string> &paths) {
+  std::vector<std::tuple<std::string, std::string>> results;
 
-  begin_ro_txn();
-  bind_string(why, imp->get_output_hashes_for_path, 1, path);
-  while (sqlite3_step(imp->get_output_hashes_for_path) == SQLITE_ROW) {
-    long job_id = sqlite3_column_int64(imp->get_output_hashes_for_path, 0);
-    std::string label = rip_column(imp->get_output_hashes_for_path, 1);
-    std::string hash = rip_column(imp->get_output_hashes_for_path, 2);
-    out.emplace_back(job_id, std::move(label), std::move(hash));
+  if (paths.empty()) {
+    return results;
   }
-  finish_stmt(why, imp->get_output_hashes_for_path, imp->debugdb);
-  end_txn();
 
-  return out;
-}
+  // Build dynamic query for all paths at once using IN clause
+  std::string path_placeholders = "?";
+  for (size_t i = 1; i < paths.size(); ++i) {
+    path_placeholders += ", ?";
+  }
 
-void Database::mark_file_deleted(const std::string &hash) {
-  const char *why = "Could not mark file as deleted";
+  std::string query = "select path, hash from files where path in (" + path_placeholders + ")";
+
+  sqlite3_stmt *stmt = nullptr;
+  const char *why_blobs = "Could not get blob hashes for paths";
+  int ret = sqlite3_prepare_v2(imp->db, query.c_str(), -1, &stmt, 0);
+  if (ret != SQLITE_OK) {
+    std::cerr << why_blobs << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
+    end_txn();
+    return results;
+  }
+
+  // Bind all path parameters
+  for (size_t i = 0; i < paths.size(); ++i) {
+    bind_string(why_blobs, stmt, i + 1, paths[i]);
+  }
+
+  // Begin exclusive transaction to prevent concurrent builds from using files we're deleting
   begin_rw_txn();
-  bind_string(why, imp->mark_file_deleted, 1, hash);
-  single_step(why, imp->mark_file_deleted, imp->debugdb);
+
+  // Execute query and collect results
+  std::vector<std::string> hashes_to_delete;
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    std::string path = rip_column(stmt, 0);
+    std::string hash = rip_column(stmt, 1);
+
+    // Parse and remove the CAS blob if CAS is available
+    if (cas) {
+      auto hash_result = cas::ContentHash::from_hex(hash);
+      if (hash_result) {
+        auto remove_error = cas->remove_blob(*hash_result);
+        if (!remove_error) {
+          // Store hash for later batch database marking
+          hashes_to_delete.push_back(hash);
+          results.emplace_back(std::move(path), std::move(hash));
+        }
+      }
+    }
+  }
+
+  finish_stmt(why_blobs, stmt, imp->debugdb);
+  sqlite3_finalize(stmt);
+
+  // Mark all files as deleted in a single query
+  if (!hashes_to_delete.empty()) {
+    std::string hash_placeholders = "?";
+    for (size_t i = 0; i < hashes_to_delete.size(); ++i) {
+      hash_placeholders += ", ?";
+    }
+
+    std::string delete_query = "update files set deleted=1 where hash in (" + hash_placeholders + ")";
+
+    sqlite3_stmt *delete_stmt = nullptr;
+    const char *why_delete = "Could not mark files as deleted";
+    ret = sqlite3_prepare_v2(imp->db, delete_query.c_str(), -1, &delete_stmt, 0);
+    if (ret != SQLITE_OK) {
+      std::cerr << why_delete << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
+      end_txn();
+      return results;
+    }
+
+    // Bind all hash parameters
+    for (size_t i = 0; i < hashes_to_delete.size(); ++i) {
+      bind_string(why_delete, delete_stmt, i + 1, hashes_to_delete[i]);
+    }
+
+    single_step(why_delete, delete_stmt, imp->debugdb);
+    sqlite3_finalize(delete_stmt);
+  }
+
+  // Commit the transaction
   end_txn();
+
+  return results;
 }
 
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,

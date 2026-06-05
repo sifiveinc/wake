@@ -24,46 +24,30 @@
 
 #include <iostream>
 
-int remove_paths(Database &db, const std::vector<std::string> &paths) {
+#include "cas/content_hash.h"
+
+int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::string> &paths) {
   if (paths.empty()) {
     std::cerr << "error: no paths specified" << std::endl;
     return 1;
   }
 
-  // For each path, find all jobs that output it and their CAS blob hashes
+  // Get the CAS store
+  auto *cas = cas_ctx.get_store();
+  if (!cas) {
+    std::cerr << "error: CAS store not initialized" << std::endl;
+    return 1;
+  }
+
+  // Remove files from database and CAS within a single transaction.
+  db.remove_files(cas, paths);
+
+  // Delete workspace files outside of that transaction.
   for (const auto &path : paths) {
-    auto results = db.get_output_hashes(path);
-
-    if (results.empty()) {
-      std::cerr << "warning: no jobs found with output '" << path << "'" << std::endl;
-      continue;
+    if (unlink(path.c_str()) != 0 && errno != ENOENT) {
+      std::cerr << "warning: failed to remove file '" << path << "': " << strerror(errno)
+                << std::endl;
     }
-
-    // Display what we found (to stderr for debugging)
-    for (const auto &result : results) {
-      long job_id = std::get<0>(result);
-      const std::string &label = std::get<1>(result);
-      const std::string &hash = std::get<2>(result);
-
-      std::cerr << "Job " << job_id << " (" << label << ") outputs '"
-                << path << "' with hash '" << hash << "'" << std::endl;
-    }
-
-    // Delete the workspace file
-    if (unlink(path.c_str()) == 0) {
-      std::cerr << "Removed file: " << path << std::endl;
-    } else if (errno == ENOENT) {
-      // File doesn't exist - that's fine, we wanted to remove it anyway
-      std::cerr << "File already removed: " << path << std::endl;
-    } else {
-      std::cerr << "warning: failed to remove file '" << path << "': "
-                << strerror(errno) << std::endl;
-    }
-
-    // TODO: Implement the following steps:
-    // 3. Check if each blob is referenced by other jobs
-    // 4. Remove the database record
-    // 6. Garbage collect unreferenced CAS blobs
   }
 
   return 0;

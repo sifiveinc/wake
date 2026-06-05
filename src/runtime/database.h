@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "cas/cas.h"
 #include "json/json5.h"
 #include "run_lock.h"
 #include "wcl/function_ref.h"
@@ -229,13 +230,23 @@ struct Database {
   // within the same transaction to prevent races with new builds.
   bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
 
-  // Get output file hashes for a specific path
-  // Returns a vector of (job_id, label, hash) tuples
-  std::vector<std::tuple<long, std::string, std::string>> get_output_hashes(
-      const std::string &path) const;
+  // Like clear_jobs(), but first checks for active builds atomically.
+  // Returns false if there are incomplete runs (active builds).
+  // The check, DB clear, and file deletion (via callback) all happen
+  // within the same transaction to prevent races with new builds.
+  bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
 
-  // Mark a file's blob as deleted in the files table
-  void mark_file_deleted(const std::string &hash);
+  // Like clear_jobs(), but first checks for active builds atomically.
+  // Returns false if there are incomplete runs (active builds).
+  // The check, DB clear, and file deletion (via callback) all happen
+  // within the same transaction to prevent races with new builds.
+  bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
+
+  // Remove files from workspace and CAS within a single exclusive transaction
+  // For each path, finds all jobs that output it, removes the CAS blobs, and marks them as deleted
+  // Returns vector of tuples: (path, hash)
+  std::vector<std::tuple<std::string, std::string>> remove_files(
+      cas::Cas *cas, const std::vector<std::string> &paths);
 
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode);
