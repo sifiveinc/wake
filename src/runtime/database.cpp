@@ -1966,6 +1966,14 @@ std::vector<std::string> Database::remove_files(cas::Cas *cas,
       "   select 1 from files f2"
       "   where f2.hash = f1.hash"
       "   and f2.path not in paths_to_remove"
+      " )"
+      // For multi-wake safety, also exclude hashes currently in use by active runs.
+      " and not exists ("
+      "   select 1 from run_files rf"
+      "   join runs r on rf.run_id = r.run_id"
+      "   join files f2 on rf.file_id = f2.file_id"
+      "   where f2.hash = f1.hash"
+      "   and r.end_time is null"
       " )";
 
   // Compile the query, and bind all paths to be removed.
