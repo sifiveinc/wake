@@ -1175,7 +1175,7 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     // If the CAS blob is marked deleted or the workspace file doesn't exist, invalidate the cache.
     if (deleted)
       out.found = false;
-    files.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified, deleted);
+    files.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
 
@@ -1508,8 +1508,8 @@ std::vector<FileReflection> Database::get_tree(int kind, long job) {
     std::string type = rip_column(imp->get_tree, 2);
     long mode = sqlite3_column_int64(imp->get_tree, 3);
     long modified = sqlite3_column_int64(imp->get_tree, 4);
-    bool deleted = sqlite3_column_int64(imp->get_tree, 5) != 0;
-    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified, deleted);
+    // Not filtering by the deleted column, since it's still a file which was originally produced.
+    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
   end_txn();
@@ -1960,8 +1960,8 @@ std::vector<std::string> Database::remove_files(cas::Cas *cas,
       ")"
       " select f1.hash from files f1"
       " where f1.path in paths_to_remove"
-      // Only include hashes where ALL files with that hash are in our removal list
-      // (i.e., exclude hashes that are shared with files we're NOT removing).
+      // Only include hashes where *all* files with that hash are in our removal list
+      // (i.e., exclude hashes that are shared with files we're *not* removing).
       " and not exists ("
       "   select 1 from files f2"
       "   where f2.hash = f1.hash"
@@ -1989,7 +1989,8 @@ std::vector<std::string> Database::remove_files(cas::Cas *cas,
     bind_string(why_blobs, stmt, i + 1, paths[i]);
   }
 
-  // Begin exclusive transaction to prevent concurrent builds from using files we're deleting.
+  // Begin exclusive transaction to prevent concurrent builds from referencing files we're in the
+  // middle of deleting.
   begin_rw_txn();
 
   // Execute the search and remove the resulting blobs.
