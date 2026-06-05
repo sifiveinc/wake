@@ -16,10 +16,11 @@
  * limitations under the License.
  */
 
-#include "rm.h"
+#include "clean.h"
 
 #include <errno.h>
 #include <string.h>
+#include <sysexits.h>
 #include <unistd.h>
 
 #include <iostream>
@@ -29,14 +30,13 @@
 int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::string> &paths) {
   if (paths.empty()) {
     std::cerr << "error: no paths specified" << std::endl;
-    return 1;
+    return EX_USAGE;
   }
 
-  // Get the CAS store
   auto *cas = cas_ctx.get_store();
   if (!cas) {
     std::cerr << "error: CAS store not initialized" << std::endl;
-    return 1;
+    return EXIT_FAILURE;
   }
 
   // Remove files from database and CAS within a single transaction.
@@ -50,5 +50,5 @@ int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::strin
     }
   }
 
-  return 0;
+  return EXIT_SUCCESS;
 }

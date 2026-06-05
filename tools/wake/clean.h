@@ -24,8 +24,8 @@
 #include "runtime/cas_context.h"
 #include "runtime/database.h"
 
-// Remove specified paths from the database and workspace
-// Returns 0 on success, non-zero on error
+// Remove specified paths from the workspace, and any corresponding, exclusively-owned CAS blobs.
+// Returns 0 on success, EX_USAGE (64) if `paths` is empty, and 1 on other errors, for easy CLI use.
 int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::string> &paths);
 
 #endif

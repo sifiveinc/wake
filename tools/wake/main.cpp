@@ -47,6 +47,7 @@
 #include <sstream>
 
 #include "cli_options.h"
+#include "clean.h"
 #include "describe.h"
 #include "dst/bind.h"
 #include "dst/expr.h"
@@ -54,7 +55,6 @@
 #include "json/json5.h"
 #include "markup.h"
 #include "optimizer/ssa.h"
-#include "rm.h"
 #include "parser/cst.h"
 #include "parser/parser.h"
 #include "parser/syntax.h"
@@ -914,25 +914,18 @@ int main(int argc, char **argv) {
   }
 
   if (clo.rm) {
-    if (clo.argc < 2) {
-      std::cerr << "error: --rm requires at least one path argument" << std::endl;
-      return 1;
-    }
-
-    // Open the database
     std::string fail = db.open(/*wait=*/false, /*memory=*/false, /*tty=*/isatty(0), /*readonly=*/false);
     if (!fail.empty()) {
       std::cerr << "error: " << fail << std::endl;
-      return 1;
+      return EXIT_FAILURE;
     }
 
-    // Collect all paths to remove
+    // Collect all paths to remove.
     std::vector<std::string> paths;
     for (int i = 1; i < clo.argc; i++) {
       paths.push_back(clo.argv[i]);
     }
 
-    // Call the rm implementation
     return remove_paths(db, cas_ctx, paths);
   }
 

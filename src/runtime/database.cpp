@@ -1940,106 +1940,117 @@ std::vector<std::string> Database::get_outputs() const {
   return out;
 }
 
-std::vector<std::tuple<std::string, std::string>> Database::remove_files(
-    cas::Cas *cas, const std::vector<std::string> &paths) {
-  std::vector<std::tuple<std::string, std::string>> results;
-
+std::vector<std::string> Database::remove_files(cas::Cas *cas,
+                                                const std::vector<std::string> &paths) {
   if (paths.empty()) {
-    return results;
+    return {};
   }
 
-  // Build dynamic query for all paths at once using a CTE
-  // For VALUES clause, we need (?), (?), (?) format
+  // Build dynamic query for handling all files at once.  This allows defining query logic based
+  // on the operation in its entirety -- very helpful for determining what will still be referenced.
   std::string path_placeholders = "(?)";
   for (size_t i = 1; i < paths.size(); ++i) {
     path_placeholders += ", (?)";
   }
 
   // Query for hashes that should be deleted:
-  // Only include hashes where ALL files with that hash are in our removal list
-  // (i.e., exclude hashes that are shared with files we're NOT removing)
-  // Use a CTE to define the removal list once
-  std::string query =
-      "with paths_to_remove(path) as (values " + path_placeholders + ")"
-      " select f1.path, f1.hash from files f1"
+  std::string hashes_query =
+      // Use a CTE to define the removal list once for both select operations.
+      "with paths_to_remove(path) as (values " + path_placeholders +
+      ")"
+      " select f1.hash from files f1"
       " where f1.path in paths_to_remove"
+      // Only include hashes where ALL files with that hash are in our removal list
+      // (i.e., exclude hashes that are shared with files we're NOT removing).
       " and not exists ("
       "   select 1 from files f2"
       "   where f2.hash = f1.hash"
       "   and f2.path not in paths_to_remove"
       " )";
 
+  // Compile the query, and bind all paths to be removed.
   sqlite3_stmt *stmt = nullptr;
   const char *why_blobs = "Could not get blob hashes for paths";
-  int ret = sqlite3_prepare_v2(imp->db, query.c_str(), -1, &stmt, 0);
+  int ret = sqlite3_prepare_v2(imp->db, hashes_query.c_str(), -1, &stmt, 0);
   if (ret != SQLITE_OK) {
     std::cerr << why_blobs << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
-    end_txn();
-    return results;
+    // Still haven't started the transaction started, so just return an empty set.
+    return {};
   }
-
-  // Bind all path parameters (once - the CTE is referenced twice)
   for (size_t i = 0; i < paths.size(); ++i) {
     bind_string(why_blobs, stmt, i + 1, paths[i]);
   }
 
-  // Begin exclusive transaction to prevent concurrent builds from using files we're deleting
+  // Begin exclusive transaction to prevent concurrent builds from using files we're deleting.
   begin_rw_txn();
 
-  // Execute query and collect results
-  std::vector<std::string> hashes_to_delete;
+  // Execute the search and remove the resulting blobs.
+  std::vector<std::string> deleted_blobs;
   while (sqlite3_step(stmt) == SQLITE_ROW) {
-    std::string path = rip_column(stmt, 0);
-    std::string hash = rip_column(stmt, 1);
+    std::string hash = rip_column(stmt, 0);
 
-    // Parse and remove the CAS blob if CAS is available
+    // Parse and remove the CAS blob if CAS is available.
     if (cas) {
       auto hash_result = cas::ContentHash::from_hex(hash);
       if (hash_result) {
         auto remove_error = cas->remove_blob(*hash_result);
         if (!remove_error) {
-          // Store hash for later batch database marking
-          hashes_to_delete.push_back(hash);
-          results.emplace_back(std::move(path), std::move(hash));
+          // Store hash for later batch database marking, if it was actually removed.
+          // If it wasn't this time, it likely was already handled in a previous iteration of this
+          // loop; either way, we don't have to visit this (twice) when updating the DB metadata.
+          deleted_blobs.push_back(hash);
         }
       }
+    } else {
+      // If there's no CAS, we still need to mark the hash for deletion in the database.
+      // This won't benefit from each element in the vector being unique, but some duplication
+      // here shouldn't cause any significant overhead.
+      deleted_blobs.push_back(hash);
     }
   }
 
   finish_stmt(why_blobs, stmt, imp->debugdb);
   sqlite3_finalize(stmt);
 
-  // Mark all files as deleted in a single query
-  if (!hashes_to_delete.empty()) {
+  // Mark all files as deleted in a single query.  This *could* be implemented as a pre-prepared
+  // query by performing the `update` within the vector iteration, but we've seen repeated queries
+  // like that cause measurable overhead in the past.
+  if (!deleted_blobs.empty()) {
     std::string hash_placeholders = "?";
-    for (size_t i = 0; i < hashes_to_delete.size(); ++i) {
+    for (size_t i = 0; i < deleted_blobs.size(); ++i) {
       hash_placeholders += ", ?";
     }
 
-    std::string delete_query = "update files set deleted=1 where hash in (" + hash_placeholders + ")";
-
+    std::string delete_query =
+        "update files set deleted=1 where hash in (" + hash_placeholders + ")";
     sqlite3_stmt *delete_stmt = nullptr;
     const char *why_delete = "Could not mark files as deleted";
     ret = sqlite3_prepare_v2(imp->db, delete_query.c_str(), -1, &delete_stmt, 0);
     if (ret != SQLITE_OK) {
-      std::cerr << why_delete << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
-      end_txn();
-      return results;
-    }
+      // This is a bad place to error.  We can't roll back since we've already unlinked the CAS
+      // files, but we can't realistically recover since it was the same database update we'd need
+      // to make in order to rectify the database which caused the error in the first place.
+      // The best thing to do is to tell the user to run a (slower) command to check the DB and CAS
+      // against each other and fix any inconsistencies.
+      // TODO: Write that command and update this.  It'll likely be a manually-triggered deep GC.
+      std::cerr << why_delete << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl
+                << "The wake.db is likely corrupted." << std::endl;
 
-    // Bind all hash parameters
-    for (size_t i = 0; i < hashes_to_delete.size(); ++i) {
-      bind_string(why_delete, delete_stmt, i + 1, hashes_to_delete[i]);
+      end_txn();
+      return deleted_blobs;
+    }
+    for (size_t i = 0; i < deleted_blobs.size(); ++i) {
+      bind_string(why_delete, delete_stmt, i + 1, deleted_blobs[i]);
     }
 
     single_step(why_delete, delete_stmt, imp->debugdb);
     sqlite3_finalize(delete_stmt);
   }
 
-  // Commit the transaction
+  // Release the database lock now that both the CAS and the DB have been updated.
   end_txn();
 
-  return results;
+  return deleted_blobs;
 }
 
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,
