@@ -1948,13 +1948,26 @@ std::vector<std::tuple<std::string, std::string>> Database::remove_files(
     return results;
   }
 
-  // Build dynamic query for all paths at once using IN clause
-  std::string path_placeholders = "?";
+  // Build dynamic query for all paths at once using a CTE
+  // For VALUES clause, we need (?), (?), (?) format
+  std::string path_placeholders = "(?)";
   for (size_t i = 1; i < paths.size(); ++i) {
-    path_placeholders += ", ?";
+    path_placeholders += ", (?)";
   }
 
-  std::string query = "select path, hash from files where path in (" + path_placeholders + ")";
+  // Query for hashes that should be deleted:
+  // Only include hashes where ALL files with that hash are in our removal list
+  // (i.e., exclude hashes that are shared with files we're NOT removing)
+  // Use a CTE to define the removal list once
+  std::string query =
+      "with paths_to_remove(path) as (values " + path_placeholders + ")"
+      " select f1.path, f1.hash from files f1"
+      " where f1.path in paths_to_remove"
+      " and not exists ("
+      "   select 1 from files f2"
+      "   where f2.hash = f1.hash"
+      "   and f2.path not in paths_to_remove"
+      " )";
 
   sqlite3_stmt *stmt = nullptr;
   const char *why_blobs = "Could not get blob hashes for paths";
@@ -1965,7 +1978,7 @@ std::vector<std::tuple<std::string, std::string>> Database::remove_files(
     return results;
   }
 
-  // Bind all path parameters
+  // Bind all path parameters (once - the CTE is referenced twice)
   for (size_t i = 0; i < paths.size(); ++i) {
     bind_string(why_blobs, stmt, i + 1, paths[i]);
   }
