@@ -1,3 +1,4 @@
+benchmark.wake
 build.wake
 extensions/vscode/vscode.wake
 rust/log_viewer/build.wake

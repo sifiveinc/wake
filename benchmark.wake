@@ -1,0 +1,101 @@
+package benchmark
+
+from wake import _
+
+export def trimLeft (string: String): String =
+    string
+    | replace `^\s*` ""
+
+export def trimRight (string: String): String =
+    string
+    | replace `\s*$` ""
+
+export def trim (string: String): String =
+    string
+    | trimLeft
+    | trimRight
+
+def unsafe_getIso8601Time Unit: Result String Error =
+    require Pass timestamp =
+        makeShellPlan "date '+%Y-%m-%dT%H:%M:%S%:z'" Nil
+        | setPlanLabel "unsafe_getIso8601Time"
+        | setPlanPersistence ReRun
+        | setPlanStdout logNever
+        | setPlanStderr logNever
+        | setPlanEcho logNever
+        | runJobWith localRunner
+        | getJobStdout
+
+    Pass (trim timestamp)
+
+# Run numJobs parallel no-op (sleep) jobs to benchmark scheduler throughput.
+# All workspace sources are declared visible to stress the input tracking path.
+# ReRun persistence and per-job BENCHMARK_JOB_ID prevent caching and deduplication.
+export def runBenchmarkJobs (args: List String) : Result Unit Error =
+    require Pass (numJobsStr; sleepSecondsStr) = match args
+        a, b, Nil -> Pass (a; b)
+        _ -> Fail "Exactly 2 arguments required".makeError
+
+    require Pass numJobs = int numJobsStr | getOrFail "{numJobsStr} must be an integer".makeError
+    require Pass sleepSeconds = int sleepSecondsStr | getOrFail "{sleepSecondsStr} must be an integer".makeError
+
+    require Pass Unit =
+        require Pass now = unsafe_getIso8601Time Unit
+        else Pass Unit
+        println "DEBUG: START Generating: {now}"
+        | Pass
+
+    require Pass (generatedFiles: Vector Path) =
+        vseq 50000
+        | vmap (\i write "tmp/{str i}.txt" "file {str i}")
+        | vfindFail
+
+    require Pass Unit =
+        require Pass now = unsafe_getIso8601Time Unit
+        else Pass Unit
+        println "DEBUG: DONE Generating: {now}"
+        | Pass
+
+    def makeJob (idx: Integer): Boolean =
+        def plan =
+            makeShellPlan "sleep {str sleepSeconds}" generatedFiles
+            | setPlanLabel "benchmark: sleep {str sleepSeconds}s [{str idx}/{str numJobs}]"
+            | setPlanPersistence ReRun
+            | setPlanStdout logNever
+            | setPlanStderr logNever
+            | editPlanEnvironment ("BENCHMARK_JOB_ID={str idx}", _)
+        def _ = wait (
+            def printPlan p =
+                require Pass now = unsafe_getIso8601Time Unit
+                else Unit
+                println "DEBUG: Plan {str idx} id:{p.getPlanLabel} created: {now}"
+            printPlan
+        ) plan
+        def job = runJobWith fuseRunner plan
+        def _ = wait (
+            def printJob j =
+                require Pass now = unsafe_getIso8601Time Unit
+                else Unit
+                println "DEBUG: Job {str idx} id:{j.getJobId.format} Done: {now}"
+            printJob
+        ) job
+        isJobOk job
+
+    def runRound1 (_: Unit): Unit =
+        def jobs = seq numJobs | map makeJob
+        def allDone = foldl (\acc \elem acc && elem) True jobs
+        require Pass now = unsafe_getIso8601Time Unit
+        else Unit
+        println "DEBUG: FIRST ROUND DONE: {now} (all jobs ok: {if allDone then "True" else "False"})"
+
+    def runRound2 (_: Unit): Unit =
+        def jobs = seq (numJobs / 4) | map makeJob
+        def allDone = foldl (\acc \elem acc && elem) True jobs
+        require Pass now = unsafe_getIso8601Time Unit
+        else Unit
+        println "DEBUG: SECOND ROUND DONE: {now} (all jobs ok: {if allDone then "True" else "False"})"
+
+    # Run rounds sequentially - wait ensures round1 completes before round2 starts
+    def _ = wait (\_ runRound2 Unit) (runRound1 Unit)
+
+    Pass Unit
