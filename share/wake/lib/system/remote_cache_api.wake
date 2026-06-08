@@ -810,7 +810,7 @@ def jField (jvalue: JValue) (key: String) =
     require JObject obj = jvalue
     else failWithError "not an object"
 
-    require Some (Pair (Pair _ value) _) = find (_.getPairFirst ==~ key) obj
+    require Some (Pair (Pair _ value) _) = find (_.getPairFirst ==~ key) (vectorToList obj)
     else failWithError "key '{key}' not found"
 
     Pass value
@@ -823,10 +823,11 @@ def asBytesDelimedByNull (parts: List String): List Integer =
 
 # getPathAsJson (Path "foo" PathTypeRegularFile "asdf" 0644) = (JObject ...)
 def getPathAsJson path =
-    JObject (
+    JObject (listToVector (
         "path" :-> JString path.getPathName,
         "hash" :-> JString path.getPathHash,
-    )
+        Nil
+    ))
 
 # Helper function for further processing the result of a http request in relation to the rsc
 def matchRequestResult (label: String) (attempt: Result HttpResponse Error): Result HttpResponse Error =
@@ -879,7 +880,7 @@ def uploadBlobRequest (api: RemoteCacheApi) (setBlob: HttpRequest => HttpRequest
     else failWithError "rsc: JSON response has incorrect schema for blob upload. (Missing blobs key)"
 
     def idJVals =
-        blobs
+        vectorToList blobs
         | map (jField _ "id")
 
     require Pass ids = idJVals.findFail
@@ -903,15 +904,16 @@ def addFormDataWithHash (name: String) (file: String) (contentType: Option Strin
 def getCacheSearchRequestJson (req: CacheSearchRequest): JValue =
     def (CacheSearchRequest _label cmd cwd env hiddenInfo isAtty stdin visibleFiles) = req
 
-    JObject (
-        "cmd" :-> JArray (cmd.asBytesDelimedByNull | map JInteger),
+    JObject (listToVector (
+        "cmd" :-> JArray (listToVector (cmd.asBytesDelimedByNull | map JInteger)),
         "cwd" :-> JString cwd,
-        "env" :-> JArray (env.asBytesDelimedByNull | map JInteger),
+        "env" :-> JArray (listToVector (env.asBytesDelimedByNull | map JInteger)),
         "hidden_info" :-> JString hiddenInfo,
         "is_atty" :-> JBoolean isAtty,
         "stdin" :-> JString stdin,
-        "visible_files" :-> JArray (visibleFiles | map getPathAsJson),
-    )
+        "visible_files" :-> JArray (listToVector (visibleFiles | map getPathAsJson)),
+        Nil
+    ))
 
 def getCacheAllowedRequestJson (req: CacheAllowedRequest): JValue =
     def (
@@ -931,21 +933,22 @@ def getCacheAllowedRequestJson (req: CacheAllowedRequest): JValue =
         obytes
     ) = req
 
-    JObject (
-        "cmd" :-> JArray (cmd.asBytesDelimedByNull | map JInteger),
+    JObject (listToVector (
+        "cmd" :-> JArray (listToVector (cmd.asBytesDelimedByNull | map JInteger)),
         "cwd" :-> JString cwd,
-        "env" :-> JArray (env.asBytesDelimedByNull | map JInteger),
+        "env" :-> JArray (listToVector (env.asBytesDelimedByNull | map JInteger)),
         "hidden_info" :-> JString hiddenInfo,
         "is_atty" :-> JBoolean isAtty,
         "stdin" :-> JString stdin,
-        "visible_files" :-> JArray (visibleFiles | map getPathAsJson),
+        "visible_files" :-> JArray (listToVector (visibleFiles | map getPathAsJson)),
         "status" :-> JInteger status,
         "runtime" :-> JDouble runtime,
         "cputime" :-> JDouble cputime,
         "memory" :-> JInteger memory,
         "obytes" :-> JInteger obytes,
         "label" :-> JString label,
-    )
+        Nil
+    ))
 
 # Converts a CachePostJobRequest to JSON
 def getCachePostRequestJson (req: CachePostRequest): JValue =
@@ -973,36 +976,39 @@ def getCachePostRequestJson (req: CachePostRequest): JValue =
     ) = req
 
     def mkOutputFileJson (CachePostRequestOutputFile path mode blobId) =
-        JObject (
+        JObject (listToVector (
             "path" :-> JString path,
             "mode" :-> JInteger mode,
             "blob_id" :-> JString blobId,
-        )
+            Nil
+        ))
 
     def mkOutputDirJson (CachePostRequestOutputDirectory path mode hidden) =
-        JObject (
+        JObject (listToVector (
             "path" :-> JString path,
             "mode" :-> JInteger mode,
             "hidden" :-> JBoolean hidden,
-        )
+            Nil
+        ))
 
     def mkOutputSymlinkJson (CachePostRequestOutputSymlink path link) =
-        JObject (
+        JObject (listToVector (
             "path" :-> JString path,
             "link" :-> JString link,
-        )
+            Nil
+        ))
 
-    JObject (
-        "cmd" :-> JArray (cmd.asBytesDelimedByNull | map JInteger),
+    JObject (listToVector (
+        "cmd" :-> JArray (listToVector (cmd.asBytesDelimedByNull | map JInteger)),
         "cwd" :-> JString cwd,
-        "env" :-> JArray (env.asBytesDelimedByNull | map JInteger),
+        "env" :-> JArray (listToVector (env.asBytesDelimedByNull | map JInteger)),
         "hidden_info" :-> JString hiddenInfo,
         "is_atty" :-> JBoolean isAtty,
         "stdin" :-> JString stdin,
-        "visible_files" :-> JArray (visibleFiles | map getPathAsJson),
-        "output_dirs" :-> JArray (outputDirs | map mkOutputDirJson),
-        "output_symlinks" :-> JArray (outputSymlinks | map mkOutputSymlinkJson),
-        "output_files" :-> JArray (outputFiles | map mkOutputFileJson),
+        "visible_files" :-> JArray (listToVector (visibleFiles | map getPathAsJson)),
+        "output_dirs" :-> JArray (listToVector (outputDirs | map mkOutputDirJson)),
+        "output_symlinks" :-> JArray (listToVector (outputSymlinks | map mkOutputSymlinkJson)),
+        "output_files" :-> JArray (listToVector (outputFiles | map mkOutputFileJson)),
         "stdout_blob_id" :-> JString stdoutBlobId,
         "stderr_blob_id" :-> JString stderrBlobId,
         "status" :-> JInteger status,
@@ -1012,7 +1018,8 @@ def getCachePostRequestJson (req: CachePostRequest): JValue =
         "ibytes" :-> JInteger ibytes,
         "obytes" :-> JInteger obytes,
         "label" :-> JString label,
-    )
+        Nil
+    ))
 
 # Makes a CacheSearchResponse from json if possible
 def mkCacheSearchResponse (json: JValue): Result CacheSearchResponse Error =
@@ -1128,17 +1135,17 @@ def mkCacheSearchResponse (json: JValue): Result CacheSearchResponse Error =
         | Pass
 
     require Pass csOutputFiles =
-        outputFiles
+        vectorToList outputFiles
         | map mkOutputFile
         | findFail
 
     require Pass csOutputSymlinks =
-        outputSymlinks
+        vectorToList outputSymlinks
         | map mkOutputSymlink
         | findFail
 
     require Pass csOutputDirectories =
-        outputDirectories
+        vectorToList outputDirectories
         | map mkOutputDirectory
         | findFail
 

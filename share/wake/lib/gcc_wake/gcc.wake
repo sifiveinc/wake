@@ -92,11 +92,12 @@ def doCompileC variant gcc flags headers cfile =
     else out
 
     def outJson =
-        JObject (
+        JObject (listToVector (
             "directory" :-> JString workspace,
-            "arguments" :-> JArray $ map JString cmdline,
+            "arguments" :-> JArray (listToVector (map JString cmdline)),
             "file" :-> JString cfile.getPathName,
-        )
+            Nil
+        ))
 
     def file_hash = getPathHash cfile
     def cmd_file_path = ".compile_commands/{file_hash}.json"

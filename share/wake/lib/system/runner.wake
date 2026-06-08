@@ -408,14 +408,14 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                 failWithError "Visible path {p.getPathName} has unsupported transport type {pathTypeToString p.getPathType}"
 
             Pass (
-                JObject (
+                JObject (listToVector (
                     "path" :-> JString p.getPathName,
                     "type" :-> JString (pathTypeToString p.getPathType),
                     "hash" :-> JString p.getPathHash,
                     "mode" :-> JInteger p.getPathMode,
                     "mtime" :-> JInteger p.getPathMtimeNs,
                     Nil
-                )
+                ))
             )
 
         def visibleJsonResult =
@@ -434,20 +434,20 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some runnerError)
 
         def json =
-            JObject (
+            JObject (listToVector (
                 "label" :-> JString label,
-                "command" :-> command | map JString | JArray,
-                "environment" :-> environment | map JString | JArray,
-                "visible" :-> JArray visibleJson,
+                "command" :-> (command | map JString | listToVector | JArray),
+                "environment" :-> (environment | map JString | listToVector | JArray),
+                "visible" :-> JArray (listToVector visibleJson),
                 "directory" :-> JString directory,
                 "stdin" :-> JString stdin,
-                "resources" :-> res | map JString | JArray,
+                "resources" :-> (res | map JString | listToVector | JArray),
                 "version" :-> JString version,
                 "isolate-network" :-> JBoolean False,
                 "isolate-pids" :-> JBoolean False,
-                "mount-ops" :-> JArray (JObject ("type" :-> JString "workspace", "destination" :-> JString ".", Nil), Nil),
+                "mount-ops" :-> JArray (listToVector (JObject (listToVector ("type" :-> JString "workspace", "destination" :-> JString ".", Nil)), Nil)),
                 "cas-dir" :-> JString primCasDir,
-                "usage" :-> JObject (
+                "usage" :-> JObject (listToVector (
                     "status" :-> JInteger jobStatus,
                     "runtime" :-> JDouble runtime,
                     "cputime" :-> JDouble cputime,
@@ -455,9 +455,9 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                     "inbytes" :-> JInteger inbytes,
                     "outbytes" :-> JInteger outbytes,
                     Nil
-                ),
+                )),
                 Nil
-            )
+            ))
 
         def buildDirName = ".build"
         def specFile = "{buildDirName}/spec-{prefix}.json"
@@ -539,7 +539,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             JString s -> Some s
             JObject fields ->
                 # find returns Option (Pair (Pair String JValue) Integer)
-                match (find (\(Pair k _) k ==* "path") fields)
+                match (find (\(Pair k _) k ==* "path") (vectorToList fields))
                     Some (Pair (Pair _ pathVal) _) -> getJString pathVal
                     None -> None
             _ -> None
@@ -547,6 +547,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         def getK exp =
             content // exp
             | getJArray
+            | omap vectorToList
             | getOrElse Nil
             | mapPartial getJString
 
@@ -554,6 +555,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         def getOutputPaths =
             content // `outputs`
             | getJArray
+            | omap vectorToList
             | getOrElse Nil
             | mapPartial extractPath
 

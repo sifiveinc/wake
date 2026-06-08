@@ -176,7 +176,7 @@ export def parseStagingFiles (content: JValue): Result (List StagingItem) Error 
     match (content // `staging_files` | getJObject)
         None -> Pass Nil
         Some entries ->
-            entries
+            vectorToList entries
             | map parseStagingEntry
             | findFail
 

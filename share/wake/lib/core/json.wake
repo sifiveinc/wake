@@ -22,37 +22,47 @@ export data JValue =
     JDouble Double
     JBoolean Boolean
     JNull
-    JObject (List (Pair String JValue))
-    JArray (List JValue)
+    JObject (Vector (Pair String JValue))
+    JArray (Vector JValue)
 
 export def getJString: JValue => Option String = match _
     JString x -> Some x
-    JArray (JString x, Nil) -> Some x
+    JArray vec -> match (vectorToList vec)
+        JString x, Nil -> Some x
+        _ -> None
     _ -> None
 
 export def getJInteger: JValue => Option Integer = match _
     JInteger x -> Some x
-    JArray (JInteger x, Nil) -> Some x
+    JArray vec -> match (vectorToList vec)
+        JInteger x, Nil -> Some x
+        _ -> None
     _ -> None
 
 export def getJDouble: JValue => Option Double = match _
     JDouble x -> Some x
     JInteger x -> Some (dint x)
-    JArray (JDouble x, Nil) -> Some x
-    JArray (JInteger x, Nil) -> Some (dint x)
+    JArray vec -> match (vectorToList vec)
+        JDouble x, Nil -> Some x
+        JInteger x, Nil -> Some (dint x)
+        _ -> None
     _ -> None
 
 export def getJBoolean: JValue => Option Boolean = match _
     JBoolean x -> Some x
-    JArray (JBoolean x, Nil) -> Some x
+    JArray vec -> match (vectorToList vec)
+        JBoolean x, Nil -> Some x
+        _ -> None
     _ -> None
 
-export def getJObject: JValue => Option (List (Pair String JValue)) = match _
+export def getJObject: JValue => Option (Vector (Pair String JValue)) = match _
     JObject x -> Some x
-    JArray (JObject x, Nil) -> Some x
+    JArray vec -> match (vectorToList vec)
+        JObject x, Nil -> Some x
+        _ -> None
     _ -> None
 
-export def getJArray: JValue => Option (List JValue) = match _
+export def getJArray: JValue => Option (Vector JValue) = match _
     JArray x -> Some x
     _ -> None
 
@@ -105,21 +115,21 @@ def doFormat (fmt: JSONFormat) (lhs: JValue): List String =
             JBoolean True -> "true", rhs
             JBoolean False -> "false", rhs
             JNull -> "null", rhs
-            JArray list ->
+            JArray vec ->
                 def helper value acc = ",{tabbeder}", rec acc deeper value
 
-                if list.empty then
+                if vempty vec then
                     '[]', rhs
                 else
-                    "[{tabbeder}", foldr helper ("{tabbed}]", rhs) list | tail
-            JObject list ->
+                    "[{tabbeder}", vfoldr helper ("{tabbed}]", rhs) vec | tail
+            JObject vec ->
                 def helper (Pair key value) acc =
                     ",{tabbeder}", '"', jsonEscape key, ("\":{space}", rec acc deeper value)
 
-                if list.empty then
+                if vempty vec then
                     '{}', rhs
                 else
-                    "\{{tabbeder}", foldr helper ("{tabbed}\}", rhs) list | tail
+                    "\{{tabbeder}", vfoldr helper ("{tabbed}\}", rhs) vec | tail
 
     rec Nil (if indent > 0 then Some "" else None) lhs
 
@@ -150,27 +160,27 @@ export def root /| filterFn =
     jfilter filterFn root
 
 export def jfilter filterFn root = match root
-    JArray l -> JArray (filter filterFn l)
+    JArray v -> JArray (vfilter filterFn v)
     _ ->
         if filterFn root then
-            JArray (root, Nil)
+            JArray (listToVector (root, Nil))
         else
-            JArray Nil
+            JArray (listToVector Nil)
 
 export def root /../ filterFn =
     jfind filterFn root
 
 export def jfind filterFn root =
     def helper node acc = match node
-        JArray l ->
-            def tail = foldr helper acc l
+        JArray vec ->
+            def tail = vfoldr helper acc vec
 
             if filterFn node then
                 node, tail
             else
                 tail
-        JObject l ->
-            def tail = foldr (helper _.getPairSecond _) acc l
+        JObject vec ->
+            def tail = vfoldr (helper _.getPairSecond _) acc vec
 
             if filterFn node then
                 node, tail
@@ -183,13 +193,14 @@ export def jfind filterFn root =
                 acc
 
     helper root Nil
+    | listToVector
     | JArray
 
 export def jempty root =
     empty (jlist root)
 
 export def jlist root = match root
-    JArray x -> x
+    JArray x -> vectorToList x
     _ -> root, Nil
 
 export def x // y =
@@ -199,18 +210,18 @@ export def x // y =
         JDouble _ -> tail
         JBoolean _ -> tail
         JNull -> tail
-        JObject l ->
+        JObject vec ->
             def flatten v tail = match v.getPairSecond
-                JArray l -> l ++ tail
+                JArray l -> vectorToList l ++ tail
                 w -> w, tail
 
-            foldr flatten tail (filter (matches y _.getPairFirst) l)
-        JArray l ->
+            foldr flatten tail (vectorToList (vfilter (matches y _.getPairFirst) vec))
+        JArray vec ->
             def flatten v tail = helper tail v
 
-            foldr flatten tail l
+            vfoldr flatten tail vec
 
-    JArray (helper Nil x)
+    JArray (listToVector (helper Nil x))
 
 export def x ==/ y = match x y
     (JString a) (JString b) -> a ==~ b
@@ -221,21 +232,21 @@ export def x ==/ y = match x y
     (JObject a) (JObject b) ->
         def helper (Pair (Pair k c) (Pair l d)) = k ==~ l && c ==/ d
 
-        if a.len != b.len then
+        if vlen a != vlen b then
             False
         else
-            zip a b
-            | forall helper
+            vzip a b
+            | vforall helper
     (JArray a) (JArray b) ->
         def helper (Pair c d) = c ==/ d
 
-        if a.len != b.len then
+        if vlen a != vlen b then
             False
         else
-            zip a b
-            | forall helper
-    (JArray a) _ -> exists (_ ==/ y) a
-    _ (JArray b) -> exists (_ ==/ x) b
+            vzip a b
+            | vforall helper
+    (JArray a) _ -> vexists (_ ==/ y) a
+    _ (JArray b) -> vexists (_ ==/ x) b
     _ _ -> False
 
 # Simplify a JSON structure for broad compatibility as defined by the specs.
@@ -285,26 +296,26 @@ export def normalizeJSONWith (fmt: JSONNormalize) (json: JValue): Result JValue 
                     (Pass norm) -> Pass (Pair key norm)
                     (Fail error) -> addJSONErrorPath key error
 
-            def normalizedList = map normalizeJObjectValue a
+            def normalizedList = map normalizeJObjectValue (vectorToList a)
 
             require Pass children = findFail normalizedList
 
             children
             | getJSONNormalizeObject fmt
-            | rmap JObject
+            | rmap (\c JObject (listToVector c))
         JArray a ->
             def recurseArray (Pair i x) =
                 normalizeJSONWith fmt x
                 | rmapFail (addJSONErrorPath "[{str i}]")
 
             require Pass normalized =
-                zip (seq a.len) a
+                zip (seq (vlen a)) (vectorToList a)
                 | map recurseArray
                 | findFail
 
             normalized
             | getJSONNormalizeArray fmt
-            | rmap JArray
+            | rmap (\c JArray (listToVector c))
 
     normalized
     | rmapFail (addJSONErrorPath "")
@@ -539,7 +550,7 @@ def mergeValueList (describeCompat: Boolean) (values: List JValue): Result JValu
                 def arrays =
                     def getJArrayOrNull = match _
                         JNull -> Some (JNull, Nil)
-                        json -> getJArray json
+                        json -> getJArray json | omap vectorToList
 
                     findNoneFn getJArrayOrNull values
 
@@ -561,7 +572,7 @@ def mergeValueList (describeCompat: Boolean) (values: List JValue): Result JValu
                         None
 
                 def bools = findNoneFn getJBoolean nonNullValues
-                def objects = findNoneFn getJObject nonNullValues
+                def objects = findNoneFn (getJObject _ | omap vectorToList) nonNullValues
 
                 None; strings; ints; doubles; bools; objects; None
 
@@ -581,9 +592,10 @@ def mergeValueList (describeCompat: Boolean) (values: List JValue): Result JValu
             # is returned unchanged by `simplifyValues`).
             flatten objects
             | deduplicateJObjectKeys (mergeValueList describeCompat)
-            | rmap JObject
+            | rmap (\c JObject (listToVector c))
         _ None None None None None (Some arrays) ->
             flatten arrays
+            | listToVector
             | JArray
             | Pass
         _ _ _ _ _ _ _ ->
@@ -614,6 +626,7 @@ export def lastValueInList (values: List JValue): Result JValue Error =
             # Return to original order after taking from `revValues`.
             reverse objs
             | mapPartial getJObject
+            | map vectorToList
             | flatten
             | deduplicateJObjectKeys lastValueInList
-            | rmap JObject
+            | rmap (\c JObject (listToVector c))

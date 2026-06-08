@@ -54,13 +54,20 @@ static size_t measure_jast(const JAST &jast) {
     case JSON_STR:
       return Record::reserve(1) + String::reserve(jast.value.size());
     case JSON_OBJECT: {
-      size_t out = Record::reserve(1) + reserve_list(jast.children.size());
+      // JObject wraps a Vector (Pair String JValue)
+      // Vector is `Vector (Array a) Integer Integer`, so we need:
+      //   Record(JObject) + Record(Vector) + 2*Integer + Record(Array) + each pair
+      size_t n = jast.children.size();
+      size_t out = Record::reserve(1) + Record::reserve(3) + 2 * Integer::reserve(MPZ((long)n)) +
+                   Record::reserve(n);
       for (auto &c : jast.children)
         out += reserve_tuple2() + String::reserve(c.first.size()) + measure_jast(c.second);
       return out;
     }
     case JSON_ARRAY: {
-      size_t out = Record::reserve(1) + reserve_list(jast.children.size());
+      size_t n = jast.children.size();
+      size_t out = Record::reserve(1) + Record::reserve(3) + 2 * Integer::reserve(MPZ((long)n)) +
+                   Record::reserve(n);
       for (auto &c : jast.children) out += measure_jast(c.second);
       return out;
     }
@@ -96,17 +103,30 @@ static Value *convert_jast(Heap &h, const JAST &jast) {
     case JSON_STR:
       return getJValue(h, String::claim(h, jast.value), 0);
     case JSON_OBJECT: {
-      std::vector<Value *> values;
-      values.reserve(jast.children.size());
-      for (auto &c : jast.children)
-        values.emplace_back(claim_tuple2(h, String::claim(h, c.first), convert_jast(h, c.second)));
-      return getJValue(h, claim_list(h, values.size(), values.data()), 5);
+      size_t n = jast.children.size();
+      Record *arr = Record::claim(h, &Constructor::array, n);
+      for (size_t i = 0; i < n; ++i) {
+        auto &c = jast.children[i];
+        arr->at(i)->instant_fulfill(
+            claim_tuple2(h, String::claim(h, c.first), convert_jast(h, c.second)));
+      }
+      Record *vec = Record::claim(h, &Vector->members[0], 3);
+      vec->at(0)->instant_fulfill(arr);
+      vec->at(1)->instant_fulfill(Integer::claim(h, MPZ((long)0)));
+      vec->at(2)->instant_fulfill(Integer::claim(h, MPZ((long)n)));
+      return getJValue(h, vec, 5);
     }
     case JSON_ARRAY: {
-      std::vector<Value *> values;
-      values.reserve(jast.children.size());
-      for (auto &c : jast.children) values.emplace_back(convert_jast(h, c.second));
-      return getJValue(h, claim_list(h, values.size(), values.data()), 6);
+      size_t n = jast.children.size();
+      Record *arr = Record::claim(h, &Constructor::array, n);
+      for (size_t i = 0; i < n; ++i) {
+        arr->at(i)->instant_fulfill(convert_jast(h, jast.children[i].second));
+      }
+      Record *vec = Record::claim(h, &Vector->members[0], 3);
+      vec->at(0)->instant_fulfill(arr);
+      vec->at(1)->instant_fulfill(Integer::claim(h, MPZ((long)0)));
+      vec->at(2)->instant_fulfill(Integer::claim(h, MPZ((long)n)));
+      return getJValue(h, vec, 6);
     }
     default: {
       assert(0);

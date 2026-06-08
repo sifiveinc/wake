@@ -35,5 +35,6 @@ extern std::shared_ptr<Sum>
     JValue;  // JString String | JInteger Integer | JReal String | JBoolean Boolean | JNull |
              // JObject  List (Pair String JValue) | JArray List JValue
 extern std::shared_ptr<Sum> Result;  // Pass x | Fail y
+extern std::shared_ptr<Sum> Vector;  // Vector (Array a) Integer Integer
 
 #endif

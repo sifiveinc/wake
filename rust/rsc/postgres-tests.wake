@@ -18,51 +18,57 @@ package build_wake
 from wake import _
 
 def createFileOp dst =
-    JObject (
+    JObject (listToVector (
         "type" :-> JString "create-file",
         "destination" :-> JString dst,
-    )
+        Nil
+    ))
 
 def createDirOp dst =
-    JObject (
+    JObject (listToVector (
         "type" :-> JString "create-dir",
         "destination" :-> JString dst,
-    )
+        Nil
+    ))
 
 def tmpMountOp dst =
-    JObject (
+    JObject (listToVector (
         "type" :-> JString "tmpfs",
         "destination" :-> JString dst,
-    )
+        Nil
+    ))
 
 def postgresSpecJson stdinFile testBinary =
-    JObject (
+    JObject (listToVector (
         "label" :-> JString "postgres cargo test",
-        "environment" :-> JArray (JString "PATH=/usr/lib64/ccache:/usr/bin:/usr/sbin:/bin",),
-        "command" :-> JArray (JString "bash", Nil),
+        "environment" :-> JArray (listToVector (JString "PATH=/usr/lib64/ccache:/usr/bin:/usr/sbin:/bin", Nil)),
+        "command" :-> JArray (listToVector (JString "bash", Nil)),
         "user-id" :-> JInteger 0,
         "group-id" :-> JInteger 0,
-        "visible" :-> JArray (JString testBinary, Nil),
+        "visible" :-> JArray (listToVector (JString testBinary, Nil)),
         "directory" :-> JString ".",
         "stdin" :-> JString "{stdinFile}",
-        "resources" :-> JArray Nil,
+        "resources" :-> JArray (listToVector Nil),
         "isolate-pids" :-> JBoolean True,
         "isolate-network" :-> JBoolean True,
-        "usage" :-> JObject (
+        "usage" :-> JObject (listToVector (
             "status" :-> JInteger 0,
             "runtime" :-> JInteger 0,
             "cputime" :-> JInteger 0,
             "membytes" :-> JInteger 0,
             "inbytes" :-> JInteger 0,
             "outputs" :-> JInteger 0,
-        ),
-        "mount-ops" :-> JArray (
+            Nil
+        )),
+        "mount-ops" :-> JArray (listToVector (
             tmpMountOp "/tmp",
             tmpMountOp "/root",
             createDirOp "rust/rsc/.cargo",
             createFileOp "rust/rsc/.cargo/config.toml",
-        ),
-    )
+            Nil
+        )),
+        Nil
+    ))
 
 export def testPostgres _ =
     # First we define a few directories, using various

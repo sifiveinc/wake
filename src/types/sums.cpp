@@ -33,6 +33,7 @@ std::shared_ptr<Sum> Unit;
 std::shared_ptr<Sum> Pair;
 std::shared_ptr<Sum> Result;
 std::shared_ptr<Sum> JValue;
+std::shared_ptr<Sum> Vector;
 
 void check_special(const std::shared_ptr<Sum> &sump) {
   if (sump->name == "Boolean") Boolean = sump;
@@ -42,6 +43,7 @@ void check_special(const std::shared_ptr<Sum> &sump) {
   if (sump->name == "Pair") Pair = sump;
   if (sump->name == "Result") Result = sump;
   if (sump->name == "JValue") JValue = sump;
+  if (sump->name == "Vector") Vector = sump;
 }
 
 void sums_ok() {
@@ -107,5 +109,13 @@ void sums_ok() {
     }
   } else {
     ERROR(LOCATION, "required data type JValue@wake not defined");
+  }
+
+  if (Vector) {
+    if (Vector->members.size() != 1 || Vector->members[0].ast.args.size() != 3) {
+      ERROR(Vector->region.location(), "special constructor Vector not defined correctly");
+    }
+  } else {
+    ERROR(LOCATION, "required data type Vector@wake not defined");
   }
 }
