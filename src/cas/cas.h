@@ -81,6 +81,16 @@ class Cas {
                                                const std::string& dest_path, mode_t mode,
                                                time_t mtime_sec, long mtime_nsec) const;
 
+  // Allocate a fresh per-job staging directory under {root}/{staging_subdir}/.
+  // The directory name is "{sanitized_prefix}.{pid}.{counter}" so concurrent
+  // wake processes get distinct paths. Created mode 0755.
+  wcl::result<std::string, CASError> alloc_staging_dir(const std::string& prefix) const;
+
+  // Recursively remove a staging directory previously returned by alloc_staging_dir.
+  // Refuses paths that aren't under the staging root (defense-in-depth against
+  // path-injection bugs in callers). Safe on missing paths.
+  wcl::result<bool, CASError> remove_staging_dir(const std::string& path) const;
+
  private:
   std::string root_;
   std::string blobs_dir_;
