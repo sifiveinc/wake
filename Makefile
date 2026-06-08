@@ -140,3 +140,12 @@ bin/wake-migrate: tools/wake-migrate/main.o $(COMMON_OBJS)
 
 .PRECIOUS:	src/parser/lexer.cpp src/parser/parser.cpp src/parser/parser.h src/json/jlexer.cpp
 .SUFFIXES:
+
+# Knowledge-base / AGENTS.md upkeep. See AGENTS.md and scripts/kb-check.sh.
+.PHONY:	kb-check kb-bless
+
+kb-check:
+	./scripts/kb-check.sh
+
+kb-bless:
+	./scripts/kb-bless.sh
