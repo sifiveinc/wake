@@ -1959,12 +1959,14 @@ std::vector<std::string> Database::remove_files(cas::Cas *cas,
       ")"
       " select f1.hash from files f1"
       " where f1.path in paths_to_remove"
+      " and f1.deleted = 0"
       // Only include hashes where *all* files with that hash are in our removal list
       // (i.e., exclude hashes that are shared with files we're *not* removing).
       " and not exists ("
       "   select 1 from files f2"
       "   where f2.hash = f1.hash"
       "   and f2.path not in paths_to_remove"
+      "   and f2.deleted = 0"
       " )"
       // For multi-wake safety, also exclude hashes currently in use by active runs.
       " and not exists ("
@@ -1976,16 +1978,16 @@ std::vector<std::string> Database::remove_files(cas::Cas *cas,
       " )";
 
   // Compile the query, and bind all paths to be removed.
-  sqlite3_stmt *stmt = nullptr;
+  sqlite3_stmt *hashes_stmt = nullptr;
   const char *why_blobs = "Could not get blob hashes for paths";
-  int ret = sqlite3_prepare_v2(imp->db, hashes_query.c_str(), -1, &stmt, 0);
+  int ret = sqlite3_prepare_v2(imp->db, hashes_query.c_str(), -1, &hashes_stmt, 0);
   if (ret != SQLITE_OK) {
     std::cerr << why_blobs << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
     // Still haven't started the transaction started, so just return an empty set.
     return {};
   }
   for (size_t i = 0; i < paths.size(); ++i) {
-    bind_string(why_blobs, stmt, i + 1, paths[i]);
+    bind_string(why_blobs, hashes_stmt, i + 1, paths[i]);
   }
 
   // Begin exclusive transaction to prevent concurrent builds from referencing files we're in the
@@ -1994,8 +1996,8 @@ std::vector<std::string> Database::remove_files(cas::Cas *cas,
 
   // Execute the search and remove the resulting blobs.
   std::vector<std::string> deleted_blobs;
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    std::string hash = rip_column(stmt, 0);
+  while (sqlite3_step(hashes_stmt) == SQLITE_ROW) {
+    std::string hash = rip_column(hashes_stmt, 0);
 
     // Parse and remove the CAS blob if CAS is available.
     if (cas) {
@@ -2017,43 +2019,36 @@ std::vector<std::string> Database::remove_files(cas::Cas *cas,
     }
   }
 
-  finish_stmt(why_blobs, stmt, imp->debugdb);
-  sqlite3_finalize(stmt);
+  finish_stmt(why_blobs, hashes_stmt, imp->debugdb);
+  sqlite3_finalize(hashes_stmt);
 
   // Mark all files as deleted in a single query.  This *could* be implemented as a pre-prepared
   // query by performing the `update` within the vector iteration, but we've seen repeated queries
   // like that cause measurable overhead in the past.
-  if (!deleted_blobs.empty()) {
-    std::string hash_placeholders = "?";
-    for (size_t i = 0; i < deleted_blobs.size(); ++i) {
-      hash_placeholders += ", ?";
-    }
+  std::string delete_query =
+      "update files set deleted=1 where path in (" + path_placeholders + ")";
+  sqlite3_stmt *delete_stmt = nullptr;
+  const char *why_delete = "Could not mark files as deleted";
+  ret = sqlite3_prepare_v2(imp->db, delete_query.c_str(), -1, &delete_stmt, 0);
+  if (ret != SQLITE_OK) {
+    // This is a bad place to error.  We can't roll back since we've already unlinked the CAS
+    // files, but we can't realistically recover since it was the same database update we'd need
+    // to make in order to rectify the database which caused the error in the first place.
+    // The best thing to do is to tell the user to run a (slower) command to check the DB and CAS
+    // against each other and fix any inconsistencies.
+    // TODO: Write that command and update this.  It'll likely be a manually-triggered deep GC.
+    std::cerr << why_delete << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl
+              << "The wake.db is likely corrupted." << std::endl;
 
-    std::string delete_query =
-        "update files set deleted=1 where hash in (" + hash_placeholders + ")";
-    sqlite3_stmt *delete_stmt = nullptr;
-    const char *why_delete = "Could not mark files as deleted";
-    ret = sqlite3_prepare_v2(imp->db, delete_query.c_str(), -1, &delete_stmt, 0);
-    if (ret != SQLITE_OK) {
-      // This is a bad place to error.  We can't roll back since we've already unlinked the CAS
-      // files, but we can't realistically recover since it was the same database update we'd need
-      // to make in order to rectify the database which caused the error in the first place.
-      // The best thing to do is to tell the user to run a (slower) command to check the DB and CAS
-      // against each other and fix any inconsistencies.
-      // TODO: Write that command and update this.  It'll likely be a manually-triggered deep GC.
-      std::cerr << why_delete << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl
-                << "The wake.db is likely corrupted." << std::endl;
-
-      end_txn();
-      return deleted_blobs;
-    }
-    for (size_t i = 0; i < deleted_blobs.size(); ++i) {
-      bind_string(why_delete, delete_stmt, i + 1, deleted_blobs[i]);
-    }
-
-    single_step(why_delete, delete_stmt, imp->debugdb);
-    sqlite3_finalize(delete_stmt);
+    end_txn();
+    return deleted_blobs;
   }
+  for (size_t i = 0; i < paths.size(); ++i) {
+    bind_string(why_delete, delete_stmt, i + 1, paths[i]);
+  }
+
+  single_step(why_delete, delete_stmt, imp->debugdb);
+  sqlite3_finalize(delete_stmt);
 
   // Release the database lock now that both the CAS and the DB have been updated.
   end_txn();

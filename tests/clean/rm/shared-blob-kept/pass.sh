@@ -31,11 +31,18 @@ BLOBS_BEFORE=$(find .build/cas -type f 2>/dev/null | wc -l)
 
 # shared1.txt should be gone, file2.txt should remain
 test ! -f shared1.txt || fail "shared1.txt was *not* removed"
-test -f shared2.txt || fail "shared2.txt was removed"
+test -f shared2.txt || fail "shared2.txt was removed by first --rm"
 
 # CAS blob should still exist because shared2.txt references it
 BLOBS_AFTER=$(find .build/cas -type f 2>/dev/null | wc -l)
-test "$BLOBS_BEFORE" = "$BLOBS_AFTER" || fail "CAS blob was removed (had $BLOBS_BEFORE, now $BLOBS_AFTER)"
+test "$BLOBS_BEFORE" = "$BLOBS_AFTER" || fail "CAS blob was removed after first use (had $BLOBS_BEFORE, now $BLOBS_AFTER)"
+
+# Now remove the other use of that blob -- it *should* now be removed from the CAS as that had
+# been its final use.
+"${WAKE}" --rm shared2.txt
+test ! -f shared2.txt || fail "shared2.txt was *not* removed by second --rm"
+BLOBS_AFTER=$(find .build/cas -type f 2>/dev/null | wc -l)
+test "$BLOBS_BEFORE" -gt "$BLOBS_AFTER" || fail "CAS blob was *not* removed after last use (had $BLOBS_BEFORE, now $BLOBS_AFTER)"
 
 "${WAKE}" --output 'shared*.txt' --include-hidden
 echo "PASS: shared CAS blob kept" >&2

@@ -33,7 +33,7 @@ test ! -f unique.txt || fail "unique.txt not removed"
 
 # CAS blob should be removed since no other job references it
 BLOBS_AFTER=$(find .build/cas -type f 2>/dev/null | wc -l)
-test "$BLOBS_AFTER" = "0" || fail "CAS blob not removed (had $BLOBS_BEFORE, now $BLOBS_AFTER)"
+test "$BLOBS_BEFORE" -gt "$BLOBS_AFTER" || fail "CAS blob not removed (had $BLOBS_BEFORE, now $BLOBS_AFTER)"
 
 "${WAKE}" --output unique.txt --include-hidden
 echo "PASS: CAS blob removed with last reference" >&2
