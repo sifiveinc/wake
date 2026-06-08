@@ -88,6 +88,9 @@ class Cas {
   // Remove blob from CAS.  Be careful.
   std::optional<CASError> remove_blob(const ContentHash& hash);
 
+  wcl::result<std::string, CASError> alloc_staging_dir(const std::string& prefix) const;
+  wcl::result<bool, CASError> remove_staging_dir(const std::string& path) const;
+
  private:
   std::string root_;
   std::string blobs_dir_;

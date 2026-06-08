@@ -41,6 +41,25 @@ static_assert(SHARD_LEN < HASH_HEX_LEN, "hash length must be longer than shard l
 
 // Global counter for unique temp file names when ingesting files.
 static std::atomic<uint64_t> g_store_counter{0};
+static std::atomic<uint64_t> g_alloc_staging_counter{0};
+
+static std::string sanitize_staging_prefix(const std::string& prefix) {
+  static constexpr size_t kMaxPrefixLen = 64;
+  std::string out;
+  out.reserve(prefix.size());
+  for (char c : prefix) {
+    if (c == '/' || c == '\\' || c == '\0' || c == '.') {
+      out.push_back('_');
+    } else if (c >= 0x20 && c < 0x7f) {
+      out.push_back(c);
+    } else {
+      out.push_back('_');
+    }
+    if (out.size() >= kMaxPrefixLen) break;
+  }
+  if (out.empty()) out = "job";
+  return out;
+}
 // Helper functions for hash-based directory sharding
 static std::string hash_prefix(const ContentHash& hash) {
   std::string hex = hash.to_hex();
@@ -339,6 +358,39 @@ std::optional<CASError> Cas::remove_blob(const ContentHash& hash) {
   if (!fs::remove(blob, ec)) return CASError::NotFound;
   if (ec) return CASError::IOError;
   return std::nullopt;
+}
+
+wcl::result<std::string, CASError> Cas::alloc_staging_dir(const std::string& prefix) const {
+  std::string name = sanitize_staging_prefix(prefix) + "." + std::to_string(getpid()) + "." +
+                     std::to_string(g_alloc_staging_counter.fetch_add(1));
+  std::string path = (fs::path(staging_dir_) / name).string();
+  std::error_code ec;
+  if (!fs::create_directory(path, ec) || ec) {
+    return wcl::make_error<std::string, CASError>(CASError::IOError);
+  }
+  if (chmod(path.c_str(), 0755) != 0) {
+    fs::remove_all(path, ec);
+    return wcl::make_error<std::string, CASError>(CASError::IOError);
+  }
+  return wcl::make_result<std::string, CASError>(std::move(path));
+}
+
+wcl::result<bool, CASError> Cas::remove_staging_dir(const std::string& path) const {
+  std::error_code ec;
+  fs::path target = fs::weakly_canonical(fs::path(path), ec);
+  if (ec) return wcl::make_error<bool, CASError>(CASError::IOError);
+  fs::path root = fs::weakly_canonical(fs::path(staging_dir_), ec);
+  if (ec) return wcl::make_error<bool, CASError>(CASError::IOError);
+
+  auto relative = fs::relative(target, root, ec);
+  if (ec || relative.empty() || relative == fs::path(".") ||
+      relative.native().rfind("..", 0) == 0) {
+    return wcl::make_error<bool, CASError>(CASError::InvalidHash);
+  }
+
+  fs::remove_all(target, ec);
+  if (ec) return wcl::make_error<bool, CASError>(CASError::IOError);
+  return wcl::make_result<bool, CASError>(true);
 }
 
 }  // namespace cas

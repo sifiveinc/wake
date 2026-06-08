@@ -27,6 +27,20 @@ export def primCasBlobAbsPathStr (hash: String): Result String Error =
     raw hash
     | rmapError makeError
 
+# Allocate a private per-job directory beneath the CAS staging root.
+export def casAllocStagingDir (prefix: String): Result String Error =
+    def raw prefix = prim "cas_alloc_staging_dir"
+
+    raw prefix
+    | rmapError makeError
+
+# Remove a directory previously returned by casAllocStagingDir.
+export def casRemoveStagingDir (path: String): Result Unit Error =
+    def raw path = prim "cas_remove_staging_dir"
+
+    raw path
+    | rmapError makeError
+
 # Materialize an item from CAS to workspace.
 def primCasMaterializeItem (destPath: String) (itemType: String) (hashOrTarget: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
     def raw destPath itemType hashOrTarget mode mtimeSec mtimeNsec = prim "cas_materialize_item"
