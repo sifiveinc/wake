@@ -26,8 +26,11 @@
 #include <iostream>
 
 #include "cas/content_hash.h"
+#include "util/execpath.h"
+#include "wcl/filepath.h"
 
-int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::string> &paths) {
+int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::string> &paths,
+                 const std::string &wake_cwd) {
   if (paths.empty()) {
     std::cerr << "error: no paths specified" << std::endl;
     return EX_USAGE;
@@ -38,12 +41,33 @@ int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::strin
     std::cerr << "error: CAS store not initialized" << std::endl;
     return EXIT_FAILURE;
   }
+  // Normalize all paths to be relative to the workspace root, allowing this to be called from
+  // directories other than the root.
+  std::string workspace_root = get_cwd();
+  std::vector<std::string> normalized_paths;
+  normalized_paths.reserve(paths.size());
+
+  for (const auto &path : paths) {
+    std::string normalized;
+
+    if (wcl::is_relative(path)) {
+      // Interpret relative paths according to where wake was invoked (wake_cwd).
+      // `wake_cwd` format is "" or "subdir/", so it doesn't need an extra '/'.
+      std::string full_path = wake_cwd + path;
+      normalized = wcl::make_canonical(full_path);
+    } else {
+      // Additionally relativize absolute paths to match their database representation.
+      normalized = wcl::relative_to(workspace_root, path);
+    }
+
+    normalized_paths.push_back(std::move(normalized));
+  }
 
   // Remove files from database and CAS within a single transaction.
-  db.remove_files(cas, paths);
+  db.remove_files(cas, normalized_paths);
 
   // Delete workspace files outside of that transaction.
-  for (const auto &path : paths) {
+  for (const auto &path : normalized_paths) {
     if (unlink(path.c_str()) != 0 && errno != ENOENT) {
       std::cerr << "warning: failed to remove file '" << path << "': " << strerror(errno)
                 << std::endl;
