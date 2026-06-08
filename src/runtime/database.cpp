@@ -377,7 +377,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "insert into log(job_id, descriptor, seconds, output)"
       " values(?, ?, ?, ?)";
   const char *sql_insert_file =
-      "insert or ignore into files(hash, type, mode, path) values (?, ?, ?, ?)";
+      "insert into files(hash, type, mode, path, deleted) values (?, ?, ?, ?, 0)"
+      " on conflict(hash, type, mode, path) do update set deleted=0";
   const char *sql_claim_file =
       "insert or ignore into run_files(run_id, file_id)"
       " values(?, (select file_id from files where path=? and hash=? and type=? and mode=?))";

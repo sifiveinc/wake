@@ -1,0 +1,8 @@
+# Test: --rm correctly resets deleted flag when file is re-created
+
+export def makeFile (args: List String) =
+    def content = "test content"
+
+    map (write _ content) args
+    | findFail
+    | rmap (\_ Unit)
