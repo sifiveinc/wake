@@ -46,8 +46,8 @@
 #include <set>
 #include <sstream>
 
-#include "cli_options.h"
 #include "clean.h"
+#include "cli_options.h"
 #include "describe.h"
 #include "dst/bind.h"
 #include "dst/expr.h"
@@ -914,7 +914,8 @@ int main(int argc, char **argv) {
   }
 
   if (clo.rm) {
-    std::string fail = db.open(/*wait=*/false, /*memory=*/false, /*tty=*/isatty(0), /*readonly=*/false);
+    std::string fail =
+        db.open(/*wait=*/false, /*memory=*/false, /*tty=*/isatty(0), /*readonly=*/false);
     if (!fail.empty()) {
       std::cerr << "error: " << fail << std::endl;
       return EXIT_FAILURE;

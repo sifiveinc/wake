@@ -1173,8 +1173,7 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     long modified = sqlite3_column_int64(imp->get_tree, 4);
     bool deleted = sqlite3_column_int64(imp->get_tree, 5) != 0;
     // If the CAS blob is marked deleted or the workspace file doesn't exist, invalidate the cache.
-    if (deleted)
-      out.found = false;
+    if (deleted) out.found = false;
     files.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
