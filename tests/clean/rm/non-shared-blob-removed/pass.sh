@@ -10,7 +10,7 @@ export WAKE_CAS=1
 
 rm -rf wake.db* wake.log .wake .build unique.txt
 
-function fail() {
+fail() {
     echo "FAIL: $1" >&2
     rm -f unique.txt
     exit 1

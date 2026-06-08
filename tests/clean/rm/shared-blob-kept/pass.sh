@@ -10,7 +10,7 @@ export WAKE_CAS=1
 
 rm -rf wake.db* wake.log .wake .build shared1.txt shared2.txt
 
-function fail() {
+fail() {
     echo "FAIL: $1" >&2
     rm -f shared1.txt shared2.txt
     exit 1
