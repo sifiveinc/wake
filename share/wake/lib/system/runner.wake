@@ -366,6 +366,40 @@ export def defaultRunner: Runner =
 
             fuseRunner
 
+# A mount operation for the wakebox spec.
+export tuple WakeboxMountOp =
+    export Type: String
+    export Source: String
+    export Dest: String
+    export ReadOnly: Boolean
+
+# Fields consumed by the wakebox/fuse sandbox when reading the spec JSON.
+export tuple WakeboxSpec =
+    export Command: List String
+    export Environment: List String
+    export Visible: List Path
+    export Directory: String
+    export Stdin: String
+    export CasDir: String
+    export IsolateNetwork: Boolean
+    export IsolatePids: Boolean
+    export MountOps: List WakeboxMountOp
+    export Hostname: String
+    export Domainname: String
+    export UserId: Option Integer
+    export GroupId: Option Integer
+    export CommandTimeout: Option Integer
+    export Runner: String
+
+# Write a WakeboxSpec to a JSON file at the given path.
+# indent: spaces per level (0 = compact).
+# The prim correctly awaits any unresolved field promises before writing.
+export def writeWakeboxSpec (spec: WakeboxSpec) (indent: Integer) (filePath: String): Result Unit Error =
+    def f spec ind path = prim "write_wakebox_spec"
+
+    f spec indent filePath
+    | rmapError makeError
+
 # A plan describing how to construct a JSONRunner
 # RawScript: the path to the script to run jobs with
 # ExtraArgs: extra arguments to pass to ``RawScript``
@@ -388,7 +422,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
     def script = which (simplify rawScript)
     def executeOk = access script xOK
 
-    def run (job: Job) ((RunnerInput label command visible environment directory stdin res prefix record isatty fnInputs fnOutputs): RunnerInput): RunnerOutput =
+    def run (job: Job) ((RunnerInput label command visible environment directory stdin _ prefix record isatty fnInputs fnOutputs): RunnerInput): RunnerOutput =
         require True = executeOk
         else
             def runnerError = "Runner {script} is not executable".makeError
@@ -396,76 +430,31 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
 
             RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some runnerError)
 
-        def Usage jobStatus runtime cputime membytes inbytes outbytes = record
-
-        def mkVisibleJson (p: Path): Result JValue Error =
-            require True = match p.getPathType
-                PathTypeRegularFile -> True
-                PathTypeDirectory -> True
-                PathTypeSymlink -> True
-                _ -> False
-            else
-                failWithError "Visible path {p.getPathName} has unsupported transport type {pathTypeToString p.getPathType}"
-
-            Pass (
-                JObject (
-                    "path" :-> JString p.getPathName,
-                    "type" :-> JString (pathTypeToString p.getPathType),
-                    "hash" :-> JString p.getPathHash,
-                    "mode" :-> JInteger p.getPathMode,
-                    "mtime" :-> JInteger p.getPathMtimeNs,
-                    Nil
-                )
-            )
-
-        def visibleJsonResult =
-            visible
-            | map mkVisibleJson
-            | findFail
-
-        require Pass visibleJson = visibleJsonResult
-        else
-            def runnerError =
-                visibleJsonResult
-                | getWhenPass "Failed to encode visible inputs with cached modes".makeError
-
-            def _ = markJobSetupFailure job runnerError
-
-            RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some runnerError)
-
-        def json =
-            JObject (
-                "label" :-> JString label,
-                "command" :-> command | map JString | JArray,
-                "environment" :-> environment | map JString | JArray,
-                "visible" :-> JArray visibleJson,
-                "directory" :-> JString directory,
-                "stdin" :-> JString stdin,
-                "resources" :-> res | map JString | JArray,
-                "version" :-> JString version,
-                "isolate-network" :-> JBoolean False,
-                "isolate-pids" :-> JBoolean False,
-                "mount-ops" :-> JArray (JObject ("type" :-> JString "workspace", "destination" :-> JString ".", Nil), Nil),
-                "cas-dir" :-> JString primCasDir,
-                "usage" :-> JObject (
-                    "status" :-> JInteger jobStatus,
-                    "runtime" :-> JDouble runtime,
-                    "cputime" :-> JDouble cputime,
-                    "membytes" :-> JInteger membytes,
-                    "inbytes" :-> JInteger inbytes,
-                    "outbytes" :-> JInteger outbytes,
-                    Nil
-                ),
-                Nil
-            )
-
         def buildDirName = ".build"
         def specFile = "{buildDirName}/spec-{prefix}.json"
         def resultFile = "{buildDirName}/result-{prefix}.json"
 
+        def spec =
+            WakeboxSpec
+            command
+            environment
+            visible
+            directory
+            stdin
+            primCasDir
+            False
+            False
+            (WakeboxMountOp "workspace" "" "." False, Nil)
+            ""
+            ""
+            None
+            None
+            None
+            script
+
         def writeResult =
-            write specFile (prettyJSON json)
-            | addErrorContext "Failed to 'write {specFile}: '"
+            writeWakeboxSpec spec 2 specFile
+            | addErrorContext "Failed to write {specFile}: "
             | rmapFail (markJobSetupFailure job)
 
         require Pass _ = writeResult
