@@ -105,14 +105,24 @@ struct SpecData {
   // collect_spec returns nullptr in this case — callers must check this field.
   std::string error;
 
-  std::vector<std::string> command, environment;
+  std::vector<std::string> command;
+  std::vector<std::string> environment;
   std::vector<VisEntry> visible;
-  std::string directory, stdin_str, cas_dir;
-  bool isolate_network, isolate_pids;
+  std::string directory;
+  std::string stdin_str;
+  std::string cas_dir;
+  bool isolate_network;
+  bool isolate_pids;
   std::vector<MountEntry> mounts;
-  std::string hostname, domainname, runner;
-  bool has_user_id = false, has_group_id = false, has_command_timeout = false;
-  long user_id = 0, group_id = 0, command_timeout = 0;
+  std::string hostname;
+  std::string domainname;
+  std::string runner;
+  bool has_user_id = false;
+  bool has_group_id = false;
+  bool has_command_timeout = false;
+  long user_id = 0;
+  long group_id = 0;
+  long command_timeout = 0;
 };
 
 // ---------------------------------------------------------------------------
