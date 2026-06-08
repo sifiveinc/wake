@@ -30,6 +30,7 @@
 
 #include "json/json5.h"
 #include "prim.h"
+#include "record_helpers.h"
 #include "tuple.h"
 #include "types/data.h"
 #include "types/datatype.h"
@@ -125,34 +126,6 @@ struct SpecData {
   long command_timeout = 0;
 };
 
-// ---------------------------------------------------------------------------
-// Field-extraction helpers — each returns nullptr on success or the first
-// unfulfilled Promise it encounters.
-// ---------------------------------------------------------------------------
-
-static Promise *get_string(Record *rec, int idx, std::string &out) {
-  Promise *p = rec->at(idx);
-  if (!*p) return p;
-  out = p->coerce<String>()->as_str();
-  return nullptr;
-}
-
-static Promise *get_bool(Record *rec, int idx, bool &out) {
-  Promise *p = rec->at(idx);
-  if (!*p) return p;
-  // Boolean: True = members[0], False = members[1]
-  out = (p->coerce<Record>()->cons == &Boolean->members[0]);
-  return nullptr;
-}
-
-static Promise *get_long(Record *rec, int idx, long &out) {
-  Promise *p = rec->at(idx);
-  if (!*p) return p;
-  mpz_t v = {p->coerce<Integer>()->wrap()};
-  out = mpz_get_si(v);
-  return nullptr;
-}
-
 // Map a PathType ADT record to its wakebox JSON string.
 // Returns nullptr and sets `out` on success.
 // Returns nullptr and sets `error` for unsupported types.
@@ -178,39 +151,6 @@ static Promise *get_path_type_string(Record *path_rec, std::string &out, std::st
   return nullptr;
 }
 
-// Extract an Option Integer field. Sets has_val=true and out to the integer if Some,
-// has_val=false if None. Returns the unfulfilled Promise on suspension.
-static Promise *get_optional_long(Record *rec, int idx, bool &has_val, long &out) {
-  Promise *p = rec->at(idx);
-  if (!*p) return p;
-  Record *opt = p->coerce<Record>();
-  // Option: Some a (index 0, one inner field) | None (index 1, no fields)
-  if (opt->cons->index == 0) {  // Some
-    Promise *inner = opt->at(0);
-    if (!*inner) return inner;
-    mpz_t v = {inner->coerce<Integer>()->wrap()};
-    out = mpz_get_si(v);
-    has_val = true;
-  } else {
-    has_val = false;
-  }
-  return nullptr;
-}
-
-static Promise *get_string_list(Record *spec, int idx, std::vector<std::string> &out) {
-  Promise *p = spec->at(idx);
-  if (!*p) return p;
-  Record *list = p->coerce<Record>();
-  while (list->cons == &List->members[1]) {  // Cons
-    Promise *head = list->at(0);
-    if (!*head) return head;
-    out.push_back(head->coerce<String>()->as_str());
-    Promise *tail = list->at(1);
-    if (!*tail) return tail;
-    list = tail->coerce<Record>();
-  }
-  return nullptr;
-}
 
 // Try to collect all values from the WakeboxSpec record into plain C++ data.
 // Returns nullptr if everything is fulfilled, or the first unfulfilled Promise.
@@ -225,8 +165,8 @@ static Promise *collect_spec(Record *spec, SpecData &data) {
     if (broken) return broken; \
   } while (0)
 
-  TRY(get_string_list(spec, 0, data.command));
-  TRY(get_string_list(spec, 1, data.environment));
+  TRY(rh::string_list(spec, 0, data.command));
+  TRY(rh::string_list(spec, 1, data.environment));
 
   // Field 2: Visible — List Path
   // Path layout: [0]=Name:String, [1]=Type:PathType, [2]=Hash:String,
@@ -241,15 +181,15 @@ static Promise *collect_spec(Record *spec, SpecData &data) {
       Record *path = head->coerce<Record>();
 
       VisEntry ve;
-      TRY(get_string(path, 0, ve.path));
+      TRY(rh::string(path, 0, ve.path));
       {
         Promise *broken = get_path_type_string(path, ve.type, data.error);
         if (broken) return broken;
         if (!data.error.empty()) return nullptr;
       }
-      TRY(get_string(path, 2, ve.hash));
-      TRY(get_long(path, 3, ve.mode));
-      TRY(get_long(path, 4, ve.mtime));
+      TRY(rh::string(path, 2, ve.hash));
+      TRY(rh::integer(path, 3, ve.mode));
+      TRY(rh::integer(path, 4, ve.mtime));
       data.visible.push_back(std::move(ve));
 
       Promise *tail = list->at(1);
@@ -258,11 +198,11 @@ static Promise *collect_spec(Record *spec, SpecData &data) {
     }
   }
 
-  TRY(get_string(spec, 3, data.directory));
-  TRY(get_string(spec, 4, data.stdin_str));
-  TRY(get_string(spec, 5, data.cas_dir));
-  TRY(get_bool(spec, 6, data.isolate_network));
-  TRY(get_bool(spec, 7, data.isolate_pids));
+  TRY(rh::string(spec, 3, data.directory));
+  TRY(rh::string(spec, 4, data.stdin_str));
+  TRY(rh::string(spec, 5, data.cas_dir));
+  TRY(rh::boolean(spec, 6, data.isolate_network));
+  TRY(rh::boolean(spec, 7, data.isolate_pids));
 
   // Field 8: MountOps — List WakeboxMountOp
   {
@@ -275,10 +215,10 @@ static Promise *collect_spec(Record *spec, SpecData &data) {
       Record *entry = head->coerce<Record>();
 
       MountEntry me;
-      TRY(get_string(entry, 0, me.type));
-      TRY(get_string(entry, 1, me.source));
-      TRY(get_string(entry, 2, me.dest));
-      TRY(get_bool(entry, 3, me.read_only));
+      TRY(rh::string(entry, 0, me.type));
+      TRY(rh::string(entry, 1, me.source));
+      TRY(rh::string(entry, 2, me.dest));
+      TRY(rh::boolean(entry, 3, me.read_only));
       data.mounts.push_back(std::move(me));
 
       Promise *tail = list->at(1);
@@ -287,12 +227,12 @@ static Promise *collect_spec(Record *spec, SpecData &data) {
     }
   }
 
-  TRY(get_string(spec, 9, data.hostname));
-  TRY(get_string(spec, 10, data.domainname));
-  TRY(get_optional_long(spec, 11, data.has_user_id, data.user_id));
-  TRY(get_optional_long(spec, 12, data.has_group_id, data.group_id));
-  TRY(get_optional_long(spec, 13, data.has_command_timeout, data.command_timeout));
-  TRY(get_string(spec, 14, data.runner));
+  TRY(rh::string(spec, 9, data.hostname));
+  TRY(rh::string(spec, 10, data.domainname));
+  TRY(rh::opt_integer(spec, 11, data.has_user_id, data.user_id));
+  TRY(rh::opt_integer(spec, 12, data.has_group_id, data.group_id));
+  TRY(rh::opt_integer(spec, 13, data.has_command_timeout, data.command_timeout));
+  TRY(rh::string(spec, 14, data.runner));
 
 #undef TRY
 
