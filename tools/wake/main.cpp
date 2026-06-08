@@ -266,7 +266,8 @@ void print_help(const char *argv0) {
     << "    --no-wait          Do not wait to obtain database lock; fail immediately"      << std::endl
     << "    --no-workspace     Do not open a database or scan for sources files"           << std::endl
     << "    --fatal-warnings   Do not execute if there are any warnings"                   << std::endl
-    << "    --heap-factor X    Heap-size is X * live data after the last GC (default 4.0)" << std::endl
+    << "    --heap-factor X    GC headroom scale factor (default 4.0)"                     << std::endl
+    << "    --heap-pivot  X    Pivot point in MB where GC growth curve transitions (default 64)" << std::endl
     << "    --profile-heap     Report memory consumption on every garbage collection"      << std::endl
     << "    --profile     FILE Report runtime breakdown by stack trace to HTML/JSON file"  << std::endl
     << "    --chdir    -C PATH Locate database and default package starting from PATH"     << std::endl
@@ -444,16 +445,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  double heap_factor = 4.0;
-  if (clo.heapf) {
-    char *tail;
-    heap_factor = strtod(clo.heapf, &tail);
-    if (*tail || heap_factor < 1.1) {
-      std::cerr << "Cannot run with " << clo.heapf << " heap-factor (must be >= 1.1)!" << std::endl;
-      return 1;
-    }
-  }
-
   // Change directory to the location of the invoked script
   // and execute the specified target function
   if (clo.shebang) {
@@ -545,6 +536,27 @@ int main(int argc, char **argv) {
   config_override.log_header_align = clo.log_header_align;
   config_override.cache_miss_on_failure = clo.cache_miss_on_failure;
 
+  if (clo.heapf) {
+    char *tail;
+    double v = strtod(clo.heapf, &tail);
+    if (*tail || v < 1.1) {
+      std::cerr << "Cannot run with " << clo.heapf << " heap-factor (must be >= 1.1)!" << std::endl;
+      return 1;
+    }
+    config_override.heap_factor = v;
+  }
+
+  if (clo.heappivot) {
+    char *tail;
+    double v = strtod(clo.heappivot, &tail);
+    if (*tail || v < 1.0) {
+      std::cerr << "Cannot run with " << clo.heappivot << " heap-pivot (must be >= 1.0 MB)!"
+                << std::endl;
+      return 1;
+    }
+    config_override.heap_pivot_mb = v;
+  }
+
   if (!WakeConfig::init(".wakeroot", config_override)) {
     return 1;
   }
@@ -553,6 +565,9 @@ int main(int argc, char **argv) {
     std::cout << *WakeConfig::get();
     return 0;
   }
+
+  double heap_factor = WakeConfig::get()->heap_factor;
+  double heap_pivot_mb = WakeConfig::get()->heap_pivot_mb;
 
   // Bulk logging
   std::string bulk_dir = WakeConfig::get()->bulk_logging_dir;
@@ -734,7 +749,7 @@ int main(int argc, char **argv) {
   }
 
   Profile tree;
-  Runtime runtime(clo.profile ? &tree : nullptr, clo.profileh, heap_factor);
+  Runtime runtime(clo.profile ? &tree : nullptr, clo.profileh, heap_factor, heap_pivot_mb);
   bool sources = false;
   {
     auto start = std::chrono::steady_clock::now();
