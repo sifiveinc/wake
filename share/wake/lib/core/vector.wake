@@ -293,6 +293,17 @@ export def vfind (acceptFn: a => Boolean): Vector a => Option (Pair a Integer) =
 
     findRaw acceptFn out
 
+# vfindFail: if all the Vector elements are Pass return the contents else the first Fail
+#
+#   vfindFail [Pass 456, Pass 123] = Pass [456, 123]
+#   vfindFail [Pass 456, Fail "xyz", Fail "abc"] = Fail "xyz"
+export def vfindFail: Vector (Result a b) => Result (Vector a) b =
+    def top v = match (vfind isFail v)
+        Some (Pair (Fail e) _) -> Fail e
+        _ -> Pass (vmapPartial getPass v)
+
+    top
+
 # vsplitUntil: cut the Vector at the point `stopFn` is first True
 # Once `stopFn` returns True, `stopFn` is not evaulated on further elements.
 # This means that `stopFn` is applied to the List mostly sequentially.
