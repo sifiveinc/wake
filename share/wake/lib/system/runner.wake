@@ -39,7 +39,9 @@ export def getUsageThreads (Usage _ run cpu _ _ _: Usage): Double =
 export tuple RunnerInput =
     export Label: String
     export Command: List String
-    export Visible: List Path
+    # The visible files, stored internally as a Vector. Use the `getRunnerInputVisible`
+    # facade below for the historical `List Path` view.
+    export VisibleVector: Vector Path
     export Environment: List String
     export Directory: String
     export Stdin: String
@@ -78,6 +80,11 @@ export tuple RunnerInput =
     #     a smart wrapper tracking file writes must pass a no-op function to the inner runner
     #     so that it can apply filtering after collecting the files written.
     export FnOutputs: (List String => List String)
+
+# List-based facade over the internal `VisibleVector` field, preserving the historical
+# `List Path` accessor for runners that consume the visible files as a List.
+export def getRunnerInputVisible (input: RunnerInput): List Path =
+    input.getRunnerInputVisibleVector | vectorToList
 
 # The staged-output metadata returned by runners that stage outputs before job finalization.
 export tuple StagedOutputs =
@@ -157,7 +164,8 @@ export def localRunner: Runner =
 
         def fileInputs =
             vis
-            | map getPathName
+            | vmap getPathName
+            | vectorToList
             | fnInputs
 
         def cleanable = Nil
@@ -309,7 +317,8 @@ export def virtualRunner: Runner =
 
         def fileInputs =
             vis
-            | map getPathName
+            | vmap getPathName
+            | vectorToList
             | fnInputs
 
         # Caller needs to fill this in from nothing
@@ -420,8 +429,8 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
 
         def visibleJsonResult =
             visible
-            | map mkVisibleJson
-            | findFail
+            | vmap mkVisibleJson
+            | vfindFail
 
         require Pass visibleJson = visibleJsonResult
         else
@@ -438,7 +447,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                 "label" :-> JString label,
                 "command" :-> (command | map JString | listToVector | JArray),
                 "environment" :-> (environment | map JString | listToVector | JArray),
-                "visible" :-> JArray (listToVector visibleJson),
+                "visible" :-> JArray visibleJson,
                 "directory" :-> JString directory,
                 "stdin" :-> JString stdin,
                 "resources" :-> (res | map JString | listToVector | JArray),
@@ -479,7 +488,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             RunnerInput
             label
             cmd
-            Nil
+            (listToVector Nil)
             (extraEnv ++ environment)
             "."
             ""

@@ -196,7 +196,8 @@ def writeRunner (content: String) =
 
         def fileInputs =
             vis
-            | map getPathName
+            | vmap getPathName
+            | vectorToList
             | fnInputs
 
         def stagedOutputSetResult = match writeTask
@@ -373,7 +374,8 @@ def mkdirRunner: Runner =
 
         def fileInputs =
             vis
-            | map getPathName
+            | vmap getPathName
+            | vectorToList
             | fnInputs
 
         def stagedOutputSetResult =

@@ -355,7 +355,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
 
 # Creates a CacheSearchRequest from the various inputs to a runner
 def mkSearchRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _usage isAtty _ _): RunnerInput) (hidden: String) =
-    CacheSearchRequest label cmd dir env hidden isAtty stdin vis
+    CacheSearchRequest label cmd dir env hidden isAtty stdin (vectorToList vis)
 
 # Creates a CachePostJobRequest from the various inputs and outputs of a runner
 def mkPostJobRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ isAtty _ _): RunnerInput) (output: RunnerOutput) (hidden: String) (stdoutBlobId: String) (stderrBlobId: String) (files: List CachePostRequestOutputFile) (directories: List CachePostRequestOutputDirectory) (symlinks: List CachePostRequestOutputSymlink) =
@@ -369,7 +369,7 @@ def mkPostJobRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ is
     hidden
     isAtty
     stdin
-    vis
+    (vectorToList vis)
     directories
     symlinks
     files
@@ -386,7 +386,7 @@ def mkPostJobRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ is
 def mkCacheAllowedRequest ((RunnerInput label cmd vis env dir stdin _res _prefix _ isAtty _ _): RunnerInput) (output: RunnerOutput) (hidden: String) =
     def Usage jobStatus runtime cputime mem _ibytes obytes = output.getRunnerOutputUsage
 
-    CacheAllowedRequest label cmd dir env hidden isAtty stdin vis jobStatus runtime cputime mem obytes
+    CacheAllowedRequest label cmd dir env hidden isAtty stdin (vectorToList vis) jobStatus runtime cputime mem obytes
 
 # Posts a completed job to the remote cache
 def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: String) (input: RunnerInput) (output: RunnerOutput): Result Unit Error =

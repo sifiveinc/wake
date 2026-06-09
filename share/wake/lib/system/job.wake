@@ -259,7 +259,8 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
 
     def visKey =
         vis
-        | map getPathName
+        | vmap getPathName
+        | vectorToList
         | implode
 
     def jobKey = JobKey dir stdin env.implode cmd.implode hash visKey isatty.booleanToInteger

@@ -58,7 +58,7 @@ export def runBenchmarkJobs (args: List String) : Result Unit Error =
 
     def makeJob (idx: Integer): Boolean =
         def plan =
-            makeShellPlan "sleep {str sleepSeconds}" generatedFiles
+            makeShellPlanV "sleep {str sleepSeconds}" generatedFiles
             | setPlanLabel "benchmark: sleep {str sleepSeconds}s [{str idx}/{str numJobs}]"
             | setPlanPersistence ReRun
             | setPlanStdout logNever

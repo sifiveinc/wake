@@ -38,8 +38,10 @@ export tuple Plan =
     export Label: String
     # The command-line arguments (the first is the command to run)
     export Command: List String
-    # Only these files and directories should be available to the command
-    export Visible: List Path
+    # Only these files and directories should be available to the command.
+    # Stored internally as a Vector; use the List-based `getPlanVisible`/`setPlanVisible`/
+    # `editPlanVisible` facades below, or the Vector-native accessors directly.
+    export VisibleVector: Vector Path
     # KEY=VALUE environment variables fed to the command
     export Environment: List String
     # The working directory in which the command should be run
@@ -83,6 +85,19 @@ def isShare: Persistence => Boolean = match _
     _ -> False
 
 # Convenience accessor methods
+
+# List-based facades over the internal `VisibleVector` field. These preserve the
+# historical `List Path` API so existing plans need not change. Callers that already
+# have a `Vector Path` can use `getPlanVisibleVector`/`setPlanVisibleVector`/
+# `editPlanVisibleVector` (auto-generated) to avoid the List conversion.
+export def getPlanVisible (plan: Plan): List Path =
+    plan.getPlanVisibleVector | vectorToList
+
+export def setPlanVisible (visible: List Path): Plan => Plan =
+    setPlanVisibleVector (listToVector visible)
+
+export def editPlanVisible (f: List Path => List Path): Plan => Plan =
+    editPlanVisibleVector (\vv listToVector (f (vectorToList vv)))
 
 export def getPlanOnce p =
     isOnce (getPlanPersistence p)
@@ -205,6 +220,15 @@ export def makePlan (label: String) (visible: List Path) (command: String): Plan
 
 # Set reasonable defaults for all Plan arguments
 export def makeExecPlan (cmd: List String) (visible: List Path): Plan =
+    makeExecPlanV cmd (listToVector visible)
+
+export def makeShellPlan (script: String) (visible: List Path): Plan =
+    makeExecPlan (which "dash", "-c", script, Nil) visible
+
+# Vector-native variants of the Plan constructors. These accept the visible files as a
+# `Vector Path` directly, avoiding a `List Path` round-trip for callers that already
+# have a Vector.
+export def makeExecPlanV (cmd: List String) (visible: Vector Path): Plan =
     Plan
     ""
     cmd
@@ -222,8 +246,8 @@ export def makeExecPlan (cmd: List String) (visible: List Path): Plan =
     identity
     False
 
-export def makeShellPlan (script: String) (visible: List Path): Plan =
-    makeExecPlan (which "dash", "-c", script, Nil) visible
+export def makeShellPlanV (script: String) (visible: Vector Path): Plan =
+    makeExecPlanV (which "dash", "-c", script, Nil) visible
 
 def defaultUsage =
     Usage 0 0.0 1.0 0 0 0

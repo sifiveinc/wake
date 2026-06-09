@@ -218,7 +218,7 @@ export def computeHashes (prefix: String) (files: List String): Result (List Str
         Plan
         "hash: #{prefix}"
         cmd
-        vis
+        (listToVector vis)
         Nil
         "."
         ""
@@ -299,7 +299,7 @@ target hashcode (f: String): String =
         reuse
     else
         def hashPlan cmd =
-            Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+            Plan "" cmd (listToVector Nil) Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
             | addCasHashEnv
 
         def job =
@@ -324,7 +324,7 @@ target hashcode (f: String): String =
 # Allow an untracked file to be removed via `wake --clean`
 export target markFileCleanable (filepath: String): Result Unit Error =
     def hashPlan cmd =
-        Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+        Plan "" cmd (listToVector Nil) Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
         | addCasHashEnv
 
     def job =
