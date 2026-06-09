@@ -74,7 +74,7 @@
 //     6 = PathTypeSocket          (unsupported by wakebox)
 //
 //   WakeboxMountOp =
-//     [0] Type     : String
+//     [0] Type     : MountOpType  (0=Bind,1=CreateDir,2=CreateFile,3=Squashfs,4=Tmpfs,5=Workspace)
 //     [1] Source   : String
 //     [2] Dest     : String
 //     [3] ReadOnly : Boolean
@@ -125,6 +125,20 @@ struct SpecData {
   long group_id = 0;
   long command_timeout = 0;
 };
+
+// Map a MountOpType ADT value to its wakebox JSON string.
+// MountOpType constructor indices (runner.wake declaration order):
+//   0=MountBind, 1=MountCreateDir, 2=MountCreateFile,
+//   3=MountSquashfs, 4=MountTmpfs, 5=MountWorkspace
+static Promise *get_mount_op_type_string(Record *mount_rec, std::string &out) {
+  Promise *p = mount_rec->at(0);  // Type field
+  if (!*p) return p;
+  static const char *strings[] = {"bind", "create-dir", "create-file",
+                                  "squashfs", "tmpfs", "workspace"};
+  int idx = p->coerce<Record>()->cons->index;
+  if (idx >= 0 && idx < 6) out = strings[idx];
+  return nullptr;
+}
 
 // Map a PathType ADT record to its wakebox JSON string.
 // Returns nullptr and sets `out` on success.
@@ -215,7 +229,7 @@ static Promise *collect_spec(Record *spec, SpecData &data) {
       Record *entry = head->coerce<Record>();
 
       MountEntry me;
-      TRY(rh::string(entry, 0, me.type));
+      TRY(get_mount_op_type_string(entry, me.type));
       TRY(rh::string(entry, 1, me.source));
       TRY(rh::string(entry, 2, me.dest));
       TRY(rh::boolean(entry, 3, me.read_only));

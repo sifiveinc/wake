@@ -366,9 +366,17 @@ export def defaultRunner: Runner =
 
             fuseRunner
 
+export data MountOpType =
+    MountBind
+    MountCreateDir
+    MountCreateFile
+    MountSquashfs
+    MountTmpfs
+    MountWorkspace
+
 # A mount operation for the wakebox spec.
 export tuple WakeboxMountOp =
-    export Type: String
+    export Type: MountOpType
     export Source: String
     export Dest: String
     export ReadOnly: Boolean
@@ -444,7 +452,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             primCasDir
             False
             False
-            (WakeboxMountOp "workspace" "" "." False, Nil)
+            (WakeboxMountOp MountWorkspace "" "." False, Nil)
             ""
             ""
             None
