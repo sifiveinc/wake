@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "types/datatype.h"
 #include "types/sums.h"
 #include "value.h"
 
