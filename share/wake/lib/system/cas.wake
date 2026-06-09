@@ -30,16 +30,16 @@ export def primCasDir: String =
 # Allocate a fresh per-job staging directory under {cas_root}/staging/.
 # The directory name is "{sanitized_prefix}.{pid}.{counter}" so concurrent
 # wake processes get distinct paths. Created with mode 0755.
-export def casAllocStagingDir (prefix: String): Result String Error =
-    def raw prefix = prim "cas_alloc_staging_dir"
+export def casAllocJobStagingDir (prefix: String): Result String Error =
+    def raw prefix = prim "cas_alloc_job_staging_dir"
 
     raw prefix
     | rmapError makeError
 
-# Recursively remove a staging directory previously returned by casAllocStagingDir.
+# Recursively remove a staging directory previously returned by casAllocJobStagingDir.
 # Refuses paths that aren't under the CAS staging root. Safe on missing paths.
-export def casRemoveStagingDir (path: String): Result Unit Error =
-    def raw path = prim "cas_remove_staging_dir"
+export def casRemoveJobStagingDir (path: String): Result Unit Error =
+    def raw path = prim "cas_remove_job_staging_dir"
 
     raw path
     | rmapError makeError

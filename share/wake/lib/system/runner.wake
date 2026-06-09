@@ -178,17 +178,24 @@ export def localRunner: Runner =
 def workspaceStageBase =
     ".build/staging/{str wakePid}"
 
-# Private helper shared by stageWorkspaceOutputsFrom (flat-slot) and
-# stageWorkspaceOutputsInPlaceFrom (no-flat-slot). When inPlace=True the prim is invoked
-# with empty stagingBase, signalling it to skip the per-output reflink and report each
-# file's source path as its staging_path. CAS ingest then atomically renames sources
-# straight into blobs/ — safe only when the source tree is private and ephemeral.
+# Private helper that snapshots the declared outputs into StagingItems for hashing + CAS ingest,
+# returning them with the paths to clean up later.
+#
+# inPlace=False: each output is reflinked into a flat staging directory, giving the output a stable
+#   snapshot that can't be modified. inPlace=True: skips the reflink and uses each source path directly as its
+#   staging_path, letting CAS ingest rename it straight into blobs/ — only safe when using a private
+#   staging directory. inPlace also sets NeedsWorkspaceMaterialization.
 def stageWorkspaceOutputsImpl (inPlace: Boolean) (stageFromDir: String) (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String): Result (Pair StagedOutputs (List String)) Error =
     def stage_outputs_prim pathsLines stagingBase stageFromDir = prim "stage_outputs"
 
     # Normalize paths so string comparisons and prim path lookups are consistent
     def normAllOutputPaths = map simplify allOutputPaths
     def normFilteredOutputPaths = map simplify filteredOutputPaths
+
+    # In-place staging leaves outputs under stageFromDir rather than at their final workspace
+    # paths, so job finalization must materialize them. Non-in-place staging assumes outputs
+    # already exist at their workspace paths, so no materialization is needed.
+    def needsWorkspaceMaterialization = inPlace
 
     require True = subset scmp normFilteredOutputPaths normAllOutputPaths
     else
@@ -197,7 +204,7 @@ def stageWorkspaceOutputsImpl (inPlace: Boolean) (stageFromDir: String) (allOutp
         failWithError "Published outputs not present in staged workspace outputs: {catWith ", " missing}"
 
     if empty normAllOutputPaths then
-        Pass (Pair (StagedOutputs normFilteredOutputPaths False Nil None (\_ Unit)) baseCleanableOutputs)
+        Pass (Pair (StagedOutputs normFilteredOutputPaths needsWorkspaceMaterialization Nil None (\_ Unit)) baseCleanableOutputs)
     else
         # Convert one flat tuple (destPath, type, stagingPathOrTarget, mode, mtimeSec, mtimeNsec)
         # back into the StagingItem ADT.
@@ -217,10 +224,6 @@ def stageWorkspaceOutputsImpl (inPlace: Boolean) (stageFromDir: String) (allOutp
                     Pass (StagingDirectory (StagingDirectoryOutput destPath mode mtimeSec mtimeNsec))
                 t -> failWithError "Unknown staging entry type from stage_outputs prim: {t}"
 
-        # Place reflinked copies on the same filesystem as the source so reflink works.
-        # When stageFromDir is empty (workspace cwd), use the .build/staging base.
-        # When stageFromDir is set (sandboxed staging tree, typically under CAS), stage
-        # alongside it so the source and reflink target share a filesystem.
         # In-place mode: pass empty stagingBase to the prim — no flat staging tree is
         # created and source paths under stageFromDir become the staging_paths directly.
         def stagingBase =
@@ -262,30 +265,25 @@ def stageWorkspaceOutputsImpl (inPlace: Boolean) (stageFromDir: String) (allOutp
 
         Pass (
             Pair
-            (StagedOutputs normFilteredOutputPaths False stagingItems stagingRootOpt (\_ Unit))
+            (StagedOutputs normFilteredOutputPaths needsWorkspaceMaterialization stagingItems stagingRootOpt (\_ Unit))
             cleanableOutputs
         )
 
-# Stages a declared output list rooted at a caller-provided directory.
+# Stages a declared output list rooted at stageFromDir, returning staged output metadata plus
+# paths to clean up later. Outputs are staged in place (no separate flat staging tree) so job
+# finalization can hash and CAS-ingest them directly. Only to be utilized if the `stageFromDir`
+# is itself a staging directory, in order to be multi-wake safe.
 #
-# Like stageWorkspaceOutputs, but each output path is interpreted relative to stageFromDir
-# rather than the wake process's cwd. Used by sandboxed runners (namespaced staging-dir runners)
-# that must harvest outputs from an isolated staging tree before any post-processing.
+# Since outputs live under stageFromDir rather than at their final workspace paths, the returned
+# StagedOutputs has NeedsWorkspaceMaterialization=True -- job finalization will hash/ingest them
+# and also materialize them into the workspace.
 #
-# Snapshots each listed output (reflink/copy for files, readlink for symlinks, mode capture
-# for directories) into a fresh stage.XXXXXX/ subdirectory of stagingBase and returns
-# (stagingRoot, StagingItems...). On any failure the staging directory is cleaned up.
-#
-# stageFromDir: directory to interpret each path relative to. Empty string means workspace cwd.
-export def stageWorkspaceOutputsFrom (stageFromDir: String) (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String): Result (Pair StagedOutputs (List String)) Error =
-    stageWorkspaceOutputsImpl False stageFromDir allOutputPaths filteredOutputPaths baseCleanableOutputs
-
-# Like stageWorkspaceOutputsFrom but skips the flat-slot reflink step. Each StagingItem's
-# staging_path is the source location under stageFromDir; CAS ingest atomically renames
-# the source straight into blobs/. Use ONLY when the source tree is private and ephemeral
-# (e.g. stagingDirNsRunner's per-job stagingDir, wiped at PostFinalize). Saves one reflink
-# syscall per file output.
-export def stageWorkspaceOutputsInPlaceFrom (stageFromDir: String) (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String): Result (Pair StagedOutputs (List String)) Error =
+# stageFromDir: root the output paths are resolved against; should be the job's private staging
+#               directory whose contents in-place ingest will consume.
+# allOutputPaths: every output path to stage (hashed and optionally CAS-ingested)
+# filteredOutputPaths: the published subset of allOutputPaths, i.e. those exposed via getJobOutputs
+# baseCleanableOutputs: additional paths (beyond staging artifacts) to include in the cleanup list,
+export def stageWorkspaceOutputsInPlace (stageFromDir: String) (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String): Result (Pair StagedOutputs (List String)) Error =
     stageWorkspaceOutputsImpl True stageFromDir allOutputPaths filteredOutputPaths baseCleanableOutputs
 
 # Stages a declared workspace-output list and returns the full staged output metadata
@@ -299,7 +297,7 @@ export def stageWorkspaceOutputsInPlaceFrom (stageFromDir: String) (allOutputPat
 # filteredOutputPaths: the published subset of allOutputPaths, i.e. those exposed via getJobOutputs
 # baseCleanableOutputs: additional paths (beyond staging artifacts) to include in the cleanup list,
 export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPaths: List String) (baseCleanableOutputs: List String): Result (Pair StagedOutputs (List String)) Error =
-    stageWorkspaceOutputsFrom "" allOutputPaths filteredOutputPaths baseCleanableOutputs
+    stageWorkspaceOutputsImpl False "" allOutputPaths filteredOutputPaths baseCleanableOutputs
 
 # workspaceRunner: execute a normal workspace job, then stage its published outputs into a
 # per-invocation staging root for job finalization. Staging isolates outputs so they cannot
@@ -394,10 +392,8 @@ export def fuseRunner: Runner =
     | makeJSONRunner
 
 # Mount-ops for the namespaced staging runner: just a single read-write bind of stagingDir
-# at ".". Visible inputs are pre-materialized host-side into stagingDir before the namespace
-# launches (see stageVisibleInputs below), so the spec doesn't need any per-visible
-# mount-ops. Keeps the kernel mount table at one entry per job regardless of visible count.
-def lowerVisiblesAndStaging (stagingDir: String) (_input: RunnerInput): Result (List JValue) Error =
+# at "."
+def mkStagingMountOps (stagingDir: String) (_input: RunnerInput): Result (List JValue) Error =
     def stagingMount =
         JObject (
             "type" :-> JString "bind",
@@ -410,19 +406,10 @@ def lowerVisiblesAndStaging (stagingDir: String) (_input: RunnerInput): Result (
     Pass (stagingMount, Nil)
 
 # Materialize the entire visible-input set into stagingDir at workspace-relative paths.
-# Files become CoW reflinks (or byte copies on filesystems without reflink support);
-# symlinks are recreated with the same target string; directories are mkdir'd as empty
-# entries.
-#
-# Children of a directory visible are NOT auto-populated — this matches fuseRunner's
-# behaviour, where reads of undeclared children of a directory visible fail. Builds
-# that need a specific child file must declare it as its own visible.
-#
-# Parent directories are created (mode 0755) as needed. The whole list is processed in
-# a single C++ prim call; per-visible wake↔C++ overhead does not scale with N.
+# Files become CoW reflinks; symlinks are recreated with the same target string;
+# directories are mkdir'd as empty entries (children directories are not auto-populated,
+# they must be declared as a visible input).
 def stageVisibleInputs (stagingDir: String) (visibles: List Path): Result Unit Error =
-    # Send only the relative paths; the prim joins them onto `workspace` and `stagingDir`
-    # itself. This avoids allocating two parallel lists of absolute paths on the wake heap.
     def relPaths = visibles | map getPathName | catWith "\n"
     def raw ws sd rp = prim "stage_visible_inputs"
 
@@ -432,19 +419,18 @@ def stageVisibleInputs (stagingDir: String) (visibles: List Path): Result Unit E
 
 # stagingDirNsRunner: namespaced direct-to-staging job execution.
 #
-# Allocates a fresh staging directory under {cas_dir}/staging/ for each job, bind-mounts it
-# as `.` inside a wakebox user/mount namespace, exposes visible inputs read-only at their
-# workspace-relative paths, runs the job, then harvests declared outputs via the
-# stage_outputs prim from the host-side staging tree. No fuse-waked daemon is started.
+# Runner that stages each job's visible inputs (reflink/copy) into a fresh per-job
+# staging dir under {cas_dir}/staging/, bind-mounts it read-write as `.` in a wakebox
+# namespace, runs the job there, then harvests declared outputs from that tree.
 #
-# Outputs MUST be declared (via fnOutputs); writes outside `.` fail at the namespace boundary
-# with EROFS / ENOENT. Rules that depend on undeclared/hidden outputs must keep using fuseRunner.
+# Outputs MUST be declared via fnOutputs: only outputs written under `.` are captured, and only
+# declared paths are harvested. Rules relying on undeclared/hidden outputs must keep using fuseRunner.
 export def stagingDirNsRunner: Runner =
     def fuse = "{wakePath}/wakebox"
 
     def run (job: Job) (input: RunnerInput): RunnerOutput =
         def prefix = input.getRunnerInputPrefix
-        def stagingDirResult = casAllocStagingDir "job.{prefix}"
+        def stagingDirResult = casAllocJobStagingDir "job.{prefix}"
 
         require Pass stagingDir = stagingDirResult
         else
@@ -457,14 +443,9 @@ export def stagingDirNsRunner: Runner =
             RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some err)
 
         def cleanupStaging _ =
-            def _ = casRemoveStagingDir stagingDir
+            def _ = casRemoveJobStagingDir stagingDir
 
             Unit
-
-        # Stage every visible input host-side into stagingDir at its workspace-relative path
-        # (file reflinks, symlink recreation, dir-only mkdirs — no children-recursion). This
-        # eliminates per-visible mount-ops: the wakebox spec just binds stagingDir at "." and
-        # the visibles are already there. Single batched prim call — wake↔C++ overhead is O(1).
         def stageResult = stageVisibleInputs stagingDir input.getRunnerInputVisible
 
         require Pass _ = stageResult
@@ -493,7 +474,7 @@ export def stagingDirNsRunner: Runner =
         def plan =
             makeJSONRunnerPlan fuse
             | editJSONRunnerPlanExtraEnv (editEnvironment "WAKE_CAS" (\_ getenv "WAKE_CAS"))
-            | setJSONRunnerPlanMkMountOps (lowerVisiblesAndStaging stagingDir)
+            | setJSONRunnerPlanMkMountOps (mkStagingMountOps stagingDir)
 
         def (Runner _ innerRun) = makeJSONRunner plan
         def innerOutput = innerRun job innerInput
@@ -507,17 +488,17 @@ export def stagingDirNsRunner: Runner =
             innerOutput
 
         # Job exited; record declared outputs from stagingDir. In-place mode skips the
-        # flat-slot reflink — CAS ingest will atomically rename each source straight into
+        # reflink — CAS ingest will atomically rename each source straight into
         # blobs/. Safe here because stagingDir is private to this job and gets wiped at
         # PostFinalize anyway, so renaming sources away is a no-op for cleanup.
         def declaredOutputs = origFnOutputs Nil
         def innerCleanable = innerOutput.getRunnerOutputCleanableOutputs
 
         require Pass (Pair stagedOutputs cleanableOutputs) =
-            stageWorkspaceOutputsInPlaceFrom stagingDir declaredOutputs declaredOutputs innerCleanable
+            stageWorkspaceOutputsInPlace stagingDir declaredOutputs declaredOutputs innerCleanable
         else
             def err =
-                stageWorkspaceOutputsInPlaceFrom stagingDir declaredOutputs declaredOutputs innerCleanable
+                stageWorkspaceOutputsInPlace stagingDir declaredOutputs declaredOutputs innerCleanable
                 | getWhenPass "stagingDirNs: post-exec output staging failed".makeError
             def _ = cleanupStaging Unit
 
@@ -534,13 +515,9 @@ export def stagingDirNsRunner: Runner =
 
             Unit
 
-        # Outputs only exist under stagingDir — job finalization must materialize them
-        # into the workspace (CAS hardlink/reflink). stageWorkspaceOutputsFrom defaults
-        # this flag to False (suitable for workspaceRunner), so flip it on here.
         def stagedWithCleanup =
             stagedOutputs
             | setStagedOutputsPostFinalize composedPostFinalize
-            | setStagedOutputsNeedsWorkspaceMaterialization True
 
         innerOutput
         | setRunnerOutputOutputs stagedWithCleanup

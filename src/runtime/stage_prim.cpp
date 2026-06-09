@@ -227,17 +227,6 @@ inline size_t reserve_tuple6() { return reserve_tuple2() + reserve_tuple5(); }
 
 // prim "stage_outputs" pathsLines stagingBase stageFromDir -> Result (Pair String (List Entry)) String
 //
-// WHEN:    Post-exec. Runners (workspaceRunner, fuseRunner, stagingDirNsRunner) call this
-//          after a job finishes to snapshot declared outputs for hashing + CAS ingest.
-// LAYOUT:  Produces a FLAT staging tree — `stage.XXXXXX/{0,1,2,...}` numbered slots, one
-//          per output, in declaration order. Flatness decouples hashing from path nesting.
-//          IN-PLACE MODE: pass empty stagingBase to skip the flat staging step; the
-//          returned `staging_path` for each file points at its original source location
-//          (under stage_from_dir). CAS ingest then atomically renames sources straight
-//          into blobs/. Safe only when the source tree is private and ephemeral
-//          (e.g. stagingDirNsRunner) — otherwise renaming files away from a shared
-//          workspace would be visible to concurrent readers.
-//
 // where Entry = (destPath, type, stagingPathOrTarget, mode, mtimeSec, mtimeNsec)
 // pathsLines:  newline-separated workspace-relative output paths.
 // stagingBase: directory under which a fresh `stage.XXXXXX/` is created (mkdtemp).
@@ -246,6 +235,9 @@ inline size_t reserve_tuple6() { return reserve_tuple2() + reserve_tuple5(); }
 // stageFromDir: source-side base each output path is read from. Empty = wake's cwd
 //               (the workspace); non-empty = a sandboxed runner's private staging tree.
 // On any failure the staging directory (if created) is removed via CleanupRoot's destructor.
+//
+// Snapshots a job's declared outputs for hashing/CAS ingest: reflinks them into a flat staging
+// tree, or (in-place mode, empty stagingBase) leaves them in place for CAS to rename into blobs/.
 static PRIMTYPE(type_stage_outputs) {
   // Entry tuple: 6 nested Pairs.
   TypeVar e1, e2, e3, e4, e5;
@@ -298,10 +290,8 @@ static PRIMFN(prim_stage_outputs) {
   std::stringstream paths_stream(std::string(paths_arg->c_str(), paths_arg->size()));
   std::vector<std::string> output_paths = read_input_paths(paths_stream);
 
-  // In-place mode: caller signals "no flat slot needed; hash directly from source paths"
-  // by passing an empty stagingBase. CAS ingest will atomically rename the source files
-  // out of stage_from_dir into the blobs/ tree. Used by stagingDirNsRunner whose
-  // stage_from_dir is a private per-job tree that gets wiped at PostFinalize anyway.
+  // Empty stagingBase = in-place mode: skip the flat dir and hash directly from the source
+  // paths, letting CAS ingest rename them out of stage_from_dir into blobs/.
   const bool in_place = (staging_base_arg->size() == 0);
 
   CleanupRoot cleanup;

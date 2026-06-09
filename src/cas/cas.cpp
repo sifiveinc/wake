@@ -40,13 +40,10 @@ namespace cas {
 // Used to avoid collisions when multiple processes materialize files concurrently
 static std::atomic<uint64_t> g_materialize_counter{0};
 static std::atomic<uint64_t> g_store_counter{0};
-static std::atomic<uint64_t> g_alloc_staging_counter{0};
+static std::atomic<uint64_t> g_alloc_job_staging_counter{0};
 
 // Sanitize a staging-dir prefix: drop any characters that could let the
 // caller escape the staging root, and cap length so directory names stay sane.
-// Disallowed: '/', NUL, '\\', and any '.' run that would form '..' or be a
-// leading dot (we just rewrite all '.' to '_' for simplicity). Result is never
-// empty; falls back to "job" if the input degenerates.
 static std::string sanitize_staging_prefix(const std::string& prefix) {
   static constexpr size_t kMaxPrefixLen = 64;
   std::string out;
@@ -330,15 +327,13 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
   return wcl::make_result<bool, CASError>(true);
 }
 
-wcl::result<std::string, CASError> Cas::alloc_staging_dir(const std::string& prefix) const {
+wcl::result<std::string, CASError> Cas::alloc_job_staging_dir(const std::string& prefix) const {
   std::string sanitized = sanitize_staging_prefix(prefix);
   std::string name = sanitized + "." + std::to_string(getpid()) + "." +
-                     std::to_string(g_alloc_staging_counter.fetch_add(1));
+                     std::to_string(g_alloc_job_staging_counter.fetch_add(1));
   std::string path = (fs::path(staging_dir_) / name).string();
 
   std::error_code ec;
-  // Use create_directory (singular) so we get a clear error if the path already
-  // exists -- the PID+counter scheme should make that impossible.
   if (!fs::create_directory(path, ec) || ec) {
     return wcl::make_error<std::string, CASError>(CASError::IOError);
   }
@@ -349,7 +344,7 @@ wcl::result<std::string, CASError> Cas::alloc_staging_dir(const std::string& pre
   return wcl::make_result<std::string, CASError>(std::move(path));
 }
 
-wcl::result<bool, CASError> Cas::remove_staging_dir(const std::string& path) const {
+wcl::result<bool, CASError> Cas::remove_job_staging_dir(const std::string& path) const {
   // Only allow removing things that are actually under our staging root.
   // weakly_canonical handles trailing slashes and lexical ".." without requiring the path to exist.
   std::error_code ec;
