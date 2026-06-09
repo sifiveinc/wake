@@ -99,7 +99,7 @@ struct VisEntry {
 
 struct MountEntry {
   std::string type;
-  std::string source;       // empty = omit from JSON
+  std::string source;  // empty = omit from JSON
   std::string dest;
   bool read_only = false;
   bool has_read_only = false;  // only WakeboxBindOp carries readonly
@@ -137,7 +137,7 @@ struct SpecData {
 //   2=WakeboxTmpfsOp(dest), 3=WakeboxCreateDirOp(dest),
 //   4=WakeboxCreateFileOp(dest), 5=WakeboxFuseWorkspaceOp(dest)
 static Promise *collect_mount_entry(Record *entry, MountEntry &me) {
-  static const char *strings[] = {"bind", "squashfs", "tmpfs",
+  static const char *strings[] = {"bind",       "squashfs",    "tmpfs",
                                   "create-dir", "create-file", "workspace"};
   int idx = entry->cons->index;
   if (idx < 0 || idx >= 6) return nullptr;
@@ -146,20 +146,31 @@ static Promise *collect_mount_entry(Record *entry, MountEntry &me) {
   Promise *p;
   switch (idx) {
     case 0: {  // WakeboxBindOp(source, dest, readonly)
-      p = entry->at(0); if (!*p) return p; me.source = p->coerce<String>()->as_str();
-      p = entry->at(1); if (!*p) return p; me.dest = p->coerce<String>()->as_str();
-      p = entry->at(2); if (!*p) return p;
+      p = entry->at(0);
+      if (!*p) return p;
+      me.source = p->coerce<String>()->as_str();
+      p = entry->at(1);
+      if (!*p) return p;
+      me.dest = p->coerce<String>()->as_str();
+      p = entry->at(2);
+      if (!*p) return p;
       me.read_only = (p->coerce<Record>()->cons == &Boolean->members[0]);
       me.has_read_only = true;
       break;
     }
     case 1: {  // WakeboxSquashfsOp(source, dest)
-      p = entry->at(0); if (!*p) return p; me.source = p->coerce<String>()->as_str();
-      p = entry->at(1); if (!*p) return p; me.dest = p->coerce<String>()->as_str();
+      p = entry->at(0);
+      if (!*p) return p;
+      me.source = p->coerce<String>()->as_str();
+      p = entry->at(1);
+      if (!*p) return p;
+      me.dest = p->coerce<String>()->as_str();
       break;
     }
     default: {  // TmpfsOp, CreateDirOp, CreateFileOp, FuseWorkspaceOp — only dest
-      p = entry->at(0); if (!*p) return p; me.dest = p->coerce<String>()->as_str();
+      p = entry->at(0);
+      if (!*p) return p;
+      me.dest = p->coerce<String>()->as_str();
       break;
     }
   }
@@ -190,7 +201,6 @@ static Promise *get_path_type_string(Record *path_rec, std::string &out, std::st
   out = strings[idx];
   return nullptr;
 }
-
 
 // Try to collect all values from the WakeboxSpec record into plain C++ data.
 // Returns nullptr if everything is fulfilled, or the first unfulfilled Promise.
