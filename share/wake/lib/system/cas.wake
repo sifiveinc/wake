@@ -29,7 +29,7 @@ export def primCasDir: String =
 
 # Allocate a fresh per-job staging directory under {cas_root}/staging/.
 # The directory name is "{sanitized_prefix}.{pid}.{counter}" so concurrent
-# wake processes get distinct paths. Created with mode 0755.
+# wake processes get distinct paths.
 export def casAllocJobStagingDir (prefix: String): Result String Error =
     def raw prefix = prim "cas_alloc_job_staging_dir"
 
