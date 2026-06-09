@@ -126,8 +126,15 @@ wcl::result<std::string, std::string> create_stage_root(const std::string& stagi
   return wcl::result_value<std::string>(std::string(created));
 }
 
+static std::string resolve_source_path(const std::string& stage_from_dir,
+                                       const std::string& dest_path) {
+  if (stage_from_dir.empty()) return dest_path;
+  return stage_from_dir + "/" + dest_path;
+}
+
 wcl::result<std::vector<StageEntry>, std::string> stage_outputs(
-    const std::vector<std::string>& output_paths, const std::string& stage_root) {
+    const std::vector<std::string>& output_paths, const std::string& stage_root,
+    const std::string& stage_from_dir, bool in_place) {
   std::vector<StageEntry> entries;
   size_t next_stage_id = 0;
 
@@ -137,19 +144,27 @@ wcl::result<std::vector<StageEntry>, std::string> stage_outputs(
                                                         dest_path);
     }
 
+    const std::string source_path = resolve_source_path(stage_from_dir, dest_path);
+
     struct stat st;
-    if (lstat(dest_path.c_str(), &st) != 0) {
-      return wcl::result_error<std::vector<StageEntry>>("lstat(" + dest_path +
+    if (lstat(source_path.c_str(), &st) != 0) {
+      return wcl::result_error<std::vector<StageEntry>>("lstat(" + source_path +
                                                         "): " + strerror(errno));
     }
 
     if (S_ISREG(st.st_mode)) {
-      std::string staging_path = stage_root + "/" + std::to_string(next_stage_id++);
-      auto copy_result = wcl::reflink_or_copy_file(dest_path, staging_path,
-                                                   static_cast<mode_t>(st.st_mode & 07777));
-      if (!copy_result) {
-        return wcl::result_error<std::vector<StageEntry>>("failed to stage file " + dest_path +
-                                                          ": " + strerror(copy_result.error()));
+      // In-place mode: hash directly from `source_path`; CAS ingest will atomically
+      // rename the source into blobs/. Skip the per-output reflink. Used by runners
+      // whose source tree is private and ephemeral (e.g. stagingDirNsRunner).
+      std::string staging_path =
+          in_place ? source_path : stage_root + "/" + std::to_string(next_stage_id++);
+      if (!in_place) {
+        auto copy_result = wcl::reflink_or_copy_file(source_path, staging_path,
+                                                     static_cast<mode_t>(st.st_mode & 07777));
+        if (!copy_result) {
+          return wcl::result_error<std::vector<StageEntry>>("failed to stage file " + source_path +
+                                                            ": " + strerror(copy_result.error()));
+        }
       }
 
       entries.push_back(StageEntry{
@@ -160,7 +175,7 @@ wcl::result<std::vector<StageEntry>, std::string> stage_outputs(
           st.st_mtim,
       });
     } else if (S_ISLNK(st.st_mode)) {
-      auto target_result = read_symlink_target(dest_path);
+      auto target_result = read_symlink_target(source_path);
       if (!target_result) {
         return wcl::make_error<std::vector<StageEntry>, std::string>(target_result.error());
       }
@@ -181,7 +196,8 @@ wcl::result<std::vector<StageEntry>, std::string> stage_outputs(
           st.st_mtim,
       });
     } else {
-      return wcl::result_error<std::vector<StageEntry>>("unsupported output type for " + dest_path);
+      return wcl::result_error<std::vector<StageEntry>>("unsupported output type for " +
+                                                        source_path);
     }
   }
 
@@ -209,11 +225,19 @@ inline size_t reserve_tuple6() { return reserve_tuple2() + reserve_tuple5(); }
 
 }  // namespace
 
-// prim "stage_outputs" pathsLines stagingBase -> Result (Pair String (List Entry)) String
+// prim "stage_outputs" pathsLines stagingBase stageFromDir -> Result (Pair String (List Entry)) String
+//
 // where Entry = (destPath, type, stagingPathOrTarget, mode, mtimeSec, mtimeNsec)
-// pathsLines: newline-separated workspace-relative output paths.
+// pathsLines:  newline-separated workspace-relative output paths.
 // stagingBase: directory under which a fresh `stage.XXXXXX/` is created (mkdtemp).
+//              Empty triggers in-place mode; the returned outer Pair's first element
+//              is then "" (no flat staging root was created).
+// stageFromDir: source-side base each output path is read from. Empty = wake's cwd
+//               (the workspace); non-empty = a sandboxed runner's private staging tree.
 // On any failure the staging directory (if created) is removed via CleanupRoot's destructor.
+//
+// Snapshots a job's declared outputs for hashing/CAS ingest: reflinks them into a flat staging
+// tree, or (in-place mode, empty stagingBase) leaves them in place for CAS to rename into blobs/.
 static PRIMTYPE(type_stage_outputs) {
   // Entry tuple: 6 nested Pairs.
   TypeVar e1, e2, e3, e4, e5;
@@ -247,14 +271,15 @@ static PRIMTYPE(type_stage_outputs) {
   result[0].unify(outerPair);
   result[1].unify(Data::typeString);
 
-  return args.size() == 2 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
-         out->unify(result);
+  return args.size() == 3 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
+         args[2]->unify(Data::typeString) && out->unify(result);
 }
 
 static PRIMFN(prim_stage_outputs) {
-  EXPECT(2);
+  EXPECT(3);
   STRING(paths_arg, 0);
   STRING(staging_base_arg, 1);
+  STRING(stage_from_dir_arg, 2);
 
   auto fail = [&](const std::string& msg) {
     runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
@@ -265,8 +290,12 @@ static PRIMFN(prim_stage_outputs) {
   std::stringstream paths_stream(std::string(paths_arg->c_str(), paths_arg->size()));
   std::vector<std::string> output_paths = read_input_paths(paths_stream);
 
+  // Empty stagingBase = in-place mode: skip the flat dir and hash directly from the source
+  // paths, letting CAS ingest rename them out of stage_from_dir into blobs/.
+  const bool in_place = (staging_base_arg->size() == 0);
+
   CleanupRoot cleanup;
-  if (!output_paths.empty()) {
+  if (!in_place && !output_paths.empty()) {
     auto root_result = create_stage_root(staging_base_arg->c_str());
     if (!root_result) {
       fail(root_result.error());
@@ -275,7 +304,8 @@ static PRIMFN(prim_stage_outputs) {
     cleanup.root = *root_result;
   }
 
-  auto entries_result = stage_outputs(output_paths, cleanup.root.string());
+  auto entries_result = stage_outputs(output_paths, cleanup.root.string(),
+                                      std::string(stage_from_dir_arg->c_str()), in_place);
   if (!entries_result) {
     fail(entries_result.error());
     return;
@@ -314,6 +344,106 @@ static PRIMFN(prim_stage_outputs) {
   RETURN(claim_result(runtime.heap, true, outer));
 }
 
+// Materialize a Job's visible files, symlinks, and directories into `dest` staging directory
+static wcl::result<bool, std::string> stage_visible_entry(const std::string& src,
+                                                          const std::string& dest) {
+  struct stat st;
+  if (lstat(src.c_str(), &st) != 0) {
+    return wcl::make_error<bool, std::string>("lstat(" + src + "): " + strerror(errno));
+  }
+
+  if (S_ISREG(st.st_mode)) {
+    auto copy_result =
+        wcl::reflink_or_copy_file(src, dest, static_cast<mode_t>(st.st_mode & 07777));
+    if (!copy_result) {
+      return wcl::make_error<bool, std::string>("reflink/copy " + src + " -> " + dest + ": " +
+                                                strerror(copy_result.error()));
+    }
+    return wcl::make_result<bool, std::string>(true);
+  }
+
+  if (S_ISLNK(st.st_mode)) {
+    auto target = read_symlink_target(src);
+    if (!target) return wcl::make_error<bool, std::string>(target.error());
+    if (symlink(target->c_str(), dest.c_str()) != 0) {
+      return wcl::make_error<bool, std::string>("symlink(" + dest + " -> " + *target +
+                                                "): " + strerror(errno));
+    }
+    return wcl::make_result<bool, std::string>(true);
+  }
+
+  if (S_ISDIR(st.st_mode)) {
+    if (mkdir(dest.c_str(), static_cast<mode_t>(st.st_mode & 07777)) != 0 && errno != EEXIST) {
+      return wcl::make_error<bool, std::string>("mkdir(" + dest + "): " + strerror(errno));
+    }
+    return wcl::make_result<bool, std::string>(true);
+  }
+
+  return wcl::make_error<bool, std::string>("unsupported source type for " + src);
+}
+
+// prim "stage_visible_inputs" workspaceDir stagingDir relPathsLines -> Result Unit String
+//
+// workspaceDir:   absolute path to wake's workspace root.
+// stagingDir:     absolute path to the per-job stagingDir.
+// relPathsLines:  newline-separated workspace-relative path of each visible.
+//
+// Prim utilized by stagingDirRunners to stage a Job's visible input list into a staging
+// directory hierarchically (mirroring the workspace), before a job (wakebox) runs.
+static PRIMTYPE(type_stage_visible_inputs) {
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeUnit);
+  result[1].unify(Data::typeString);
+  return args.size() == 3 && args[0]->unify(Data::typeString) &&
+         args[1]->unify(Data::typeString) && args[2]->unify(Data::typeString) &&
+         out->unify(result);
+}
+
+static PRIMFN(prim_stage_visible_inputs) {
+  EXPECT(3);
+  STRING(workspace_arg, 0);
+  STRING(staging_dir_arg, 1);
+  STRING(rel_paths_arg, 2);
+
+  auto fail = [&](const std::string& msg) {
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    auto err = String::claim(runtime.heap, msg);
+    RETURN(claim_result(runtime.heap, false, err));
+  };
+
+  std::string workspace(workspace_arg->c_str(), workspace_arg->size());
+  std::string staging_dir(staging_dir_arg->c_str(), staging_dir_arg->size());
+
+  std::stringstream rel_stream(std::string(rel_paths_arg->c_str(), rel_paths_arg->size()));
+  std::vector<std::string> rel_paths = read_input_paths(rel_stream);
+
+  for (const auto& rel : rel_paths) {
+    std::string src = workspace + "/" + rel;
+    std::string dest = staging_dir + "/" + rel;
+
+    fs::path parent = fs::path(dest).parent_path();
+    if (!parent.empty()) {
+      int err = mkdir_with_parents(parent.string(), 0755);
+      if (err != 0) {
+        fail("mkdir parents for " + dest + ": " + strerror(err));
+        return;
+      }
+    }
+
+    auto result = stage_visible_entry(src, dest);
+    if (!result) {
+      fail(result.error());
+      return;
+    }
+  }
+
+  runtime.heap.reserve(reserve_result() + reserve_unit());
+  RETURN(claim_result(runtime.heap, true, claim_unit(runtime.heap)));
+}
+
 void prim_register_stage(PrimMap& pmap) {
   prim_register(pmap, "stage_outputs", prim_stage_outputs, type_stage_outputs, PRIM_IMPURE);
+  prim_register(pmap, "stage_visible_inputs", prim_stage_visible_inputs,
+                type_stage_visible_inputs, PRIM_IMPURE);
 }

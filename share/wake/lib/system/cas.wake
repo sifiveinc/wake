@@ -27,6 +27,23 @@ export def addCasHashEnv = match (getenv "WAKE_CAS")
 export def primCasDir: String =
     prim "cas_dir"
 
+# Allocate a fresh per-job staging directory under {cas_root}/staging/.
+# The directory name is "{sanitized_prefix}.{pid}.{counter}" so concurrent
+# wake processes get distinct paths.
+export def casAllocJobStagingDir (prefix: String): Result String Error =
+    def raw prefix = prim "cas_alloc_job_staging_dir"
+
+    raw prefix
+    | rmapError makeError
+
+# Recursively remove a staging directory previously returned by casAllocJobStagingDir.
+# Refuses paths that aren't under the CAS staging root. Safe on missing paths.
+export def casRemoveJobStagingDir (path: String): Result Unit Error =
+    def raw path = prim "cas_remove_job_staging_dir"
+
+    raw path
+    | rmapError makeError
+
 # Materialize an item from CAS to workspace.
 def primCasMaterializeItem (destPath: String) (itemType: String) (hashOrTarget: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
     def raw destPath itemType hashOrTarget mode mtimeSec mtimeNsec = prim "cas_materialize_item"

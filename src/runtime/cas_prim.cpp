@@ -524,6 +524,83 @@ static PRIMFN(prim_cas_ingest_staged_item) {
   RETURN(claim_result(runtime.heap, true, claim_unit(runtime.heap)));
 }
 
+// prim "cas_alloc_job_staging_dir" prefix -> Result String String
+// Allocates a fresh per-job staging directory under {cas_root}/staging/.
+// Returns the absolute path on success; the directory is created with mode 0755.
+static PRIMTYPE(type_cas_alloc_job_staging_dir) {
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeString);
+  result[1].unify(Data::typeString);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(result);
+}
+
+static PRIMFN(prim_cas_alloc_job_staging_dir) {
+  CASContext* ctx = static_cast<CASContext*>(data);
+  EXPECT(1);
+  STRING(prefix, 0);
+
+  cas::Cas* store = ctx->get_store();
+  if (!store) {
+    std::string msg = "CAS store not initialized";
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    auto err = String::claim(runtime.heap, msg);
+    RETURN(claim_result(runtime.heap, false, err));
+  }
+
+  auto alloc_result = store->alloc_job_staging_dir(prefix->c_str());
+  if (!alloc_result) {
+    std::string msg = "Failed to allocate CAS staging directory for prefix '" +
+                      std::string(prefix->c_str()) + "': " +
+                      cas::cas_error_to_string(alloc_result.error());
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    auto err = String::claim(runtime.heap, msg);
+    RETURN(claim_result(runtime.heap, false, err));
+  }
+
+  const std::string& path = *alloc_result;
+  runtime.heap.reserve(reserve_result() + String::reserve(path.size()));
+  auto ok = String::claim(runtime.heap, path);
+  RETURN(claim_result(runtime.heap, true, ok));
+}
+
+// prim "cas_remove_job_staging_dir" path -> Result Unit String
+// Recursively removes a staging directory previously returned by cas_alloc_job_staging_dir.
+// Refuses paths that aren't under the CAS staging root. Safe on missing paths.
+static PRIMTYPE(type_cas_remove_job_staging_dir) {
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeUnit);
+  result[1].unify(Data::typeString);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(result);
+}
+
+static PRIMFN(prim_cas_remove_job_staging_dir) {
+  CASContext* ctx = static_cast<CASContext*>(data);
+  EXPECT(1);
+  STRING(path, 0);
+
+  cas::Cas* store = ctx->get_store();
+  if (!store) {
+    std::string msg = "CAS store not initialized";
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    auto err = String::claim(runtime.heap, msg);
+    RETURN(claim_result(runtime.heap, false, err));
+  }
+
+  auto remove_result = store->remove_job_staging_dir(path->c_str());
+  if (!remove_result) {
+    std::string msg = "Failed to remove CAS staging directory '" + std::string(path->c_str()) +
+                      "': " + cas::cas_error_to_string(remove_result.error());
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    auto err = String::claim(runtime.heap, msg);
+    RETURN(claim_result(runtime.heap, false, err));
+  }
+
+  runtime.heap.reserve(reserve_result() + reserve_unit());
+  RETURN(claim_result(runtime.heap, true, claim_unit(runtime.heap)));
+}
+
 // ============================================================================
 // Primitive Registration
 // ============================================================================
@@ -536,4 +613,8 @@ void prim_register_cas(CASContext* ctx, PrimMap& pmap) {
                 type_materialize_staged_workspace_item, PRIM_IMPURE, ctx);
   prim_register(pmap, "cas_ingest_staged_item", prim_cas_ingest_staged_item,
                 type_cas_ingest_staged_item, PRIM_IMPURE, ctx);
+  prim_register(pmap, "cas_alloc_job_staging_dir", prim_cas_alloc_job_staging_dir,
+                type_cas_alloc_job_staging_dir, PRIM_IMPURE, ctx);
+  prim_register(pmap, "cas_remove_job_staging_dir", prim_cas_remove_job_staging_dir,
+                type_cas_remove_job_staging_dir, PRIM_IMPURE, ctx);
 }
