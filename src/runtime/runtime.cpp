@@ -429,6 +429,57 @@ void Runtime::claim_apply(Closure *closure, HeapObject *value, Continuation *con
   schedule(Interpret::claim(heap, fun, bind, cont));
 }
 
+// Shared body of claim_apply1 / claim_apply2: build a Scope with `nargs` newly
+// supplied arguments (acc to bind starting at slot `applied`) plus the args
+// already captured in the closure's scope chain, and schedule an Interpret.
+static void claim_apply_n(Runtime &rt, Closure *closure, HeapObject *const *new_args,
+                          size_t nargs, Continuation *cont, Scope *caller) {
+  RFun *fun = closure->fun;
+  size_t applied = closure->applied;
+  size_t terms = fun->terms.size();
+  Scope *callee = closure->scope.get();
+
+  // Skip already-applied scope frames (mirrors CApp::doit's full-application branch).
+  Scope *it = callee;
+  for (size_t pop = applied; pop; it = it->next.get()) pop -= it->size();
+  Scope *bind = Scope::claim(rt.heap, terms, it, caller, fun);
+
+  for (size_t i = 0; i < nargs; ++i) bind->at(applied + i)->instant_fulfill(new_args[i]);
+
+  // Forward already-applied args from the closure's scope chain.
+  it = callee;
+  size_t pop = applied;
+  while (pop) {
+    size_t size = it->size();
+    pop -= size;
+    for (size_t i = 0; i < size; ++i) bind->claim_instant_fulfiller(rt, pop + i, it->at(i));
+    it = it->next.get();
+  }
+
+  rt.schedule(Interpret::claim(rt.heap, fun, bind, cont));
+}
+
+size_t Runtime::reserve_apply1(RFun *fun) {
+  return Scope::reserve(fun->terms.size()) + (1 + fun->args()) * Tuple::fulfiller_pads +
+         Interpret::reserve();
+}
+
+void Runtime::claim_apply1(Closure *closure, HeapObject *arg, Continuation *cont, Scope *caller) {
+  HeapObject *args[1] = {arg};
+  claim_apply_n(*this, closure, args, 1, cont, caller);
+}
+
+size_t Runtime::reserve_apply2(RFun *fun) {
+  return Scope::reserve(fun->terms.size()) + (1 + fun->args()) * Tuple::fulfiller_pads +
+         Interpret::reserve();
+}
+
+void Runtime::claim_apply2(Closure *closure, HeapObject *arg1, HeapObject *arg2,
+                           Continuation *cont, Scope *caller) {
+  HeapObject *args[2] = {arg1, arg2};
+  claim_apply_n(*this, closure, args, 2, cont, caller);
+}
+
 void Runtime::run() {
   int count = 0;
   bool lprofile = profile;

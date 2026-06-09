@@ -68,6 +68,17 @@ struct Runtime {
   // Caller must guarantee clo->applied==0 and clo->fun.args()==1
   static size_t reserve_apply(RFun *fun);
   void claim_apply(Closure *clo, HeapObject *value, Continuation *cont, Scope *caller);
+
+  // Like claim_apply, but works for any partial closure where one more arg
+  // completes the application (i.e. clo->applied + 1 == clo->fun->args()).
+  static size_t reserve_apply1(RFun *fun);
+  void claim_apply1(Closure *clo, HeapObject *arg, Continuation *cont, Scope *caller);
+
+  // Apply a 2-arg closure to two values. Caller must guarantee
+  // clo->applied + 2 == clo->fun->args(). The result is delivered to `cont`.
+  static size_t reserve_apply2(RFun *fun);
+  void claim_apply2(Closure *clo, HeapObject *arg1, HeapObject *arg2, Continuation *cont,
+                    Scope *caller);
 };
 
 struct Continuation : public Work {

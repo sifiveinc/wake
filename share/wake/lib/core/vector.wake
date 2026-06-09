@@ -231,6 +231,17 @@ export def vfoldl (combiningFn: accum => element => accum): accum => Vector elem
 
     top
 
+# vfoldl2: like vfoldl, but driven by a runtime primitive that walks the
+# underlying Array with a machine-int cursor. Avoids the BigInt index
+# arithmetic (compare + increment) that vfoldl pays per iteration.
+def vfold_prim arr s e fn init =
+    prim "vfold"
+
+export def vfoldl2 (combiningFn: accum => element => accum): accum => Vector element => accum =
+    def top a (Vector v s e) = vfold_prim v s e combiningFn a
+
+    top
+
 # vfoldr: combine the elements of a Vector back-to-front into a single value.
 # An accumulator is updated from its initial value by combiningFn for each element.
 #
