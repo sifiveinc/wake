@@ -74,11 +74,13 @@
 //     5 = PathTypeSymlink      -> "symlink"
 //     6 = PathTypeSocket          (unsupported by wakebox)
 //
-//   WakeboxMountOp =
-//     [0] Type     : MountOpType  (0=Bind,1=CreateDir,2=CreateFile,3=Squashfs,4=Tmpfs,5=Workspace)
-//     [1] Source   : String
-//     [2] Dest     : String
-//     [3] ReadOnly : Boolean
+//   WakeboxMountOp constructor indices (declaration order in runner.wake):
+//     0 = WakeboxBindOp(source:String, dest:String, readonly:Boolean)
+//     1 = WakeboxSquashfsOp(source:String, dest:String)
+//     2 = WakeboxTmpfsOp(dest:String)
+//     3 = WakeboxCreateDirOp(dest:String)
+//     4 = WakeboxCreateFileOp(dest:String)
+//     5 = WakeboxFuseWorkspaceOp(dest:String)
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -97,9 +99,10 @@ struct VisEntry {
 
 struct MountEntry {
   std::string type;
-  std::string source;
+  std::string source;       // empty = omit from JSON
   std::string dest;
-  bool read_only;
+  bool read_only = false;
+  bool has_read_only = false;  // only WakeboxBindOp carries readonly
 };
 
 struct SpecData {
@@ -128,17 +131,38 @@ struct SpecData {
   long command_timeout = 0;
 };
 
-// Map a MountOpType ADT value to its wakebox JSON string.
-// MountOpType constructor indices (runner.wake declaration order):
-//   0=MountBind, 1=MountCreateDir, 2=MountCreateFile,
-//   3=MountSquashfs, 4=MountTmpfs, 5=MountWorkspace
-static Promise *get_mount_op_type_string(Record *mount_rec, std::string &out) {
-  Promise *p = mount_rec->at(0);  // Type field
-  if (!*p) return p;
-  static const char *strings[] = {"bind", "create-dir", "create-file",
-                                  "squashfs", "tmpfs", "workspace"};
-  int idx = p->coerce<Record>()->cons->index;
-  if (idx >= 0 && idx < 6) out = strings[idx];
+// Collect all fields from a WakeboxMountOp ADT value into a MountEntry.
+// WakeboxMountOp constructor indices (runner.wake declaration order):
+//   0=WakeboxBindOp(source,dest,readonly), 1=WakeboxSquashfsOp(source,dest),
+//   2=WakeboxTmpfsOp(dest), 3=WakeboxCreateDirOp(dest),
+//   4=WakeboxCreateFileOp(dest), 5=WakeboxFuseWorkspaceOp(dest)
+static Promise *collect_mount_entry(Record *entry, MountEntry &me) {
+  static const char *strings[] = {"bind", "squashfs", "tmpfs",
+                                  "create-dir", "create-file", "workspace"};
+  int idx = entry->cons->index;
+  if (idx < 0 || idx >= 6) return nullptr;
+  me.type = strings[idx];
+
+  Promise *p;
+  switch (idx) {
+    case 0: {  // WakeboxBindOp(source, dest, readonly)
+      p = entry->at(0); if (!*p) return p; me.source = p->coerce<String>()->as_str();
+      p = entry->at(1); if (!*p) return p; me.dest = p->coerce<String>()->as_str();
+      p = entry->at(2); if (!*p) return p;
+      me.read_only = (p->coerce<Record>()->cons == &Boolean->members[0]);
+      me.has_read_only = true;
+      break;
+    }
+    case 1: {  // WakeboxSquashfsOp(source, dest)
+      p = entry->at(0); if (!*p) return p; me.source = p->coerce<String>()->as_str();
+      p = entry->at(1); if (!*p) return p; me.dest = p->coerce<String>()->as_str();
+      break;
+    }
+    default: {  // TmpfsOp, CreateDirOp, CreateFileOp, FuseWorkspaceOp — only dest
+      p = entry->at(0); if (!*p) return p; me.dest = p->coerce<String>()->as_str();
+      break;
+    }
+  }
   return nullptr;
 }
 
@@ -232,10 +256,7 @@ static Promise *collect_spec(Record *spec, SpecData &data) {
       Record *entry = head->coerce<Record>();
 
       MountEntry me;
-      TRY(get_mount_op_type_string(entry, me.type));
-      TRY(rh::string(entry, 1, me.source));
-      TRY(rh::string(entry, 2, me.dest));
-      TRY(rh::boolean(entry, 3, me.read_only));
+      TRY(collect_mount_entry(entry, me));
       data.mounts.push_back(std::move(me));
 
       Promise *tail = list->at(1);
@@ -333,7 +354,7 @@ static std::string write_spec_json(const SpecData &d, const char *filepath, int 
     obj.add("type", me.type);
     if (!me.source.empty()) obj.add("source", me.source);
     obj.add("destination", me.dest);
-    obj.add_bool("read_only", me.read_only);
+    if (me.has_read_only) obj.add_bool("read_only", me.read_only);
   }
 
   if (!d.hostname.empty()) root.add("hostname", d.hostname);

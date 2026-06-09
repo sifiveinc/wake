@@ -366,20 +366,17 @@ export def defaultRunner: Runner =
 
             fuseRunner
 
-export data MountOpType =
-    MountBind
-    MountCreateDir
-    MountCreateFile
-    MountSquashfs
-    MountTmpfs
-    MountWorkspace
-
-# A mount operation for the wakebox spec.
-export tuple WakeboxMountOp =
-    export Type: MountOpType
-    export Source: String
-    export Dest: String
-    export ReadOnly: Boolean
+# Mount operations for the wakebox spec.
+# These constructors match validate_mount() and do_mounts() in wakebox.
+# See: src/wakefs/namespace.cpp
+# wake-format off
+export data WakeboxMountOp =
+    WakeboxBindOp          (source: String) (dest: String) (readonly: Boolean)
+    WakeboxSquashfsOp      (source: String) (dest: String)
+    WakeboxTmpfsOp                          (dest: String)
+    WakeboxCreateDirOp                      (dest: String)
+    WakeboxCreateFileOp                     (dest: String)
+    WakeboxFuseWorkspaceOp                  (dest: String)
 
 # Fields consumed by the wakebox/fuse sandbox when reading the spec JSON.
 export tuple WakeboxSpec =
@@ -454,7 +451,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             primCasDir
             False
             False
-            (WakeboxMountOp MountWorkspace "" "." False, Nil)
+            (WakeboxFuseWorkspaceOp ".", Nil)
             ""
             ""
             None
