@@ -383,6 +383,7 @@ export tuple WakeboxMountOp =
 
 # Fields consumed by the wakebox/fuse sandbox when reading the spec JSON.
 export tuple WakeboxSpec =
+    export Label: String
     export Command: List String
     export Environment: List String
     export Visible: List Path
@@ -444,6 +445,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
 
         def spec =
             WakeboxSpec
+            label
             command
             environment
             visible

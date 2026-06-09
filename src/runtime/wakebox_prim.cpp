@@ -41,21 +41,22 @@
 // WakeboxSpec field layout (must match the tuple declaration order in Wake):
 //
 //   WakeboxSpec =
-//     [0]  Command          : List String
-//     [1]  Environment      : List String
-//     [2]  Visible          : List Path
-//     [3]  Directory        : String
-//     [4]  Stdin            : String
-//     [5]  CasDir           : String
-//     [6]  IsolateNetwork   : Boolean
-//     [7]  IsolatePids      : Boolean
-//     [8]  MountOps         : List WakeboxMountOp
-//     [9]  Hostname         : String
-//     [10] Domainname       : String
-//     [11] UserId           : Option Integer
-//     [12] GroupId          : Option Integer
-//     [13] CommandTimeout   : Option Integer
-//     [14] Runner           : String
+//     [0]  Label            : String
+//     [1]  Command          : List String
+//     [2]  Environment      : List String
+//     [3]  Visible          : List Path
+//     [4]  Directory        : String
+//     [5]  Stdin            : String
+//     [6]  CasDir           : String
+//     [7]  IsolateNetwork   : Boolean
+//     [8]  IsolatePids      : Boolean
+//     [9]  MountOps         : List WakeboxMountOp
+//     [10] Hostname         : String
+//     [11] Domainname       : String
+//     [12] UserId           : Option Integer
+//     [13] GroupId          : Option Integer
+//     [14] CommandTimeout   : Option Integer
+//     [15] Runner           : String
 //
 //   Path (from io.wake / path.wake) =
 //     [0] Name    : String
@@ -106,6 +107,7 @@ struct SpecData {
   // collect_spec returns nullptr in this case — callers must check this field.
   std::string error;
 
+  std::string label;
   std::vector<std::string> command;
   std::vector<std::string> environment;
   std::vector<VisEntry> visible;
@@ -179,16 +181,17 @@ static Promise *collect_spec(Record *spec, SpecData &data) {
     if (broken) return broken; \
   } while (0)
 
-  TRY(rh::string_list(spec, 0, data.command));
-  TRY(rh::string_list(spec, 1, data.environment));
+  TRY(rh::string(spec, 0, data.label));
+  TRY(rh::string_list(spec, 1, data.command));
+  TRY(rh::string_list(spec, 2, data.environment));
 
-  // Field 2: Visible — List Path
+  // Field 3: Visible — List Path
   // Path layout: [0]=Name:String, [1]=Type:PathType, [2]=Hash:String,
   //              [3]=Mode:Integer, [4]=MtimeNs:Integer
   {
-    Promise *p2 = spec->at(2);
-    if (!*p2) return p2;
-    Record *list = p2->coerce<Record>();
+    Promise *p3 = spec->at(3);
+    if (!*p3) return p3;
+    Record *list = p3->coerce<Record>();
     while (list->cons == &List->members[1]) {  // Cons
       Promise *head = list->at(0);
       if (!*head) return head;
@@ -212,17 +215,17 @@ static Promise *collect_spec(Record *spec, SpecData &data) {
     }
   }
 
-  TRY(rh::string(spec, 3, data.directory));
-  TRY(rh::string(spec, 4, data.stdin_str));
-  TRY(rh::string(spec, 5, data.cas_dir));
-  TRY(rh::boolean(spec, 6, data.isolate_network));
-  TRY(rh::boolean(spec, 7, data.isolate_pids));
+  TRY(rh::string(spec, 4, data.directory));
+  TRY(rh::string(spec, 5, data.stdin_str));
+  TRY(rh::string(spec, 6, data.cas_dir));
+  TRY(rh::boolean(spec, 7, data.isolate_network));
+  TRY(rh::boolean(spec, 8, data.isolate_pids));
 
-  // Field 8: MountOps — List WakeboxMountOp
+  // Field 9: MountOps — List WakeboxMountOp
   {
-    Promise *p8 = spec->at(8);
-    if (!*p8) return p8;
-    Record *list = p8->coerce<Record>();
+    Promise *p9 = spec->at(9);
+    if (!*p9) return p9;
+    Record *list = p9->coerce<Record>();
     while (list->cons == &List->members[1]) {  // Cons
       Promise *head = list->at(0);
       if (!*head) return head;
@@ -241,12 +244,12 @@ static Promise *collect_spec(Record *spec, SpecData &data) {
     }
   }
 
-  TRY(rh::string(spec, 9, data.hostname));
-  TRY(rh::string(spec, 10, data.domainname));
-  TRY(rh::opt_integer(spec, 11, data.has_user_id, data.user_id));
-  TRY(rh::opt_integer(spec, 12, data.has_group_id, data.group_id));
-  TRY(rh::opt_integer(spec, 13, data.has_command_timeout, data.command_timeout));
-  TRY(rh::string(spec, 14, data.runner));
+  TRY(rh::string(spec, 10, data.hostname));
+  TRY(rh::string(spec, 11, data.domainname));
+  TRY(rh::opt_integer(spec, 12, data.has_user_id, data.user_id));
+  TRY(rh::opt_integer(spec, 13, data.has_group_id, data.group_id));
+  TRY(rh::opt_integer(spec, 14, data.has_command_timeout, data.command_timeout));
+  TRY(rh::string(spec, 15, data.runner));
 
 #undef TRY
 
@@ -299,6 +302,8 @@ static void write_jast_pretty(std::ostream &os, const JAST &jast, int indent, in
 // Returns an empty string on success, or an error message.
 static std::string write_spec_json(const SpecData &d, const char *filepath, int indent) {
   JAST root(JSON_OBJECT);
+
+  root.add("label", d.label);
 
   JAST &cmd = root.add("command", JSON_ARRAY);
   for (const auto &s : d.command) cmd.add(s);
