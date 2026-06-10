@@ -227,8 +227,11 @@ struct Database {
   // Remove files from workspace and CAS within a single exclusive transaction.
   // For each path, finds all jobs that output it, removes the CAS blobs, and marks them as deleted.
   // Does *not* remove blobs which are still referenced by other files.
-  // Returns vector of all the blob hashes that were removed.
-  std::vector<std::string> remove_files(cas::Cas *cas, const std::vector<std::string> &paths);
+  // Returns pair of (`paths_to_remove`, `deleted_blob_hashes`), where `paths_to_remove` contains
+  // the workspace paths which *still need* to be removed, assuming they exist in the workspace,
+  // and `deleted_blob_hashes` contains the hashes of the CAS blobs which were *already* removed.
+  std::pair<std::vector<std::string>, std::vector<std::string>> remove_blobs(
+      cas::Cas *cas, const std::vector<std::string> &paths);
 
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode);

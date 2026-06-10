@@ -60,14 +60,30 @@ int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::strin
       normalized = wcl::relative_to(workspace_root, path);
     }
 
+    // Reject dangerous paths
+    if (normalized.empty() || normalized == ".") {
+      std::cerr << "wake --rm: cannot remove the workspace root: '" << path << "'" << std::endl;
+      return EXIT_FAILURE;
+    }
+    if (normalized == "wake.db") {
+      std::cerr << "wake --rm: cannot remove the Wake database: '" << path << "'" << std::endl;
+      return EXIT_FAILURE;
+    }
+    if (normalized == ".build/cas" || normalized.find(".build/cas/") == 0) {
+      std::cerr << "wake --rm: remove materialized paths, not the CAS blobs directly: '" << path
+                << "'" << std::endl;
+      return EXIT_FAILURE;
+    }
+
     normalized_paths.push_back(std::move(normalized));
   }
 
   // Remove files from database and CAS within a single transaction.
-  db.remove_files(cas, normalized_paths);
+  // `deleted_blobs` is currently unused, but is returned for future reporting (e.g. freed space).
+  auto [paths_to_remove, _] = db.remove_blobs(cas, normalized_paths);
 
-  // Delete workspace files outside of that transaction.
-  for (const auto &path : normalized_paths) {
+  // Delete the returned workspace files outside of that transaction.
+  for (const auto &path : paths_to_remove) {
     if (unlink(path.c_str()) != 0 && errno != ENOENT) {
       std::cerr << "warning: failed to remove file '" << path << "': " << strerror(errno)
                 << std::endl;

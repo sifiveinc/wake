@@ -1940,29 +1940,71 @@ std::vector<std::string> Database::get_outputs() const {
   return out;
 }
 
-std::vector<std::string> Database::remove_files(cas::Cas *cas,
-                                                const std::vector<std::string> &paths) {
+std::pair<std::vector<std::string>, std::vector<std::string>> Database::remove_blobs(
+    cas::Cas *cas, const std::vector<std::string> &paths) {
   if (paths.empty()) {
-    return {};
+    return {{}, {}};
   }
 
   // Build a dynamic query for handling all files at once.  This allows defining query logic based
   // on the operation in its entirety -- very helpful for determining what will still be referenced.
-  std::string hashes_input_placeholders = "(?)";
+  std::string paths_input_placeholders = "?";
   for (size_t i = 1; i < paths.size(); ++i) {
-    hashes_input_placeholders += ", (?)";
+    paths_input_placeholders += ", ?";
   }
 
   // Begin exclusive transaction to prevent concurrent builds from referencing files we're in the
   // middle of deleting.
   begin_rw_txn();
 
-  // Query for hashes that should be deleted:
+  // First stage: Get all requested paths that exist in the database.  Note that we'll need to
+  // unlink all requested files from the workspace, regardless of whether they share CAS blobs.
+  std::string paths_query = "select distinct path, type from files where path in (" +
+                            paths_input_placeholders + ") and deleted = 0";
+  sqlite3_stmt *paths_stmt = nullptr;
+  const char *why_paths = "Could not get paths to remove";
+  int ret = sqlite3_prepare_v2(imp->db, paths_query.c_str(), -1, &paths_stmt, 0);
+  if (ret != SQLITE_OK) {
+    std::cerr << why_paths << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
+    end_txn();
+    return {{}, {}};
+  }
+  for (size_t i = 0; i < paths.size(); ++i) {
+    bind_string(why_paths, paths_stmt, i + 1, paths[i]);
+  }
+
+  std::vector<std::string> paths_to_remove;
+  while (sqlite3_step(paths_stmt) == SQLITE_ROW) {
+    std::string path = rip_column(paths_stmt, 0);
+    std::string type = rip_column(paths_stmt, 1);
+    if (type == "directory") {
+      // TODO: This should recurse to all children of the directory, but to keep this first PR
+      // simple we skip that logic for now.
+      std::cerr << "wake --rm: skipping directory: '" << path << "'" << std::endl;
+    } else {
+      paths_to_remove.emplace_back(path);
+    }
+  }
+
+  finish_stmt(why_paths, paths_stmt, imp->debugdb);
+  sqlite3_finalize(paths_stmt);
+
+  if (paths_to_remove.empty()) {
+    end_txn();
+    return {{}, {}};
+  }
+
+  // Second stage: Find hashes whose CAS blobs can be safely deleted.
+  // Only delete a blob if ALL files with that hash are being removed.
+  std::string hashes_input_placeholders = "(?)";
+  for (size_t i = 1; i < paths_to_remove.size(); ++i) {
+    hashes_input_placeholders += ", (?)";
+  }
   std::string hashes_query =
       // Use a CTE to define the removal list once for both select operations.
       "with paths_to_remove(path) as (values " + hashes_input_placeholders +
       ")"
-      " select f1.hash from files f1"
+      " select distinct f1.hash from files f1"
       " where f1.path in paths_to_remove"
       " and f1.deleted = 0"
       // Only include hashes where *all* files with that hash are in our removal list
@@ -1984,20 +2026,28 @@ std::vector<std::string> Database::remove_files(cas::Cas *cas,
 
   sqlite3_stmt *hashes_stmt = nullptr;
   const char *why_hashes = "Could not get blob hashes for paths";
-  int ret = sqlite3_prepare_v2(imp->db, hashes_query.c_str(), -1, &hashes_stmt, 0);
+  ret = sqlite3_prepare_v2(imp->db, hashes_query.c_str(), -1, &hashes_stmt, 0);
   if (ret != SQLITE_OK) {
     std::cerr << why_hashes << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
     end_txn();
-    return {};
+    return {{}, {}};
   }
-  for (size_t i = 0; i < paths.size(); ++i) {
-    bind_string(why_hashes, hashes_stmt, i + 1, paths[i]);
+  for (size_t i = 0; i < paths_to_remove.size(); ++i) {
+    bind_string(why_hashes, hashes_stmt, i + 1, paths_to_remove[i]);
   }
 
-  std::vector<std::string> deleted_blobs;
+  std::vector<std::string> blobs_to_delete;
   while (sqlite3_step(hashes_stmt) == SQLITE_ROW) {
     std::string hash = rip_column(hashes_stmt, 0);
+    blobs_to_delete.emplace_back(hash);
+  }
 
+  finish_stmt(why_hashes, hashes_stmt, imp->debugdb);
+  sqlite3_finalize(hashes_stmt);
+
+  // Third stage: Remove the resulting blobs from the CAS (if any need deletion).
+  std::vector<std::string> deleted_blobs;
+  for (const auto hash : blobs_to_delete) {
     // Parse and remove the CAS blob if CAS is available.
     if (cas) {
       auto hash_result = cas::ContentHash::from_hex(hash);
@@ -2018,16 +2068,13 @@ std::vector<std::string> Database::remove_files(cas::Cas *cas,
     }
   }
 
-  finish_stmt(why_hashes, hashes_stmt, imp->debugdb);
-  sqlite3_finalize(hashes_stmt);
-
   // Mark all requested files as deleted in the database, even if their CAS blobs weren't removed
-  // (e.g., because they're shared with other files).
-  // This *could* be implemented as a pre-prepared query by performing the `update` within the
-  // vector iteration, but we've seen repeated queries like that cause measurable overhead in the past.
+  // (e.g., because they're shared with other files).  This *could* be implemented as a pre-prepared
+  // query by performing the `update` within the vector iteration, but we've seen repeated queries
+  // like that cause measurable overhead in the past.
   std::string mark_input_placeholders = "?";
   // TODO: Once this is extracted to a `blobs` table, it'll iterate over `deleted_blobs` instead.
-  for (size_t i = 1; i < paths.size(); ++i) {
+  for (size_t i = 1; i < paths_to_remove.size(); ++i) {
     mark_input_placeholders += ", ?";
   }
   std::string mark_query =
@@ -2048,8 +2095,8 @@ std::vector<std::string> Database::remove_files(cas::Cas *cas,
     end_txn();
     return {paths_to_remove, deleted_blobs};
   }
-  for (size_t i = 0; i < paths.size(); ++i) {
-    bind_string(why_mark, mark_stmt, i + 1, paths[i]);
+  for (size_t i = 0; i < paths_to_remove.size(); ++i) {
+    bind_string(why_mark, mark_stmt, i + 1, paths_to_remove[i]);
   }
 
   single_step(why_mark, mark_stmt, imp->debugdb);
@@ -2058,7 +2105,7 @@ std::vector<std::string> Database::remove_files(cas::Cas *cas,
   // Release the database lock now that both the CAS and the DB have been updated.
   end_txn();
 
-  return deleted_blobs;
+  return {paths_to_remove, deleted_blobs};
 }
 
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,
