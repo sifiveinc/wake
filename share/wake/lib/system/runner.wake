@@ -367,6 +367,7 @@ export def defaultRunner: Runner =
             fuseRunner
 
 # Mount operations for the wakebox spec.
+# Dev note: any changes here must be reflected in wakebox_prim.cpp.
 # wake-format off
 export data WakeboxMountOp =
     WakeboxBindOp          (source: String) (dest: String) (readonly: Boolean)
@@ -377,6 +378,7 @@ export data WakeboxMountOp =
     WakeboxFuseWorkspaceOp                  (dest: String)
 
 # Fields consumed by the wakebox/fuse sandbox when reading the spec JSON.
+# Dev note: any changes here must be reflected in wakebox_prim.cpp.
 export tuple WakeboxSpec =
     export Label: Option String
     export Command: List String

@@ -91,43 +91,54 @@ namespace {
 // ---------------------------------------------------------------------------
 
 enum FieldKind {
-  FK_SCALAR,      // String / Boolean / Integer — check the top-level Promise only
-  FK_OPTION,      // Option T — check outer Promise; if Some, check the inner Promise
-  FK_LIST_STR,    // List String — walk nodes, check head and tail Promises
-  FK_LIST_PATH,   // List Path — walk nodes, check head + all 5 Path field Promises
-  FK_LIST_MOUNT,  // List WakeboxMountOp — walk nodes, check head + variable field count
+  FK_STRING,          // String
+  FK_BOOL,            // Boolean
+  FK_OPTION_STRING,   // Option String  — check outer Promise; if Some, check inner
+  FK_OPTION_INTEGER,  // Option Integer — check outer Promise; if Some, check inner
+  FK_LIST_STRING,     // List String    — walk nodes, check head and tail Promises
+  FK_LIST_PATH,       // List Path      — walk nodes, check head + all 5 Path field Promises
+  FK_LIST_MOUNT,      // List WakeboxMountOp — walk nodes, check head + variable field count
+};
+
+struct FieldSpec {
+  const char *name;
+  FieldKind kind;
 };
 
 static Promise *check_spec_ready(Record *spec) {
-  static const FieldKind kFields[] = {
-      FK_OPTION,      // [0]  Label            : Option String
-      FK_LIST_STR,    // [1]  Command          : List String
-      FK_LIST_STR,    // [2]  Environment      : List String
-      FK_SCALAR,      // [3]  Stdin            : String
-      FK_SCALAR,      // [4]  Directory        : String
-      FK_OPTION,      // [5]  CommandTimeout   : Option Integer
-      FK_SCALAR,      // [6]  IsolateNetwork   : Boolean
-      FK_SCALAR,      // [7]  IsolatePids      : Boolean
-      FK_OPTION,      // [8]  Hostname         : Option String
-      FK_OPTION,      // [9]  DomainName       : Option String
-      FK_OPTION,      // [10] UserId           : Option Integer
-      FK_OPTION,      // [11] GroupId          : Option Integer
-      FK_OPTION,      // [12] Version          : Option String
-      FK_OPTION,      // [13] Runner           : Option String
-      FK_SCALAR,      // [14] CasDir           : String
-      FK_LIST_MOUNT,  // [15] MountOps         : List WakeboxMountOp
-      FK_LIST_PATH,   // [16] Visible          : List Path
+  // clang-format off
+  static const FieldSpec kFields[] = {
+      { "Label",          FK_OPTION_STRING  },
+      { "Command",        FK_LIST_STRING    },
+      { "Environment",    FK_LIST_STRING    },
+      { "Stdin",          FK_STRING         },
+      { "Directory",      FK_STRING         },
+      { "CommandTimeout", FK_OPTION_INTEGER },
+      { "IsolateNetwork", FK_BOOL           },
+      { "IsolatePids",    FK_BOOL           },
+      { "Hostname",       FK_OPTION_STRING  },
+      { "DomainName",     FK_OPTION_STRING  },
+      { "UserId",         FK_OPTION_INTEGER },
+      { "GroupId",        FK_OPTION_INTEGER },
+      { "Version",        FK_OPTION_STRING  },
+      { "Runner",         FK_OPTION_STRING  },
+      { "CasDir",         FK_STRING         },
+      { "MountOps",       FK_LIST_MOUNT     },
+      { "Visible",        FK_LIST_PATH      },
   };
+  // clang-format on
 
   for (int i = 0; i < (int)(sizeof(kFields) / sizeof(*kFields)); ++i) {
     Promise *p = spec->at(i);
     if (!*p) return p;
 
-    switch (kFields[i]) {
-      case FK_SCALAR:
+    switch (kFields[i].kind) {
+      case FK_STRING:
+      case FK_BOOL:
         break;
 
-      case FK_OPTION: {
+      case FK_OPTION_STRING:
+      case FK_OPTION_INTEGER: {
         Record *opt = p->coerce<Record>();
         if (opt->cons->index == 0) {
           Promise *inner = opt->at(0);
@@ -136,7 +147,7 @@ static Promise *check_spec_ready(Record *spec) {
         break;
       }
 
-      case FK_LIST_STR: {
+      case FK_LIST_STRING: {
         Record *list = p->coerce<Record>();
         while (list->cons == &List->members[1]) {
           Promise *head = list->at(0);
