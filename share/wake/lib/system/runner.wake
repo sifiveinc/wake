@@ -367,8 +367,6 @@ export def defaultRunner: Runner =
             fuseRunner
 
 # Mount operations for the wakebox spec.
-# These constructors match validate_mount() and do_mounts() in wakebox.
-# See: src/wakefs/namespace.cpp
 # wake-format off
 export data WakeboxMountOp =
     WakeboxBindOp          (source: String) (dest: String) (readonly: Boolean)

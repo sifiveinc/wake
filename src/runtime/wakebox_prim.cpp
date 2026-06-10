@@ -246,8 +246,7 @@ static const char *k_mount_type_strings[] = {
     "workspace",    // 5 WakeboxFuseWorkspaceOp
 };
 
-// Stream spec JSON directly to filepath without an intermediate SpecData or
-// JAST tree. All Promises must be fulfilled (call check_spec_ready first).
+// Stream spec JSON directly to filepath All Promises must be fulfilled.
 // Returns an empty string on success, or an error message on failure.
 static std::string stream_spec_json(Record *spec, const char *filepath, int indent) {
   (void)unlink(filepath);
