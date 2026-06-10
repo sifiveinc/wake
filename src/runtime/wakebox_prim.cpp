@@ -42,19 +42,20 @@
 //     [0]  Label            : Option String
 //     [1]  Command          : List String
 //     [2]  Environment      : List String
-//     [3]  Visible          : List Path
+//     [3]  Stdin            : String
 //     [4]  Directory        : String
-//     [5]  Stdin            : String
-//     [6]  CasDir           : String
-//     [7]  IsolateNetwork   : Boolean
-//     [8]  IsolatePids      : Boolean
-//     [9]  MountOps         : List WakeboxMountOp
-//     [10] Hostname         : Option String
-//     [11] DomainName       : Option String
-//     [12] UserId           : Option Integer
-//     [13] GroupId          : Option Integer
-//     [14] CommandTimeout   : Option Integer
-//     [15] Runner           : Option String
+//     [5]  CommandTimeout   : Option Integer
+//     [6]  IsolateNetwork   : Boolean
+//     [7]  IsolatePids      : Boolean
+//     [8]  Hostname         : Option String
+//     [9]  DomainName       : Option String
+//     [10] UserId           : Option Integer
+//     [11] GroupId          : Option Integer
+//     [12] Version          : Option String
+//     [13] Runner           : Option String
+//     [14] CasDir           : String
+//     [15] MountOps         : List WakeboxMountOp
+//     [16] Visible          : List Path
 //
 //   Path (from io.wake / path.wake) =
 //     [0] Name    : String
@@ -99,22 +100,23 @@ enum FieldKind {
 
 static Promise *check_spec_ready(Record *spec) {
   static const FieldKind kFields[] = {
-      FK_OPTION,      // Label            : Option String
-      FK_LIST_STR,    // Command          : List String
-      FK_LIST_STR,    // Environment      : List String
-      FK_LIST_PATH,   // Visible          : List Path
-      FK_SCALAR,      // Directory        : String
-      FK_SCALAR,      // Stdin            : String
-      FK_SCALAR,      // CasDir           : String
-      FK_SCALAR,      // IsolateNetwork   : Boolean
-      FK_SCALAR,      // IsolatePids      : Boolean
-      FK_LIST_MOUNT,  // MountOps         : List WakeboxMountOp
-      FK_OPTION,      // Hostname         : Option String
-      FK_OPTION,      // DomainName       : Option String
-      FK_OPTION,      // UserId           : Option Integer
-      FK_OPTION,      // GroupId          : Option Integer
-      FK_OPTION,      // CommandTimeout   : Option Integer
-      FK_OPTION,      // Runner           : Option String
+      FK_OPTION,      // [0]  Label            : Option String
+      FK_LIST_STR,    // [1]  Command          : List String
+      FK_LIST_STR,    // [2]  Environment      : List String
+      FK_SCALAR,      // [3]  Stdin            : String
+      FK_SCALAR,      // [4]  Directory        : String
+      FK_OPTION,      // [5]  CommandTimeout   : Option Integer
+      FK_SCALAR,      // [6]  IsolateNetwork   : Boolean
+      FK_SCALAR,      // [7]  IsolatePids      : Boolean
+      FK_OPTION,      // [8]  Hostname         : Option String
+      FK_OPTION,      // [9]  DomainName       : Option String
+      FK_OPTION,      // [10] UserId           : Option Integer
+      FK_OPTION,      // [11] GroupId          : Option Integer
+      FK_OPTION,      // [12] Version          : Option String
+      FK_OPTION,      // [13] Runner           : Option String
+      FK_SCALAR,      // [14] CasDir           : String
+      FK_LIST_MOUNT,  // [15] MountOps         : List WakeboxMountOp
+      FK_LIST_PATH,   // [16] Visible          : List Path
   };
 
   for (int i = 0; i < (int)(sizeof(kFields) / sizeof(*kFields)); ++i) {
@@ -283,6 +285,103 @@ static std::string stream_spec_json(Record *spec, const char *filepath, int inde
   js.key("environment");
   write_str_array(js, spec->at(2)->coerce<Record>());
 
+  // directory, stdin, cas-dir
+  sep();
+  js.key("directory");
+  js.str(spec->at(4)->coerce<String>()->as_str());
+  sep();
+  js.key("stdin");
+  js.str(spec->at(3)->coerce<String>()->as_str());
+  sep();
+  js.key("cas-dir");
+  js.str(spec->at(14)->coerce<String>()->as_str());
+
+  // isolate-network, isolate-pids
+  bool iso_net = (spec->at(6)->coerce<Record>()->cons == &Boolean->members[0]);
+  bool iso_pid = (spec->at(7)->coerce<Record>()->cons == &Boolean->members[0]);
+  sep();
+  js.key("isolate-network");
+  out << (iso_net ? "true" : "false");
+  sep();
+  js.key("isolate-pids");
+  out << (iso_pid ? "true" : "false");
+
+  opt_str("hostname", 8);
+  opt_str("domainname", 9);
+
+  // Optional integer fields
+  auto opt_int = [&](const char *k, int f) {
+    Record *opt = spec->at(f)->coerce<Record>();
+    if (opt->cons->index == 0) {  // Some
+      mpz_t v = {opt->at(0)->coerce<Integer>()->wrap()};
+      sep();
+      js.key(k);
+      out << mpz_get_si(v);
+    }
+  };
+  opt_int("user-id", 10);
+  opt_int("group-id", 11);
+  opt_int("command-timeout", 5);
+
+  opt_str("version", 12);
+  opt_str("runner", 13);
+
+  // mount-ops
+  sep();
+  js.key("mount-ops");
+  out << '[';
+  {
+    ++js.depth;
+    bool first = true;
+    Record *list = spec->at(15)->coerce<Record>();
+    while (list->cons == &List->members[1]) {
+      if (!first) out << ',';
+      first = false;
+      js.nl();
+
+      Record *entry = list->at(0)->coerce<Record>();
+      int idx = entry->cons->index;
+
+      out << '{';
+      ++js.depth;
+      bool mf = false;
+      auto mk = [&]() {
+        if (mf) out << ',';
+        mf = true;
+        js.nl();
+      };
+      mk();
+      js.key("type");
+      out << '"' << k_mount_type_strings[idx] << '"';
+      if (idx == 0 || idx == 1) {  // bind or squashfs — have source + destination
+        mk();
+        js.key("source");
+        js.str(entry->at(0)->coerce<String>()->as_str());
+        mk();
+        js.key("destination");
+        js.str(entry->at(1)->coerce<String>()->as_str());
+        if (idx == 0) {  // bind also has read_only
+          bool ro = (entry->at(2)->coerce<Record>()->cons == &Boolean->members[0]);
+          mk();
+          js.key("read_only");
+          out << (ro ? "true" : "false");
+        }
+      } else {  // tmpfs, create-dir, create-file, workspace — destination only
+        mk();
+        js.key("destination");
+        js.str(entry->at(0)->coerce<String>()->as_str());
+      }
+      --js.depth;
+      js.nl();
+      out << '}';
+
+      list = list->at(1)->coerce<Record>();
+    }
+    --js.depth;
+    if (!first) js.nl();
+    out << ']';
+  }
+
   // visible
   sep();
   js.key("visible");
@@ -290,7 +389,7 @@ static std::string stream_spec_json(Record *spec, const char *filepath, int inde
   {
     ++js.depth;
     bool first = true;
-    Record *list = spec->at(3)->coerce<Record>();
+    Record *list = spec->at(16)->coerce<Record>();
     while (list->cons == &List->members[1]) {
       if (!first) out << ',';
       first = false;
@@ -342,102 +441,6 @@ static std::string stream_spec_json(Record *spec, const char *filepath, int inde
     if (!first) js.nl();
     out << ']';
   }
-
-  // directory, stdin, cas-dir
-  sep();
-  js.key("directory");
-  js.str(spec->at(4)->coerce<String>()->as_str());
-  sep();
-  js.key("stdin");
-  js.str(spec->at(5)->coerce<String>()->as_str());
-  sep();
-  js.key("cas-dir");
-  js.str(spec->at(6)->coerce<String>()->as_str());
-
-  // isolate-network, isolate-pids
-  bool iso_net = (spec->at(7)->coerce<Record>()->cons == &Boolean->members[0]);
-  bool iso_pid = (spec->at(8)->coerce<Record>()->cons == &Boolean->members[0]);
-  sep();
-  js.key("isolate-network");
-  out << (iso_net ? "true" : "false");
-  sep();
-  js.key("isolate-pids");
-  out << (iso_pid ? "true" : "false");
-
-  // mount-ops
-  sep();
-  js.key("mount-ops");
-  out << '[';
-  {
-    ++js.depth;
-    bool first = true;
-    Record *list = spec->at(9)->coerce<Record>();
-    while (list->cons == &List->members[1]) {
-      if (!first) out << ',';
-      first = false;
-      js.nl();
-
-      Record *entry = list->at(0)->coerce<Record>();
-      int idx = entry->cons->index;
-
-      out << '{';
-      ++js.depth;
-      bool mf = false;
-      auto mk = [&]() {
-        if (mf) out << ',';
-        mf = true;
-        js.nl();
-      };
-      mk();
-      js.key("type");
-      out << '"' << k_mount_type_strings[idx] << '"';
-      if (idx == 0 || idx == 1) {  // bind or squashfs — have source + destination
-        mk();
-        js.key("source");
-        js.str(entry->at(0)->coerce<String>()->as_str());
-        mk();
-        js.key("destination");
-        js.str(entry->at(1)->coerce<String>()->as_str());
-        if (idx == 0) {  // bind also has read_only
-          bool ro = (entry->at(2)->coerce<Record>()->cons == &Boolean->members[0]);
-          mk();
-          js.key("read_only");
-          out << (ro ? "true" : "false");
-        }
-      } else {  // tmpfs, create-dir, create-file, workspace — destination only
-        mk();
-        js.key("destination");
-        js.str(entry->at(0)->coerce<String>()->as_str());
-      }
-      --js.depth;
-      js.nl();
-      out << '}';
-
-      list = list->at(1)->coerce<Record>();
-    }
-    --js.depth;
-    if (!first) js.nl();
-    out << ']';
-  }
-
-  opt_str("hostname", 10);
-  opt_str("domainname", 11);
-
-  // Optional integer fields
-  auto opt_int = [&](const char *k, int f) {
-    Record *opt = spec->at(f)->coerce<Record>();
-    if (opt->cons->index == 0) {  // Some
-      mpz_t v = {opt->at(0)->coerce<Integer>()->wrap()};
-      sep();
-      js.key(k);
-      out << mpz_get_si(v);
-    }
-  };
-  opt_int("user-id", 12);
-  opt_int("group-id", 13);
-  opt_int("command-timeout", 14);
-
-  opt_str("runner", 15);
 
   --js.depth;
   js.nl();

@@ -383,19 +383,20 @@ export tuple WakeboxSpec =
     export Label: Option String
     export Command: List String
     export Environment: List String
-    export Visible: List Path
-    export Directory: String
     export Stdin: String
-    export CasDir: String
+    export Directory: String
+    export CommandTimeout: Option Integer
     export IsolateNetwork: Boolean
     export IsolatePids: Boolean
-    export MountOps: List WakeboxMountOp
     export Hostname: Option String
     export DomainName: Option String
     export UserId: Option Integer
     export GroupId: Option Integer
-    export CommandTimeout: Option Integer
+    export Version: Option String
     export Runner: Option String
+    export CasDir: String
+    export MountOps: List WakeboxMountOp
+    export Visible: List Path
 
 # Write a WakeboxSpec to a JSON file at the given path.
 # indent: spaces per level (0 = compact).
@@ -445,19 +446,20 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             (Some label)
             command
             environment
-            visible
-            directory
             stdin
-            primCasDir
+            directory
+            None
             False
             False
-            (WakeboxFuseWorkspaceOp ".", Nil)
             None
             None
             None
             None
-            None
+            (Some version)
             (Some script)
+            primCasDir
+            (WakeboxFuseWorkspaceOp ".", Nil)
+            visible
 
         def writeResult =
             writeWakeboxSpec spec 2 specFile
