@@ -88,88 +88,99 @@ namespace {
 // unfulfilled one. No data is extracted; this drives the retry loop in
 // WriteWakeboxJson::execute so it suspends on exactly the right Promise.
 // ---------------------------------------------------------------------------
+
+enum FieldKind {
+  FK_SCALAR,     // String / Boolean / Integer — check the top-level Promise only
+  FK_OPTION,     // Option T — check outer Promise; if Some, check the inner Promise
+  FK_LIST_STR,   // List String — walk nodes, check head and tail Promises
+  FK_LIST_PATH,  // List Path — walk nodes, check head + all 5 Path field Promises
+  FK_LIST_MOUNT, // List WakeboxMountOp — walk nodes, check head + variable field count
+};
+
 static Promise *check_spec_ready(Record *spec) {
-  Promise *p;
+  static const FieldKind kFields[] = {
+    FK_OPTION,     // Label            : Option String
+    FK_LIST_STR,   // Command          : List String
+    FK_LIST_STR,   // Environment      : List String
+    FK_LIST_PATH,  // Visible          : List Path
+    FK_SCALAR,     // Directory        : String
+    FK_SCALAR,     // Stdin            : String
+    FK_SCALAR,     // CasDir           : String
+    FK_SCALAR,     // IsolateNetwork   : Boolean
+    FK_SCALAR,     // IsolatePids      : Boolean
+    FK_LIST_MOUNT, // MountOps         : List WakeboxMountOp
+    FK_OPTION,     // Hostname         : Option String
+    FK_OPTION,     // DomainName       : Option String
+    FK_OPTION,     // UserId           : Option Integer
+    FK_OPTION,     // GroupId          : Option Integer
+    FK_OPTION,     // CommandTimeout   : Option Integer
+    FK_OPTION,     // Runner           : Option String
+  };
 
-  // Field 0: Label (Option String)
-  p = spec->at(0);
-  if (!*p) return p;
-  {
-    Record *opt = p->coerce<Record>();
-    if (opt->cons->index == 0) {
-      Promise *inner = opt->at(0);
-      if (!*inner) return inner;
-    }
-  }
-
-  // Fields 1-2: Command, Environment (List String)
-  for (int f = 1; f <= 2; ++f) {
-    p = spec->at(f);
+  for (int i = 0; i < (int)(sizeof(kFields) / sizeof(*kFields)); ++i) {
+    Promise *p = spec->at(i);
     if (!*p) return p;
-    Record *list = p->coerce<Record>();
-    while (list->cons == &List->members[1]) {
-      Promise *head = list->at(0);
-      if (!*head) return head;
-      Promise *tail = list->at(1);
-      if (!*tail) return tail;
-      list = tail->coerce<Record>();
-    }
-  }
 
-  // Field 3: Visible (List Path) — Path has 5 fields
-  p = spec->at(3);
-  if (!*p) return p;
-  {
-    Record *list = p->coerce<Record>();
-    while (list->cons == &List->members[1]) {
-      Promise *head = list->at(0);
-      if (!*head) return head;
-      Record *path = head->coerce<Record>();
-      for (int i = 0; i < 5; ++i) {
-        Promise *f = path->at(i);
-        if (!*f) return f;
+    switch (kFields[i]) {
+      case FK_SCALAR:
+        break;
+
+      case FK_OPTION: {
+        Record *opt = p->coerce<Record>();
+        if (opt->cons->index == 0) {
+          Promise *inner = opt->at(0);
+          if (!*inner) return inner;
+        }
+        break;
       }
-      Promise *tail = list->at(1);
-      if (!*tail) return tail;
-      list = tail->coerce<Record>();
-    }
-  }
 
-  // Fields 4-8: Directory, Stdin, CasDir, IsolateNetwork, IsolatePids
-  for (int f = 4; f <= 8; ++f) {
-    p = spec->at(f);
-    if (!*p) return p;
-  }
-
-  // Field 9: MountOps (List WakeboxMountOp)
-  // WakeboxBindOp=3 fields, WakeboxSquashfsOp=2, all others=1
-  p = spec->at(9);
-  if (!*p) return p;
-  {
-    Record *list = p->coerce<Record>();
-    while (list->cons == &List->members[1]) {
-      Promise *head = list->at(0);
-      if (!*head) return head;
-      Record *entry = head->coerce<Record>();
-      int nf = (entry->cons->index == 0) ? 3 : (entry->cons->index == 1) ? 2 : 1;
-      for (int i = 0; i < nf; ++i) {
-        Promise *f = entry->at(i);
-        if (!*f) return f;
+      case FK_LIST_STR: {
+        Record *list = p->coerce<Record>();
+        while (list->cons == &List->members[1]) {
+          Promise *head = list->at(0);
+          if (!*head) return head;
+          Promise *tail = list->at(1);
+          if (!*tail) return tail;
+          list = tail->coerce<Record>();
+        }
+        break;
       }
-      Promise *tail = list->at(1);
-      if (!*tail) return tail;
-      list = tail->coerce<Record>();
-    }
-  }
 
-  // Fields 10-15: all Option — Hostname, DomainName, UserId, GroupId, CommandTimeout, Runner
-  for (int f = 10; f <= 15; ++f) {
-    p = spec->at(f);
-    if (!*p) return p;
-    Record *opt = p->coerce<Record>();
-    if (opt->cons->index == 0) {  // Some — check the inner value
-      Promise *inner = opt->at(0);
-      if (!*inner) return inner;
+      case FK_LIST_PATH: {
+        Record *list = p->coerce<Record>();
+        while (list->cons == &List->members[1]) {
+          Promise *head = list->at(0);
+          if (!*head) return head;
+          Record *path = head->coerce<Record>();
+          for (int j = 0; j < 5; ++j) {
+            Promise *f = path->at(j);
+            if (!*f) return f;
+          }
+          Promise *tail = list->at(1);
+          if (!*tail) return tail;
+          list = tail->coerce<Record>();
+        }
+        break;
+      }
+
+      case FK_LIST_MOUNT: {
+        // WakeboxBindOp=3 fields, WakeboxSquashfsOp=2, all others=1
+        Record *list = p->coerce<Record>();
+        while (list->cons == &List->members[1]) {
+          Promise *head = list->at(0);
+          if (!*head) return head;
+          Record *entry = head->coerce<Record>();
+          int nf = (entry->cons->index == 0) ? 3 : (entry->cons->index == 1) ? 2 : 1;
+          for (int j = 0; j < nf; ++j) {
+            Promise *f = entry->at(j);
+            if (!*f) return f;
+          }
+          Promise *tail = list->at(1);
+          if (!*tail) return tail;
+          list = tail->coerce<Record>();
+        }
+        break;
+      }
     }
   }
 
