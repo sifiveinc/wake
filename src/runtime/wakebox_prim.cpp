@@ -486,8 +486,7 @@ static PRIMFN(prim_write_wakebox_spec) {
   INTEGER_MPZ(indent_mpz, 1);
   STRING(filepath, 2);
 
-  int indent = mpz_fits_sint_p(indent_mpz) ? mpz_get_si(indent_mpz) : 0;
-  if (indent < 0) indent = 0;
+  int indent = (mpz_fits_sint_p(indent_mpz) && mpz_get_si(indent_mpz) > 0) ? mpz_get_si(indent_mpz) : 0;
 
   // Reserve space for WriteWakeboxJson + the fulfiller continuation.
   runtime.heap.reserve(WriteWakeboxJson::reserve() + Tuple::fulfiller_pads);
