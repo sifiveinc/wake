@@ -39,7 +39,7 @@
 // WakeboxSpec field layout (must match the tuple declaration order in Wake):
 //
 //   WakeboxSpec =
-//     [0]  Label            : String
+//     [0]  Label            : Option String
 //     [1]  Command          : List String
 //     [2]  Environment      : List String
 //     [3]  Visible          : List Path
@@ -49,12 +49,12 @@
 //     [7]  IsolateNetwork   : Boolean
 //     [8]  IsolatePids      : Boolean
 //     [9]  MountOps         : List WakeboxMountOp
-//     [10] Hostname         : String
-//     [11] Domainname       : String
+//     [10] Hostname         : Option String
+//     [11] DomainName       : Option String
 //     [12] UserId           : Option Integer
 //     [13] GroupId          : Option Integer
 //     [14] CommandTimeout   : Option Integer
-//     [15] Runner           : String
+//     [15] Runner           : Option String
 //
 //   Path (from io.wake / path.wake) =
 //     [0] Name    : String
@@ -91,9 +91,16 @@ namespace {
 static Promise *check_spec_ready(Record *spec) {
   Promise *p;
 
-  // Field 0: Label (String)
+  // Field 0: Label (Option String)
   p = spec->at(0);
   if (!*p) return p;
+  {
+    Record *opt = p->coerce<Record>();
+    if (opt->cons->index == 0) {
+      Promise *inner = opt->at(0);
+      if (!*inner) return inner;
+    }
+  }
 
   // Fields 1-2: Command, Environment (List String)
   for (int f = 1; f <= 2; ++f) {
@@ -155,26 +162,16 @@ static Promise *check_spec_ready(Record *spec) {
     }
   }
 
-  // Fields 10-11: Hostname, Domainname (String)
-  for (int f = 10; f <= 11; ++f) {
-    p = spec->at(f);
-    if (!*p) return p;
-  }
-
-  // Fields 12-14: Option Integer (UserId, GroupId, CommandTimeout)
-  for (int f = 12; f <= 14; ++f) {
+  // Fields 10-15: all Option — Hostname, DomainName, UserId, GroupId, CommandTimeout, Runner
+  for (int f = 10; f <= 15; ++f) {
     p = spec->at(f);
     if (!*p) return p;
     Record *opt = p->coerce<Record>();
-    if (opt->cons->index == 0) {  // Some — check the inner Integer
+    if (opt->cons->index == 0) {  // Some — check the inner value
       Promise *inner = opt->at(0);
       if (!*inner) return inner;
     }
   }
-
-  // Field 15: Runner (String)
-  p = spec->at(15);
-  if (!*p) return p;
 
   return nullptr;
 }
@@ -218,15 +215,25 @@ static void write_str_array(JStream &js, Record *list) {
 }
 
 // PathType constructor indices (io.wake declaration order):
-//   0=RegularFile, 1=Directory, 2=CharDevice, 3=BlockDevice,
-//   4=Fifo, 5=Symlink, 6=Socket
-static const char *k_path_type_strings[] = {"file",  "directory", nullptr, nullptr,
-                                             nullptr, "symlink",   nullptr};
+static const char *k_path_type_strings[] = {
+    "file",        // 0 PathTypeRegularFile
+    "directory",   // 1 PathTypeDirectory
+    nullptr,       // 2 PathTypeCharDevice   (unsupported)
+    nullptr,       // 3 PathTypeBlockDevice  (unsupported)
+    nullptr,       // 4 PathTypeFifo         (unsupported)
+    "symlink",     // 5 PathTypeSymlink
+    nullptr,       // 6 PathTypeSocket       (unsupported)
+};
 
-// MountOp type strings (runner.wake declaration order):
-//   0=bind, 1=squashfs, 2=tmpfs, 3=create-dir, 4=create-file, 5=workspace
-static const char *k_mount_type_strings[] = {"bind",       "squashfs",    "tmpfs",
-                                              "create-dir", "create-file", "workspace"};
+// WakeboxMountOp constructor indices (runner.wake declaration order):
+static const char *k_mount_type_strings[] = {
+    "bind",        // 0 WakeboxBindOp
+    "squashfs",    // 1 WakeboxSquashfsOp
+    "tmpfs",       // 2 WakeboxTmpfsOp
+    "create-dir",  // 3 WakeboxCreateDirOp
+    "create-file", // 4 WakeboxCreateFileOp
+    "workspace",   // 5 WakeboxFuseWorkspaceOp
+};
 
 // Stream spec JSON directly to filepath without an intermediate SpecData or
 // JAST tree. All Promises must be fulfilled (call check_spec_ready first).
@@ -244,13 +251,20 @@ static std::string stream_spec_json(Record *spec, const char *filepath, int inde
     js.nl();
   };
 
+  // Optional string fields — used for label, hostname, domainname, runner
+  auto opt_str = [&](const char *k, int f) {
+    Record *opt = spec->at(f)->coerce<Record>();
+    if (opt->cons->index == 0) {  // Some
+      sep();
+      js.key(k);
+      js.str(opt->at(0)->coerce<String>()->as_str());
+    }
+  };
+
   out << '{';
   ++js.depth;
 
-  // label
-  sep();
-  js.key("label");
-  js.str(spec->at(0)->coerce<String>()->as_str());
+  opt_str("label", 0);
 
   // command, environment
   sep();
@@ -367,15 +381,6 @@ static std::string stream_spec_json(Record *spec, const char *filepath, int inde
     out << ']';
   }
 
-  // Optional string fields
-  auto opt_str = [&](const char *k, int f) {
-    std::string s = spec->at(f)->coerce<String>()->as_str();
-    if (!s.empty()) {
-      sep();
-      js.key(k);
-      js.str(s);
-    }
-  };
   opt_str("hostname", 10);
   opt_str("domainname", 11);
 
