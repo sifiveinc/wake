@@ -37,6 +37,7 @@
 #include "types/sums.h"
 #include "util/location.h"
 #include "value.h"
+#include "wakebox_prim.h"
 
 void require_fail(const char *message, unsigned size, Runtime &runtime, const Scope *scope) {
   std::stringstream ss;
@@ -208,6 +209,7 @@ PrimMap prim_register_all(StringInfo *info, JobTable *jobtable, CASContext *cas_
   prim_register_sources(pmap);
   prim_register_time(pmap);
   prim_register_stage(pmap);
+  prim_register_wakebox(pmap);
 
   if (cas_ctx) {
     prim_register_cas(cas_ctx, pmap);

@@ -148,6 +148,7 @@ void prim_register_json(PrimMap &pmap);
 void prim_register_job(JobTable *jobtable, PrimMap &pmap);
 void prim_register_sources(PrimMap &pmap);
 void prim_register_time(PrimMap &pmap);
+void prim_register_wakebox(PrimMap &pmap);
 
 PrimMap prim_register_all(StringInfo *info, JobTable *jobtable, CASContext *cas_ctx);
 
