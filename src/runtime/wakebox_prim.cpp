@@ -90,31 +90,31 @@ namespace {
 // ---------------------------------------------------------------------------
 
 enum FieldKind {
-  FK_SCALAR,     // String / Boolean / Integer — check the top-level Promise only
-  FK_OPTION,     // Option T — check outer Promise; if Some, check the inner Promise
-  FK_LIST_STR,   // List String — walk nodes, check head and tail Promises
-  FK_LIST_PATH,  // List Path — walk nodes, check head + all 5 Path field Promises
-  FK_LIST_MOUNT, // List WakeboxMountOp — walk nodes, check head + variable field count
+  FK_SCALAR,      // String / Boolean / Integer — check the top-level Promise only
+  FK_OPTION,      // Option T — check outer Promise; if Some, check the inner Promise
+  FK_LIST_STR,    // List String — walk nodes, check head and tail Promises
+  FK_LIST_PATH,   // List Path — walk nodes, check head + all 5 Path field Promises
+  FK_LIST_MOUNT,  // List WakeboxMountOp — walk nodes, check head + variable field count
 };
 
 static Promise *check_spec_ready(Record *spec) {
   static const FieldKind kFields[] = {
-    FK_OPTION,     // Label            : Option String
-    FK_LIST_STR,   // Command          : List String
-    FK_LIST_STR,   // Environment      : List String
-    FK_LIST_PATH,  // Visible          : List Path
-    FK_SCALAR,     // Directory        : String
-    FK_SCALAR,     // Stdin            : String
-    FK_SCALAR,     // CasDir           : String
-    FK_SCALAR,     // IsolateNetwork   : Boolean
-    FK_SCALAR,     // IsolatePids      : Boolean
-    FK_LIST_MOUNT, // MountOps         : List WakeboxMountOp
-    FK_OPTION,     // Hostname         : Option String
-    FK_OPTION,     // DomainName       : Option String
-    FK_OPTION,     // UserId           : Option Integer
-    FK_OPTION,     // GroupId          : Option Integer
-    FK_OPTION,     // CommandTimeout   : Option Integer
-    FK_OPTION,     // Runner           : Option String
+      FK_OPTION,      // Label            : Option String
+      FK_LIST_STR,    // Command          : List String
+      FK_LIST_STR,    // Environment      : List String
+      FK_LIST_PATH,   // Visible          : List Path
+      FK_SCALAR,      // Directory        : String
+      FK_SCALAR,      // Stdin            : String
+      FK_SCALAR,      // CasDir           : String
+      FK_SCALAR,      // IsolateNetwork   : Boolean
+      FK_SCALAR,      // IsolatePids      : Boolean
+      FK_LIST_MOUNT,  // MountOps         : List WakeboxMountOp
+      FK_OPTION,      // Hostname         : Option String
+      FK_OPTION,      // DomainName       : Option String
+      FK_OPTION,      // UserId           : Option Integer
+      FK_OPTION,      // GroupId          : Option Integer
+      FK_OPTION,      // CommandTimeout   : Option Integer
+      FK_OPTION,      // Runner           : Option String
   };
 
   for (int i = 0; i < (int)(sizeof(kFields) / sizeof(*kFields)); ++i) {
@@ -202,9 +202,7 @@ struct JStream {
     for (int i = 0; i < depth * indent; ++i) os << ' ';
   }
 
-  void key(const char *k) {
-    os << '"' << k << (indent > 0 ? "\": " : "\":");
-  }
+  void key(const char *k) { os << '"' << k << (indent > 0 ? "\": " : "\":"); }
 
   void str(const std::string &s) { os << '"' << json_escape(s) << '"'; }
 };
@@ -227,23 +225,23 @@ static void write_str_array(JStream &js, Record *list) {
 
 // PathType constructor indices (io.wake declaration order):
 static const char *k_path_type_strings[] = {
-    "file",        // 0 PathTypeRegularFile
-    "directory",   // 1 PathTypeDirectory
-    nullptr,       // 2 PathTypeCharDevice   (unsupported)
-    nullptr,       // 3 PathTypeBlockDevice  (unsupported)
-    nullptr,       // 4 PathTypeFifo         (unsupported)
-    "symlink",     // 5 PathTypeSymlink
-    nullptr,       // 6 PathTypeSocket       (unsupported)
+    "file",       // 0 PathTypeRegularFile
+    "directory",  // 1 PathTypeDirectory
+    nullptr,      // 2 PathTypeCharDevice   (unsupported)
+    nullptr,      // 3 PathTypeBlockDevice  (unsupported)
+    nullptr,      // 4 PathTypeFifo         (unsupported)
+    "symlink",    // 5 PathTypeSymlink
+    nullptr,      // 6 PathTypeSocket       (unsupported)
 };
 
 // WakeboxMountOp constructor indices (runner.wake declaration order):
 static const char *k_mount_type_strings[] = {
-    "bind",        // 0 WakeboxBindOp
-    "squashfs",    // 1 WakeboxSquashfsOp
-    "tmpfs",       // 2 WakeboxTmpfsOp
-    "create-dir",  // 3 WakeboxCreateDirOp
-    "create-file", // 4 WakeboxCreateFileOp
-    "workspace",   // 5 WakeboxFuseWorkspaceOp
+    "bind",         // 0 WakeboxBindOp
+    "squashfs",     // 1 WakeboxSquashfsOp
+    "tmpfs",        // 2 WakeboxTmpfsOp
+    "create-dir",   // 3 WakeboxCreateDirOp
+    "create-file",  // 4 WakeboxCreateFileOp
+    "workspace",    // 5 WakeboxFuseWorkspaceOp
 };
 
 // Stream spec JSON directly to filepath without an intermediate SpecData or
@@ -304,8 +302,8 @@ static std::string stream_spec_json(Record *spec, const char *filepath, int inde
       if (pt_idx < 0 || pt_idx >= 7 || k_path_type_strings[pt_idx] == nullptr) {
         out.close();
         (void)unlink(filepath);
-        return std::string("write_wakebox_spec: unsupported path type '") +
-               pt->cons->ast.name + "' for wakebox (only file, directory, symlink are valid)";
+        return std::string("write_wakebox_spec: unsupported path type '") + pt->cons->ast.name +
+               "' for wakebox (only file, directory, symlink are valid)";
       }
 
       mpz_t mv = {path->at(3)->coerce<Integer>()->wrap()};
@@ -319,11 +317,21 @@ static std::string stream_spec_json(Record *spec, const char *filepath, int inde
         pf = true;
         js.nl();
       };
-      pk(); js.key("path"); js.str(path->at(0)->coerce<String>()->as_str());
-      pk(); js.key("type"); out << '"' << k_path_type_strings[pt_idx] << '"';
-      pk(); js.key("hash"); js.str(path->at(2)->coerce<String>()->as_str());
-      pk(); js.key("mode"); out << mpz_get_si(mv);
-      pk(); js.key("mtime"); out << mpz_get_si(tv);
+      pk();
+      js.key("path");
+      js.str(path->at(0)->coerce<String>()->as_str());
+      pk();
+      js.key("type");
+      out << '"' << k_path_type_strings[pt_idx] << '"';
+      pk();
+      js.key("hash");
+      js.str(path->at(2)->coerce<String>()->as_str());
+      pk();
+      js.key("mode");
+      out << mpz_get_si(mv);
+      pk();
+      js.key("mtime");
+      out << mpz_get_si(tv);
       --js.depth;
       js.nl();
       out << '}';
@@ -336,15 +344,25 @@ static std::string stream_spec_json(Record *spec, const char *filepath, int inde
   }
 
   // directory, stdin, cas-dir
-  sep(); js.key("directory"); js.str(spec->at(4)->coerce<String>()->as_str());
-  sep(); js.key("stdin");     js.str(spec->at(5)->coerce<String>()->as_str());
-  sep(); js.key("cas-dir");   js.str(spec->at(6)->coerce<String>()->as_str());
+  sep();
+  js.key("directory");
+  js.str(spec->at(4)->coerce<String>()->as_str());
+  sep();
+  js.key("stdin");
+  js.str(spec->at(5)->coerce<String>()->as_str());
+  sep();
+  js.key("cas-dir");
+  js.str(spec->at(6)->coerce<String>()->as_str());
 
   // isolate-network, isolate-pids
   bool iso_net = (spec->at(7)->coerce<Record>()->cons == &Boolean->members[0]);
   bool iso_pid = (spec->at(8)->coerce<Record>()->cons == &Boolean->members[0]);
-  sep(); js.key("isolate-network"); out << (iso_net ? "true" : "false");
-  sep(); js.key("isolate-pids");    out << (iso_pid ? "true" : "false");
+  sep();
+  js.key("isolate-network");
+  out << (iso_net ? "true" : "false");
+  sep();
+  js.key("isolate-pids");
+  out << (iso_pid ? "true" : "false");
 
   // mount-ops
   sep();
@@ -370,16 +388,26 @@ static std::string stream_spec_json(Record *spec, const char *filepath, int inde
         mf = true;
         js.nl();
       };
-      mk(); js.key("type"); out << '"' << k_mount_type_strings[idx] << '"';
+      mk();
+      js.key("type");
+      out << '"' << k_mount_type_strings[idx] << '"';
       if (idx == 0 || idx == 1) {  // bind or squashfs — have source + destination
-        mk(); js.key("source");      js.str(entry->at(0)->coerce<String>()->as_str());
-        mk(); js.key("destination"); js.str(entry->at(1)->coerce<String>()->as_str());
+        mk();
+        js.key("source");
+        js.str(entry->at(0)->coerce<String>()->as_str());
+        mk();
+        js.key("destination");
+        js.str(entry->at(1)->coerce<String>()->as_str());
         if (idx == 0) {  // bind also has read_only
           bool ro = (entry->at(2)->coerce<Record>()->cons == &Boolean->members[0]);
-          mk(); js.key("read_only"); out << (ro ? "true" : "false");
+          mk();
+          js.key("read_only");
+          out << (ro ? "true" : "false");
         }
       } else {  // tmpfs, create-dir, create-file, workspace — destination only
-        mk(); js.key("destination"); js.str(entry->at(0)->coerce<String>()->as_str());
+        mk();
+        js.key("destination");
+        js.str(entry->at(0)->coerce<String>()->as_str());
       }
       --js.depth;
       js.nl();
@@ -502,7 +530,8 @@ static PRIMFN(prim_write_wakebox_spec) {
   INTEGER_MPZ(indent_mpz, 1);
   STRING(filepath, 2);
 
-  int indent = (mpz_fits_sint_p(indent_mpz) && mpz_get_si(indent_mpz) > 0) ? mpz_get_si(indent_mpz) : 0;
+  int indent =
+      (mpz_fits_sint_p(indent_mpz) && mpz_get_si(indent_mpz) > 0) ? mpz_get_si(indent_mpz) : 0;
 
   // Reserve space for WriteWakeboxJson + the fulfiller continuation.
   runtime.heap.reserve(WriteWakeboxJson::reserve() + Tuple::fulfiller_pads);
