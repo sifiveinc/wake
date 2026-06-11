@@ -106,20 +106,20 @@ def doFormat (fmt: JSONFormat) (lhs: JValue): List String =
             JBoolean False -> "false", rhs
             JNull -> "null", rhs
             JArray list ->
-                def helper value acc = ",{tabbeder}", rec acc deeper value
+                def helper acc value = ",{tabbeder}", rec acc deeper value
 
                 if list.empty then
                     '[]', rhs
                 else
-                    "[{tabbeder}", foldr helper ("{tabbed}]", rhs) list | tail
+                    "[{tabbeder}", foldl helper ("{tabbed}]", rhs) list.reverse | tail
             JObject list ->
-                def helper (Pair key value) acc =
+                def helper acc (Pair key value) =
                     ",{tabbeder}", '"', jsonEscape key, ("\":{space}", rec acc deeper value)
 
                 if list.empty then
                     '{}', rhs
                 else
-                    "\{{tabbeder}", foldr helper ("{tabbed}\}", rhs) list | tail
+                    "\{{tabbeder}", foldl helper ("{tabbed}\}", rhs) list.reverse | tail
 
     rec Nil (if indent > 0 then Some "" else None) lhs
 
