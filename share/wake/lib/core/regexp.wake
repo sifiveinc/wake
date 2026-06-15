@@ -20,12 +20,7 @@ package wake
 # Create RegExp that only matches str, by escaping special characters.
 # quote "a.b" = `a\.b`
 # quote "hello[world]" = `hello\[world\]`
-export def quote (str: String): RegExp =
-    def res str = prim "quote"
-
-    match (res str).stringToRegExp
-        Pass x -> x
-        Fail error -> unreachable "quote primitive bug: {error.getErrorCause}"
+export def quote (str: String): RegExp = (\_ prim "quote") str
 
 # Concatenate a list of regular expressions.
 # The resulting regular expression must match the elements sequentially.
