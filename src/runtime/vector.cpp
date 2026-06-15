@@ -92,7 +92,7 @@ static PRIMFN(prim_vset) {
 }
 
 void prim_register_vector(PrimMap &pmap) {
-  prim_register(pmap, "vget", prim_vget, type_vget, PRIM_PURE);
+  prim_register(pmap, "vget", prim_vget, type_vget, PRIM_PURE | PRIM_PARTIAL);  // aborts out of range
   prim_register(pmap, "vnew", prim_vnew, type_vnew, PRIM_ORDERED);
   prim_register(pmap, "vset", prim_vset, type_vset, PRIM_IMPURE);
 }

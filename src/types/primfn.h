@@ -87,6 +87,17 @@ typedef void (*PrimFn)(void *data, Runtime &runtime, Scope *scope, size_t output
  */
 #define PRIM_FNARG 4
 
+/* This primitive is partial: it may abort the runtime (via require_fail) on some well-typed
+ * inputs -- e.g. vget out of bounds, integer division by zero.  Such a primitive is NOT safe
+ * to speculatively execute, so loop-invariant code motion (LVL, see src/optimizer/lvl.cpp)
+ * must not hoist it out of a lambda that might be invoked zero times or only conditionally:
+ * doing so could turn a never-taken abort into an actual abort.  Purity (PRIM_PURE) is thus
+ * necessary but NOT sufficient for hoisting -- a hoistable pure prim must also be total.
+ * Set this on any PURE primitive whose body can REQUIRE()-fail for a non-type/non-arity
+ * reason.  (Effectful/ordered prims are already excluded from hoisting by their own flags.)
+ */
+#define PRIM_PARTIAL 8
+
 /* Register primitive functions */
 struct PrimDesc {
   PrimFn fn;
