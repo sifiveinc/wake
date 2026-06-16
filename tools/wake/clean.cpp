@@ -23,11 +23,11 @@
 #include <sysexits.h>
 #include <unistd.h>
 
+#include <filesystem>
 #include <iostream>
 
 #include "cas/content_hash.h"
 #include "util/execpath.h"
-#include "wcl/filepath.h"
 
 int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::string> &paths,
                  const std::string &wake_cwd) {
@@ -48,34 +48,35 @@ int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::strin
   normalized_paths.reserve(paths.size());
 
   for (const auto &path : paths) {
-    std::string normalized;
+    std::filesystem::path workspace_path(path);
 
-    if (wcl::is_relative(path)) {
+    if (workspace_path.is_relative()) {
       // Interpret relative paths according to where wake was invoked (wake_cwd).
-      // `wake_cwd` format is "" or "subdir/", so it doesn't need an extra '/'.
-      std::string full_path = wake_cwd + path;
-      normalized = wcl::make_canonical(full_path);
+      // `wake_cwd` format is "" or "subdir/", but coercion means the result will never be absolute.
+      workspace_path = wake_cwd / workspace_path;
+      workspace_path = workspace_path.lexically_normal();
     } else {
       // Additionally relativize absolute paths to match their database representation.
-      normalized = wcl::relative_to(workspace_root, path);
+      workspace_path = std::filesystem::relative(workspace_path, workspace_root);
     }
 
     // Reject dangerous paths
-    if (normalized.empty() || normalized == ".") {
+    if (workspace_path == ".") {
       std::cerr << "wake --rm: cannot remove the workspace root: '" << path << "'" << std::endl;
       return EXIT_FAILURE;
     }
-    if (normalized == "wake.db") {
+    if (workspace_path == "wake.db") {
       std::cerr << "wake --rm: cannot remove the Wake database: '" << path << "'" << std::endl;
       return EXIT_FAILURE;
     }
-    if (normalized == ".build/cas" || normalized.find(".build/cas/") == 0) {
+    auto relative_to_cas = workspace_path.lexically_relative(".build/cas");
+    if (relative_to_cas.empty() || relative_to_cas.string().find("..") != 0) {
       std::cerr << "wake --rm: remove materialized paths, not the CAS blobs directly: '" << path
                 << "'" << std::endl;
       return EXIT_FAILURE;
     }
 
-    normalized_paths.push_back(std::move(normalized));
+    normalized_paths.push_back(workspace_path.string());
   }
 
   // Remove files from database and CAS within a single transaction.
