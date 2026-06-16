@@ -38,3 +38,6 @@ DELETED=$(sqlite3 wake.db "SELECT deleted FROM files WHERE path='file.txt'")
 test "$DELETED" = "0" || fail "After re-creating file, deleted should be reset to 0, got: $DELETED"
 
 echo "PASS: deleted flag reset" >&2
+
+# Clean up
+rm -f file.txt
