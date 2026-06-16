@@ -471,6 +471,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "select f.path"
       " from filetree ft join files f on f.file_id=ft.file_id join jobs j on ft.job_id=j.job_id"
       " where ft.access = 2"
+      " and f.deleted = 0"
       " and substr(cast(j.commandline as varchar), 1, 8) != '<source>'"
       " and substr(cast(j.commandline as varchar), 1, 7) != '<claim>'";
   const char *sql_remove_output_files =
@@ -479,6 +480,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "   select f.file_id"
       "   from filetree ft join files f on f.file_id=ft.file_id join jobs j on ft.job_id=j.job_id"
       "   where ft.access = 2"
+      "   and f.deleted = 0"
       "   and substr(cast(j.commandline as varchar), 1, 8) != '<source>'"
       "   and substr(cast(j.commandline as varchar), 1, 7) != '<claim>'"
       " )";
@@ -519,7 +521,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
       "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?))"
       "select d.hash from disk_batch d where d.hash is not null and not exists ("
-      "  select 1 from files where hash=d.hash"
+      "  select 1 from files where hash=d.hash and deleted=0"
       ")";
 
 #define PREPARE(sql, member)                                                                     \
