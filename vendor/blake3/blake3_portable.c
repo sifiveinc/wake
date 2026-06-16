@@ -1,4 +1,5 @@
 #include "blake3_impl.h"
+#include <string.h>
 
 INLINE uint32_t rotr32(uint32_t w, uint32_t c) {
   return (w >> c) | (w << (32 - c));
@@ -26,7 +27,7 @@ INLINE void round_fn(uint32_t state[16], const uint32_t *msg, size_t round) {
   g(state, 2, 6, 10, 14, msg[schedule[4]], msg[schedule[5]]);
   g(state, 3, 7, 11, 15, msg[schedule[6]], msg[schedule[7]]);
 
-  // Mix the diagonals.
+  // Mix the rows.
   g(state, 0, 5, 10, 15, msg[schedule[8]], msg[schedule[9]]);
   g(state, 1, 6, 11, 12, msg[schedule[10]], msg[schedule[11]]);
   g(state, 2, 7, 8, 13, msg[schedule[12]], msg[schedule[13]]);
@@ -157,4 +158,3 @@ void blake3_hash_many_portable(const uint8_t *const *inputs, size_t num_inputs,
     out = &out[BLAKE3_OUT_LEN];
   }
 }
-
