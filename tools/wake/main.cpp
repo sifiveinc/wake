@@ -420,7 +420,7 @@ void print_help(const char *argv0) {
     << "    --init        DIR  Create or replace a wake.db in the specified directory"     << std::endl
     << "    --list-outputs     List all job outputs"                                       << std::endl
     << "    --clean            Delete all job outputs"                                     << std::endl
-    << "    --rm               Remove files/directories from database (paths as arguments)" << std::endl
+    << "    --rm               Remove files from database (paths as arguments)"            << std::endl
     << "    --input    -i FILE Capture jobs which read FILE. (repeat for multiple files)"  << std::endl
     << "    --output   -o FILE Capture jobs which wrote FILE. (repeat for multiple files)" << std::endl
     << "    --label       GLOB Capture jobs where label matches GLOB"                      << std::endl

@@ -1978,8 +1978,7 @@ std::pair<std::vector<std::string>, std::vector<std::string>> Database::remove_b
     std::string path = rip_column(paths_stmt, 0);
     std::string type = rip_column(paths_stmt, 1);
     if (type == "directory") {
-      // TODO: This should recurse to all children of the directory, but to keep this first PR
-      // simple we skip that logic for now.
+      // TODO: This should recurse to all children of the directory.
       std::cerr << "wake --rm: skipping directory: '" << path << "'" << std::endl;
     } else {
       paths_to_remove.emplace_back(path);
