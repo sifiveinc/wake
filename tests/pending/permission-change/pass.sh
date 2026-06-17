@@ -25,3 +25,8 @@ touch script
 # Step 3: Run wake again
 echo "=== Run 2: executable ==="
 "${WAKE}" --no-tty -x 'test Unit'
+
+# Clean up
+err=$?
+rm -f script
+exit $err

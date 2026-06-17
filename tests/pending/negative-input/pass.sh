@@ -16,3 +16,8 @@ echo "bar" > bar
 # 3. Run job testing for bar with bar visible
 echo "=== Run 2: bar exists ==="
 "${WAKE}" --no-tty -x 'test_bar Unit'
+
+# Clean up
+err=$?
+rm -f bar
+exit $err

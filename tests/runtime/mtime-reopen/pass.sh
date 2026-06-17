@@ -26,5 +26,11 @@ actual=$(date -Isec -ur output.txt)
 expected="2000-01-01T00:00:00+00:00"
 if [ "$actual" != "$expected" ]; then
     echo "FAIL: workspace output.txt mtime is '$actual', expected '$expected'" >&2
+    rm -f output.txt
     exit 1
 fi
+
+# Clean up
+err=$?
+rm -f output.txt
+exit $err

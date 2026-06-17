@@ -11,3 +11,8 @@ export WAKE_CAS=1
 rm -rf .build .fuse wake.db* wake.log output.txt
 
 "${WAKE}" -x "go Unit"
+
+# Clean up
+err=$?
+rm -f output.txt
+exit $err
