@@ -23,46 +23,27 @@
 
 #include "ssa.h"
 
-// LVL -- Loop-invariant Lifting (the optimization the PRIM_* flag docs in types/primfn.h
-// name "LVL").  wake has no loops; the analogue is a lambda body, so this is more precisely
-// lambda-invariant code motion, but we keep the codebase's established "LVL" name.
+// LVL -- Loop-invariant Lifting.
 //
-// A function body's terms are re-evaluated on every call (runtime.cpp:128 iterates and
-// interprets every body term).  Any body term that is pure and independent of the function's
-// argument(s) produces the same value on every call, so we hoist it into the enclosing scope
-// where it is computed once instead of once per call.  CSE (which runs right after this pass)
-// then dedups identical hoisted terms originating from different lambdas.
+// WHAT: hoist a lambda body's pure, argument-independent terms into the enclosing scope, so
+//   they run once instead of once-per-call (runtime.cpp re-interprets every body term on every
+//   call).  CSE, the next pass, then dedups identical hoisted terms from different lambdas.
+//   (wake has no loops; a lambda body is the analogue, but we keep the established "LVL" name.)
 //
-// SAFETY: wake evaluates eagerly, but a lambda's body only runs when the lambda is *called*,
-// which may be zero times or conditional (e.g. an `if`/match arm, or `filter pred []`).
-// Hoisting a term out of such a lambda makes it run when the *parent* runs regardless, so the
-// term must be TOTAL -- it must not diverge or abort.  Purity is not enough: a pure prim like
-// `vget` aborts out of range, and `RApp(mid, mid)` (the mutual-recursion fixpoint, tossa.cpp)
-// is pure yet diverges if evaluated eagerly.  We therefore hoist only provably-total terms:
-//   * RLit, RCon, RGet            -- a literal, a tuple allocation, a field projection
-//   * RPrim that is pure, total (!PRIM_PARTIAL) and does not invoke a fn arg (!PRIM_FNARG)
-// and never RApp/RDes (callee/handler totality is unknown; this also excludes recursive
-// calls).  Hoisting a total term that the lambda might not have run only ever wastes one
-// evaluation -- it can never change a result, diverge, or abort.
-//
-// Coordinate system: during the optimizer a body term's args are source-coordinate flat
-// indices.  For an RFun at source position P, let S = P + 1 be the source index of its first
-// body term and N = terms.size().  Because TargetScope::unwind reuses positions, a body
-// term's arg x is always either:
-//   x <  S - 1      a capture from an enclosing scope (already placed in the SourceMap)
-//   x == S - 1      the RFun itself (a recursive self-reference, tossa.cpp:48)
-//   S <= x < S + N  the body term at index x - S
-//   x >= S + N      a later sibling (mutual recursion); desugared, so guarded defensively
-// Only the first and third forms are safe inside a hoisted term: hoisting a term that
-// references the function itself or a later sibling would create a forward reference.
+// WHY "TOTAL", not just "pure": a lambda body runs only when the lambda is called, which may be
+//   zero times or conditional (an `if`/match arm, `filter pred []`).  Hoisting makes a term run
+//   whenever the PARENT runs, so a non-total term could turn a never-taken failure into a real
+//   one.  Purity is necessary but not sufficient -- see lvl_total() for exactly what we hoist.
 
 struct PassLVL {
   TermStream stream;
   PassLVL(TargetScope &scope) : stream(scope) {}
 };
 
-// A term is safe to speculatively evaluate (total) iff it is a literal, a tuple
-// allocation/projection, or a total pure primitive.  RApp/RDes/RArg/RFun are never total here.
+// A term is TOTAL (safe to speculatively evaluate) iff it is a literal, a tuple
+// allocation/projection, or a pure+total primitive.  RApp/RDes can call code of unknown
+// totality (and RApp covers recursive calls, which diverge if eagerly evaluated), and
+// RArg/RFun are never hoistable, so all of those return false.
 static bool lvl_total(Term *t) {
   const std::type_info &id = t->id();
   if (id == typeid(RLit) || id == typeid(RCon) || id == typeid(RGet)) return true;
@@ -73,8 +54,75 @@ static bool lvl_total(Term *t) {
   return false;
 }
 
-// Every leaf/redux term is a passthrough: rewrite its args through the current map and
-// re-emit it.  Only RFun (below) performs hoisting.
+// Coordinate system for the analysis/emit below.  During the optimizer a body term's args are
+// source-coordinate flat indices.  For an RFun whose first body term has source index S and
+// whose body has N terms, every arg x of a body term falls into one of four ranges:
+//
+//   arg x range        meaning                            liftable?
+//   x <  S - 1         capture from an enclosing scope    yes (still in scope at the parent)
+//   x == S - 1         the RFun itself (recursive self)   no  (would forward-reference itself)
+//   S <= x < S + N     another body term (index x - S)    only if that term is liftable
+//   x >= S + N         a later sibling (mutual recursion) no  (desugared; guarded defensively)
+enum class ArgKind { Capture, SelfRef, BodyTerm, LaterSibling };
+
+static ArgKind classify(size_t x, size_t S, size_t N) {
+  if (x >= S + N) return ArgKind::LaterSibling;
+  if (x >= S) return ArgKind::BodyTerm;
+  if (x == S - 1) return ArgKind::SelfRef;
+  return ArgKind::Capture;
+}
+
+// Phase 1 -- analysis.  Fill liftable[k] for each body term, in topological (forward) order so
+// that a term's body dependencies have already been decided when we reach it.
+static std::vector<char> markLiftable(const std::vector<std::unique_ptr<Term>> &terms, size_t S) {
+  size_t N = terms.size();
+  std::vector<char> liftable(N, 0);
+  for (size_t k = 0; k < N; ++k) {
+    Term *t = terms[k].get();
+    bool ok = lvl_total(t);
+    // Only Redux subtypes carry args; RLit has none and is trivially liftable if total.
+    if (ok) {
+      if (Redux *r = dynamic_cast<Redux *>(t)) {
+        for (size_t x : r->args) {
+          ArgKind kind = classify(x, S, N);
+          // A capture is always fine; a body-term dep is fine only if it too is liftable; a
+          // self-reference or later sibling can never be hoisted (forward reference).
+          if (kind == ArgKind::BodyTerm) {
+            if (!liftable[x - S]) ok = false;
+          } else if (kind == ArgKind::SelfRef || kind == ArgKind::LaterSibling) {
+            ok = false;
+          }
+          if (!ok) break;
+        }
+      }
+    }
+    liftable[k] = ok;
+  }
+  return liftable;
+}
+
+// Phase 2 -- emit liftable terms into the PARENT scope (before transferring self).  Returns
+// hoisted[k] = the parent slot a hoisted term now lives at, or Term::invalid if not hoisted.
+static std::vector<size_t> hoistLiftable(std::vector<std::unique_ptr<Term>> &terms,
+                                         const std::vector<char> &liftable, size_t S,
+                                         PassLVL &p) {
+  size_t N = terms.size();
+  std::vector<size_t> hoisted(N, Term::invalid);
+  for (size_t k = 0; k < N; ++k) {
+    if (!liftable[k]) continue;
+    if (Redux *r = dynamic_cast<Redux *>(terms[k].get())) {
+      // Remap each arg to its new parent slot: a body-term dep was itself hoisted; everything
+      // else (a capture) is remapped through the current parent map.
+      for (size_t &x : r->args) x = (x >= S) ? hoisted[x - S] : p.stream.map()[x];
+    }
+    hoisted[k] = p.stream.include(std::move(terms[k]));
+  }
+  return hoisted;
+}
+
+// Every leaf/redux term below is an identical passthrough: rewrite its args through the current
+// map and re-emit it.  The per-type duplication is required only because the visitor pattern
+// dispatches one override per Term subtype.  Only RFun does real work.
 
 void RArg::pass_lvl(PassLVL &p, std::unique_ptr<Term> self) { p.stream.transfer(std::move(self)); }
 
@@ -110,45 +158,12 @@ void RFun::pass_lvl(PassLVL &p, std::unique_ptr<Term> self) {
   size_t S = p.stream.map().end() + 1;
   size_t N = terms.size();
 
-  // ---- analysis: which body terms are liftable, in topological (forward) order ----
-  std::vector<char> liftable(N, 0);
-  for (size_t k = 0; k < N; ++k) {
-    Term *t = terms[k].get();
-    bool ok = lvl_total(t);
-    if (ok) {
-      // Only Redux subtypes carry args; RLit has none, so it is trivially liftable.
-      Redux *r = dynamic_cast<Redux *>(t);
-      if (r) {
-        for (size_t x : r->args) {
-          if (x >= S) {
-            // body term (S <= x < S+N) or a later sibling (x >= S+N).  A later sibling, or a
-            // body dep that is not itself liftable, makes t non-liftable.
-            if (x >= S + N || !liftable[x - S]) {
-              ok = false;
-              break;
-            }
-          } else if (x == S - 1) {
-            ok = false;  // the enclosing RFun itself (a recursive self-reference)
-            break;
-          }
-          // else x < S-1: capture of an enclosing value -- valid at the hoist site.
-        }
-      }
-    }
-    liftable[k] = ok;
-  }
+  // 1. Decide which body terms are liftable, then 2. move them into the parent scope.
+  std::vector<char> liftable = markLiftable(terms, S);
+  std::vector<size_t> hoisted = hoistLiftable(terms, liftable, S, p);
 
-  // ---- emit liftable terms into the PARENT scope, before transferring self ----
-  std::vector<size_t> hoisted(N, Term::invalid);
-  for (size_t k = 0; k < N; ++k) {
-    if (!liftable[k]) continue;
-    if (Redux *r = dynamic_cast<Redux *>(terms[k].get())) {
-      for (size_t &x : r->args) x = (x >= S) ? hoisted[x - S] : p.stream.map()[x];
-    }
-    hoisted[k] = p.stream.include(std::move(terms[k]));
-  }
-
-  // ---- emit the RFun node, then its retained body (recursing into nested lambdas) ----
+  // 3. Emit the RFun node, then its retained body (recursing into nested lambdas).  A hoisted
+  //    term's body slot is mapped onto its new parent slot; everything else is re-emitted.
   p.stream.transfer(std::move(self));
   CheckPoint body = p.stream.begin();
   for (size_t k = 0; k < N; ++k) {
@@ -179,3 +194,4 @@ std::unique_ptr<Term> Term::pass_lvl(std::unique_ptr<Term> term) {
   root->terms = pass.stream.end(body);
   return scope.finish();
 }
+
