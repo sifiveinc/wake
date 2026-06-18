@@ -104,8 +104,7 @@ static std::vector<char> markLiftable(const std::vector<std::unique_ptr<Term>> &
 // Phase 2 -- emit liftable terms into the PARENT scope (before transferring self).  Returns
 // hoisted[k] = the parent slot a hoisted term now lives at, or Term::invalid if not hoisted.
 static std::vector<size_t> hoistLiftable(std::vector<std::unique_ptr<Term>> &terms,
-                                         const std::vector<char> &liftable, size_t S,
-                                         PassLVL &p) {
+                                         const std::vector<char> &liftable, size_t S, PassLVL &p) {
   size_t N = terms.size();
   std::vector<size_t> hoisted(N, Term::invalid);
   for (size_t k = 0; k < N; ++k) {
@@ -194,4 +193,3 @@ std::unique_ptr<Term> Term::pass_lvl(std::unique_ptr<Term> term) {
   root->terms = pass.stream.end(body);
   return scope.finish();
 }
-
