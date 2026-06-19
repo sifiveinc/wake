@@ -386,7 +386,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "select output from log where job_id=? and descriptor=? order by log_id";
   const char *sql_replay_log = "select descriptor, output from log where job_id=? order by log_id";
   const char *sql_get_tree =
-      "select f.path, f.hash, f.type, f.mode, t.modified, f.deleted from filetree t, files f"
+      "select f.path, f.hash, f.type, f.mode, t.modified, f.deleted,"
+      " exists(select 1 from files f2 where f2.hash=f.hash and f2.deleted=false) as blob_available"
+      " from filetree t, files f"
       " where t.job_id=? and t.access=? and f.file_id=t.file_id order by t.tree_id";
   const char *sql_get_tree_id =
       "select f.path, f.file_id, t.modified from filetree t, files f"
@@ -1175,13 +1177,18 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     long mode = sqlite3_column_int64(imp->get_tree, 3);
     long modified = sqlite3_column_int64(imp->get_tree, 4);
     bool deleted = sqlite3_column_int64(imp->get_tree, 5) != 0;
-    // If the CAS blob is marked deleted or the workspace file doesn't exist, invalidate the cache.
-    if (deleted) out.found = false;
-    files.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
+    bool blob_available = sqlite3_column_int64(imp->get_tree, 6) != 0;
+    files.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified, deleted);
+    // If the CAS blob is not available (no live files reference this hash), invalidate the cache.
+    out.found = out.found && blob_available;
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
 
   end_txn();  // End RO transaction
+
+  if (!out.found) {
+    return out;
+  }
 
   // Only grab write lock if plan to actually use this!
   begin_rw_txn();
@@ -1510,8 +1517,8 @@ std::vector<FileReflection> Database::get_tree(int kind, long job) {
     std::string type = rip_column(imp->get_tree, 2);
     long mode = sqlite3_column_int64(imp->get_tree, 3);
     long modified = sqlite3_column_int64(imp->get_tree, 4);
-    // Not filtering by the deleted column, since it's still a file which was originally produced.
-    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
+    bool deleted = sqlite3_column_int64(imp->get_tree, 5) != 0;
+    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified, deleted);
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
   end_txn();

@@ -18,6 +18,7 @@ fail() {
 
 # Create a file and add it to the database
 "${WAKE}" -q --no-tty makeFile file.txt
+"${WAKE}" --output file.txt
 
 # Verify it exists and deleted=0
 DELETED=$(sqlite3 wake.db "SELECT deleted FROM files WHERE path='file.txt'")
@@ -36,6 +37,9 @@ test "$DELETED" = "1" || fail "After --rm, file should have deleted=1, got: $DEL
 # CRITICAL TEST: Verify deleted was reset to 0
 DELETED=$(sqlite3 wake.db "SELECT deleted FROM files WHERE path='file.txt'")
 test "$DELETED" = "0" || fail "After re-creating file, deleted should be reset to 0, got: $DELETED"
+
+# The job should be different from the original run, as there was no longer any blob to reuse.
+"${WAKE}" --output file.txt
 
 echo "PASS: deleted flag reset" >&2
 

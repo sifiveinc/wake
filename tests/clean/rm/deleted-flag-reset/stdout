@@ -1,0 +1,4 @@
+#  (1)
+$ /usr/bin/dash -c echo 'test content' > file.txt
+#  (5)
+$ /usr/bin/dash -c echo 'test content' > file.txt

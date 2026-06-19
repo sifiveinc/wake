@@ -1,0 +1,4 @@
+#  (1)
+$ /usr/bin/dash -c echo 'shared content for cache test' > shared1.txt
+#  (1)
+$ /usr/bin/dash -c echo 'shared content for cache test' > shared1.txt
