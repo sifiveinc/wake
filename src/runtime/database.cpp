@@ -67,6 +67,7 @@ struct Database::detail {
   sqlite3_stmt *insert_tree_file_id;
   sqlite3_stmt *insert_log;
   sqlite3_stmt *insert_file;
+  sqlite3_stmt *reset_deleted;
   sqlite3_stmt *claim_file;
   sqlite3_stmt *get_log;
   sqlite3_stmt *replay_log;
@@ -126,6 +127,7 @@ struct Database::detail {
         insert_tree_file_id(0),
         insert_log(0),
         insert_file(0),
+        reset_deleted(0),
         claim_file(0),
         get_log(0),
         replay_log(0),
@@ -379,6 +381,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_insert_file =
       "insert into files(hash, type, mode, path, deleted) values (?, ?, ?, ?, 0)"
       " on conflict(hash, type, mode, path) do update set deleted=0";
+  const char *sql_reset_deleted =
+      "update files set deleted=0 where path=? and hash=? and type=? and mode=?";
   const char *sql_claim_file =
       "insert or ignore into run_files(run_id, file_id)"
       " values(?, (select file_id from files where path=? and hash=? and type=? and mode=?))";
@@ -547,6 +551,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_insert_tree_file_id, insert_tree_file_id);
   PREPARE(sql_insert_log, insert_log);
   PREPARE(sql_insert_file, insert_file);
+  PREPARE(sql_reset_deleted, reset_deleted);
   PREPARE(sql_claim_file, claim_file);
   PREPARE(sql_get_log, get_log);
   PREPARE(sql_replay_log, replay_log);
@@ -617,6 +622,7 @@ void Database::close() {
   FINALIZE(insert_tree_file_id);
   FINALIZE(insert_log);
   FINALIZE(insert_file);
+  FINALIZE(reset_deleted);
   FINALIZE(claim_file);
   FINALIZE(get_log);
   FINALIZE(replay_log);
@@ -1208,6 +1214,26 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
   bind_integer(why, imp->insert_run_job, 1, imp->run_id);
   bind_integer(why, imp->insert_run_job, 2, job);
   single_step(why, imp->insert_run_job, imp->debugdb);
+
+  // Additionally claim all output files into run_files for GC protection,
+  // and reset the deleted flag.
+  for (const auto &file : files) {
+    bind_integer(why, imp->claim_file, 1, imp->run_id);
+    bind_string(why, imp->claim_file, 2, file.path);
+    bind_string(why, imp->claim_file, 3, file.hash);
+    bind_string(why, imp->claim_file, 4, file.type);
+    bind_integer(why, imp->claim_file, 5, file.mode);
+    single_step(why, imp->claim_file, imp->debugdb);
+
+    // The ability to perform this update within the same `claim_file` statement is gated behind
+    // the `RETURNING` clause introduced in SQLite 3.35.0
+    bind_string(why, imp->reset_deleted, 1, file.path);
+    bind_string(why, imp->reset_deleted, 2, file.hash);
+    bind_string(why, imp->reset_deleted, 3, file.type);
+    bind_integer(why, imp->reset_deleted, 4, file.mode);
+    single_step(why, imp->reset_deleted, imp->debugdb);
+  }
+
   end_txn();
 
   return out;
