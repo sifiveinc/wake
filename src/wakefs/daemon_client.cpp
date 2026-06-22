@@ -44,11 +44,8 @@ constexpr int maxClientConnectWaitMs = 60 * 1000;
 // The user-id and group-id are used so that fuse daemons with different uid:gid pairs
 // running within the same build can co-exist without trying to share. The kernel
 // prevents cross-user sharing when the 'allow_other' fuse mount option is not used.
-// CAS and non-CAS daemons use distinct mount paths so they never share state if both modes
-// are in use simultaneously within the same directory.
 const std::string mount_path_id(const std::string &base_dir) {
-  std::string suffix = getenv("WAKE_CAS") ? ".cas" : "";
-  return base_dir + "/.fuse/" + std::to_string(getuid()) + "." + std::to_string(getgid()) + suffix;
+  return base_dir + "/.fuse/" + std::to_string(getuid()) + "." + std::to_string(getgid());
 }
 
 daemon_client::daemon_client(const std::string &base_dir)
@@ -87,18 +84,7 @@ bool daemon_client::connect(std::vector<visible_file> &visible, const std::strin
       const char *env[3] = {"PATH=/usr/bin:/bin:/usr/sbin:/sbin", 0, 0};
       if (getenv("DEBUG_FUSE_WAKE")) env[1] = "DEBUG_FUSE_WAKE=1";
 
-      // !!! XXX: Temporary guard for helping users combining this with transition-only wake code
-      // to ensure they don't accidentally use inappropriately.
-      if (!getenv("WAKE_CAS")) {
-        std::cerr << "For transition period, WAKE_CAS must be set to avoid mistaken use with "
-                     "transition-only user wake code."
-                  << std::endl;
-        exit(1);
-      }
-
-      // CAS is now mandatory - always pass --use-cas
-      execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), "--use-cas",
-             nullptr, env);
+      execle(executable.c_str(), "fuse-waked", mount_path.c_str(), delayStr.c_str(), nullptr, env);
       std::cerr << "execl " << executable << ": " << strerror(errno) << std::endl;
       exit(1);
     }
