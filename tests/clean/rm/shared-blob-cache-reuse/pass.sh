@@ -18,7 +18,7 @@ fail() {
 
 # Create two files with identical content (they will share a CAS blob).
 "${WAKE}" -q --no-tty makeShared shared1.txt shared2.txt
-"${WAKE}" --output shared1.txt
+"${WAKE}" --output shared1.txt | sed 's:\$ \(\(/usr\)\?/bin/\)dash:$ dash:'
 
 # Remove shared1.txt (blob should remain because shared2.txt still references it).
 "${WAKE}" --rm shared1.txt
@@ -29,7 +29,7 @@ fail() {
 
 # The file should be rematerialized, and the job information not indicate a new execution.
 test -f shared1.txt || fail "shared1.txt was not rematerialized"
-"${WAKE}" --output shared1.txt
+"${WAKE}" --output shared1.txt | sed 's:\$ \(\(/usr\)\?/bin/\)dash:$ dash:'
 
 # Verify that the deleted flag was reset to 0 when the file was rematerialized.
 DELETED=$(sqlite3 wake.db "SELECT deleted FROM files WHERE path='shared1.txt'")
