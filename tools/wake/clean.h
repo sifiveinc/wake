@@ -27,7 +27,8 @@
 // Remove specified paths from the workspace, and any corresponding, exclusively-owned CAS blobs.
 // Returns 0 on success, EX_USAGE (64) if `paths` is empty, and 1 on other errors, for easy CLI use.
 // wake_cwd is the path where wake was invoked, relative to the workspace root ("" or "subdir/").
+// If recursive is true, directories will recursively include all their children.
 int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::string> &paths,
-                 const std::string &wake_cwd);
+                 const std::string &wake_cwd, bool recursive);
 
 #endif

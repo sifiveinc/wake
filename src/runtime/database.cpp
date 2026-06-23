@@ -1985,10 +1985,11 @@ std::vector<std::string> Database::get_outputs() const {
   return out;
 }
 
-std::pair<std::vector<std::string>, std::vector<std::string>> Database::remove_blobs(
-    cas::Cas *cas, const std::vector<std::string> &paths) {
+Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
+                                                 const std::vector<std::string> &paths,
+                                                 bool recursive) {
   if (paths.empty()) {
-    return {{}, {}};
+    return {};
   }
 
   // Build a dynamic query for handling all files at once.  This allows defining query logic based
@@ -2012,19 +2013,23 @@ std::pair<std::vector<std::string>, std::vector<std::string>> Database::remove_b
   if (ret != SQLITE_OK) {
     std::cerr << why_paths << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
     end_txn();
-    return {{}, {}};
+    return {};
   }
   for (size_t i = 0; i < paths.size(); ++i) {
     bind_string(why_paths, paths_stmt, i + 1, paths[i]);
   }
 
   std::vector<std::string> paths_to_remove;
+  std::vector<std::string> directories_to_remove;
   while (sqlite3_step(paths_stmt) == SQLITE_ROW) {
     std::string path = rip_column(paths_stmt, 0);
     std::string type = rip_column(paths_stmt, 1);
     if (type == "directory") {
-      // TODO: This should recurse to all children of the directory.
-      std::cerr << "wake --rm: skipping directory: '" << path << "'" << std::endl;
+      if (recursive) {
+        directories_to_remove.emplace_back(path);
+      } else {
+        std::cerr << "wake --rm: skipping directory: '" << path << "'" << std::endl;
+      }
     } else {
       paths_to_remove.emplace_back(path);
     }
@@ -2033,9 +2038,58 @@ std::pair<std::vector<std::string>, std::vector<std::string>> Database::remove_b
   finish_stmt(why_paths, paths_stmt, imp->debugdb);
   sqlite3_finalize(paths_stmt);
 
+  // If recursive (i.e. directories were marked for further processing), query for
+  // all files with paths that start with any of those directories' paths.
+  if (!directories_to_remove.empty()) {
+    std::string dir_input_placeholders = "?";
+    for (size_t i = 1; i < directories_to_remove.size(); ++i) {
+      dir_input_placeholders += ", ?";
+    }
+
+    // Build a query to find all descendants of the directories.
+    std::string dir_children_prefix_test = "(path like ? || '/%')";
+    std::string dir_children_query =
+        "select distinct path, type from files where deleted = 0 and (" + dir_children_prefix_test;
+    for (size_t i = 1; i < directories_to_remove.size(); ++i) {
+      dir_children_query += " or " + dir_children_prefix_test;
+    }
+    // The exact order of the descendants isn't critical, so long as the parent/child relationships
+    // are predictable.  Thus, the length is used for a faster sort -- a child necessarily has a
+    // longer path than its parent, no matter where it might fall alphabetically among "cousins".
+    dir_children_query += ") order by length(path)";
+
+    sqlite3_stmt *dir_stmt = nullptr;
+    const char *why_dirs = "Could not get directory children";
+    ret = sqlite3_prepare_v2(imp->db, dir_children_query.c_str(), -1, &dir_stmt, 0);
+    if (ret != SQLITE_OK) {
+      std::cerr << why_dirs << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
+      end_txn();
+      return {};
+    }
+
+    for (size_t i = 0; i < directories_to_remove.size(); ++i) {
+      bind_string(why_dirs, dir_stmt, i + 1, directories_to_remove[i]);
+    }
+
+    while (sqlite3_step(dir_stmt) == SQLITE_ROW) {
+      std::string child_path = rip_column(dir_stmt, 0);
+      std::string child_type = rip_column(dir_stmt, 1);
+      if (child_type == "directory") {
+        // The prefix match (LIKE 'dir/%') naturally handles arbitrary nesting depth;
+        // e.g., 'a/' matches both 'a/b.txt' and 'a/subdir/c.txt'.
+        directories_to_remove.emplace_back(child_path);
+      } else {
+        paths_to_remove.emplace_back(child_path);
+      }
+    }
+
+    finish_stmt(why_dirs, dir_stmt, imp->debugdb);
+    sqlite3_finalize(dir_stmt);
+  }
+
   if (paths_to_remove.empty()) {
     end_txn();
-    return {{}, {}};
+    return {{}, directories_to_remove, {}};
   }
 
   // Second stage: Find hashes whose CAS blobs can be safely deleted.
@@ -2074,7 +2128,7 @@ std::pair<std::vector<std::string>, std::vector<std::string>> Database::remove_b
   if (ret != SQLITE_OK) {
     std::cerr << why_hashes << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
     end_txn();
-    return {{}, {}};
+    return {{}, directories_to_remove, {}};
   }
   for (size_t i = 0; i < paths_to_remove.size(); ++i) {
     bind_string(why_hashes, hashes_stmt, i + 1, paths_to_remove[i]);
@@ -2137,7 +2191,7 @@ std::pair<std::vector<std::string>, std::vector<std::string>> Database::remove_b
               << "The wake.db is likely corrupted." << std::endl;
 
     end_txn();
-    return {paths_to_remove, deleted_blobs};
+    return {paths_to_remove, directories_to_remove, deleted_blobs};
   }
   for (size_t i = 0; i < paths_to_remove.size(); ++i) {
     bind_string(why_mark, mark_stmt, i + 1, paths_to_remove[i]);
@@ -2149,7 +2203,7 @@ std::pair<std::vector<std::string>, std::vector<std::string>> Database::remove_b
   // Release the database lock now that both the CAS and the DB have been updated.
   end_txn();
 
-  return {paths_to_remove, deleted_blobs};
+  return {paths_to_remove, directories_to_remove, deleted_blobs};
 }
 
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,
