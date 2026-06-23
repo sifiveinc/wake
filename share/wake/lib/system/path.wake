@@ -211,7 +211,6 @@ export def computeHashes (prefix: String) (files: List String): Result (List Str
         identity
         identity
         False
-        | addCasHashEnv
 
     require Pass (Pair plan maybeStdinFilePath) = match useStdinFile
         True ->
@@ -275,10 +274,9 @@ def hashUsage =
 export target markFileCleanable (filepath: String): Result Unit Error =
     def hashPlan cmd =
         Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
-        | addCasHashEnv
 
     def job =
-        hashPlan ("<hash>", filepath, Nil)
+        hashPlan ("{wakePath}/../lib/wake/wake-hash", filepath, Nil)
         | setPlanLabel "hash: {filepath}"
         | setPlanFnOutputs (\_ filepath, Nil)
         | setPlanEcho logDebug

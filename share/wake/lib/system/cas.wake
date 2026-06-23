@@ -15,10 +15,6 @@
 
 package wake
 
-export def addCasHashEnv = match (getenv "WAKE_CAS")
-    Some value -> setPlanEnvVar "WAKE_CAS" value
-    None -> panic "WAKE_CAS must be set!"
-
 # Location of the cas root directory set in Wake's runtime.
 export def primCasDir: String =
     prim "cas_dir"

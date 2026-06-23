@@ -120,7 +120,6 @@ export def testPostgres _ =
     | setPlanEcho logReport
     | setPlanFnOutputs (\_ Nil)
     | setPlanPersistence Once
-    | addCasHashEnv
     | runJobWith localRunner
     | getJobStatus
     | inspectStatus
