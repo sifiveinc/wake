@@ -234,7 +234,8 @@ struct Database {
   // For each path, finds all jobs that output it, removes the CAS blobs, and marks them as deleted.
   // Does *not* remove blobs which are still referenced by other files.
   // If recursive is true, directories will recursively include all their children.
-  RemovalManifest remove_blobs(cas::Cas *cas, const std::vector<std::string> &paths, bool recursive);
+  RemovalManifest remove_blobs(cas::Cas *cas, const std::vector<std::string> &paths,
+                               bool recursive);
 
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode);
