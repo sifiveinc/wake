@@ -2171,8 +2171,9 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
   // query by performing the `update` within the vector iteration, but we've seen repeated queries
   // like that cause measurable overhead in the past.
   std::string mark_input_placeholders = "?";
+  size_t mark_input_count = directories_to_remove.size() + paths_to_remove.size();
   // TODO: Once this is extracted to a `blobs` table, it'll iterate over `deleted_blobs` instead.
-  for (size_t i = 1; i < paths_to_remove.size(); ++i) {
+  for (size_t i = 1; i < mark_input_count; ++i) {
     mark_input_placeholders += ", ?";
   }
   std::string mark_query =
@@ -2193,8 +2194,12 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
     end_txn();
     return {paths_to_remove, directories_to_remove, deleted_blobs};
   }
-  for (size_t i = 0; i < paths_to_remove.size(); ++i) {
-    bind_string(why_mark, mark_stmt, i + 1, paths_to_remove[i]);
+  size_t i = 0;
+  for (; i < directories_to_remove.size(); ++i) {
+    bind_string(why_mark, mark_stmt, i + 1, directories_to_remove[i]);
+  }
+  for (size_t j = 0; j < paths_to_remove.size(); ++i, ++j) {
+    bind_string(why_mark, mark_stmt, i + 1, paths_to_remove[j]);
   }
 
   single_step(why_mark, mark_stmt, imp->debugdb);
