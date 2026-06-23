@@ -8,8 +8,6 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-export WAKE_CAS=1
-
 rm -rf .build .fuse wake.db* wake.log output.txt result-a.txt result-b.txt
 
 echo "Fresh concurrent (if supported) runs:"

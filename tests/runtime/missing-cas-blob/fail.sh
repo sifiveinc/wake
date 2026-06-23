@@ -11,7 +11,6 @@ cleanup() {
 trap cleanup EXIT
 cleanup
 
-export WAKE_CAS=1
 "${WAKE}" -q -x 'test Unit'
 
 if [ ! -d .build/cas ]; then
