@@ -1,0 +1,10 @@
+# Test: duplicate paths on command line
+
+from wake import _
+
+export def makeFiles (args: List String) =
+    def content = "shared"
+
+    map (write _ content) args
+    | findFail
+    | rmap (\_ Unit)
