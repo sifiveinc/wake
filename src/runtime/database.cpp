@@ -67,6 +67,7 @@ struct Database::detail {
   sqlite3_stmt *insert_tree_file_id;
   sqlite3_stmt *insert_log;
   sqlite3_stmt *insert_file;
+  sqlite3_stmt *reset_deleted;
   sqlite3_stmt *claim_file;
   sqlite3_stmt *get_log;
   sqlite3_stmt *replay_log;
@@ -126,6 +127,7 @@ struct Database::detail {
         insert_tree_file_id(0),
         insert_log(0),
         insert_file(0),
+        reset_deleted(0),
         claim_file(0),
         get_log(0),
         replay_log(0),
@@ -377,7 +379,10 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "insert into log(job_id, descriptor, seconds, output)"
       " values(?, ?, ?, ?)";
   const char *sql_insert_file =
-      "insert or ignore into files(hash, type, mode, path) values (?, ?, ?, ?)";
+      "insert into files(hash, type, mode, path, deleted) values (?, ?, ?, ?, 0)"
+      " on conflict(hash, type, mode, path) do update set deleted=0";
+  const char *sql_reset_deleted =
+      "update files set deleted=0 where path=? and hash=? and type=? and mode=?";
   const char *sql_claim_file =
       "insert or ignore into run_files(run_id, file_id)"
       " values(?, (select file_id from files where path=? and hash=? and type=? and mode=?))";
@@ -385,7 +390,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "select output from log where job_id=? and descriptor=? order by log_id";
   const char *sql_replay_log = "select descriptor, output from log where job_id=? order by log_id";
   const char *sql_get_tree =
-      "select f.path, f.hash, f.type, f.mode, t.modified from filetree t, files f"
+      "select f.path, f.hash, f.type, f.mode, t.modified, f.deleted,"
+      " exists(select 1 from files f2 where f2.hash=f.hash and f2.deleted=false) as blob_available"
+      " from filetree t, files f"
       " where t.job_id=? and t.access=? and f.file_id=t.file_id order by t.tree_id";
   const char *sql_get_tree_id =
       "select f.path, f.file_id, t.modified from filetree t, files f"
@@ -472,6 +479,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "select f.path"
       " from filetree ft join files f on f.file_id=ft.file_id join jobs j on ft.job_id=j.job_id"
       " where ft.access = 2"
+      " and f.deleted = 0"
       " and substr(cast(j.commandline as varchar), 1, 8) != '<source>'"
       " and substr(cast(j.commandline as varchar), 1, 7) != '<claim>'";
   const char *sql_remove_output_files =
@@ -480,6 +488,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "   select f.file_id"
       "   from filetree ft join files f on f.file_id=ft.file_id join jobs j on ft.job_id=j.job_id"
       "   where ft.access = 2"
+      "   and f.deleted = 0"
       "   and substr(cast(j.commandline as varchar), 1, 8) != '<source>'"
       "   and substr(cast(j.commandline as varchar), 1, 7) != '<claim>'"
       " )";
@@ -520,7 +529,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
       "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?))"
       "select d.hash from disk_batch d where d.hash is not null and not exists ("
-      "  select 1 from files where hash=d.hash"
+      "  select 1 from files where hash=d.hash and deleted=0"
       ")";
 
 #define PREPARE(sql, member)                                                                     \
@@ -544,6 +553,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_insert_tree_file_id, insert_tree_file_id);
   PREPARE(sql_insert_log, insert_log);
   PREPARE(sql_insert_file, insert_file);
+  PREPARE(sql_reset_deleted, reset_deleted);
   PREPARE(sql_claim_file, claim_file);
   PREPARE(sql_get_log, get_log);
   PREPARE(sql_replay_log, replay_log);
@@ -614,6 +624,7 @@ void Database::close() {
   FINALIZE(insert_tree_file_id);
   FINALIZE(insert_log);
   FINALIZE(insert_file);
+  FINALIZE(reset_deleted);
   FINALIZE(claim_file);
   FINALIZE(get_log);
   FINALIZE(replay_log);
@@ -1173,11 +1184,19 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     std::string type = rip_column(imp->get_tree, 2);
     long mode = sqlite3_column_int64(imp->get_tree, 3);
     long modified = sqlite3_column_int64(imp->get_tree, 4);
-    files.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
+    bool deleted = sqlite3_column_int64(imp->get_tree, 5) != 0;
+    bool blob_available = sqlite3_column_int64(imp->get_tree, 6) != 0;
+    files.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified, deleted);
+    // If the CAS blob is not available (no live files reference this hash), invalidate the cache.
+    out.found = out.found && blob_available;
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
 
   end_txn();  // End RO transaction
+
+  if (!out.found) {
+    return out;
+  }
 
   // Only grab write lock if plan to actually use this!
   begin_rw_txn();
@@ -1197,6 +1216,26 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
   bind_integer(why, imp->insert_run_job, 1, imp->run_id);
   bind_integer(why, imp->insert_run_job, 2, job);
   single_step(why, imp->insert_run_job, imp->debugdb);
+
+  // Additionally claim all output files into run_files for GC protection,
+  // and reset the deleted flag.
+  for (const auto &file : files) {
+    bind_integer(why, imp->claim_file, 1, imp->run_id);
+    bind_string(why, imp->claim_file, 2, file.path);
+    bind_string(why, imp->claim_file, 3, file.hash);
+    bind_string(why, imp->claim_file, 4, file.type);
+    bind_integer(why, imp->claim_file, 5, file.mode);
+    single_step(why, imp->claim_file, imp->debugdb);
+
+    // The ability to perform this update within the same `claim_file` statement is gated behind
+    // the `RETURNING` clause introduced in SQLite 3.35.0
+    bind_string(why, imp->reset_deleted, 1, file.path);
+    bind_string(why, imp->reset_deleted, 2, file.hash);
+    bind_string(why, imp->reset_deleted, 3, file.type);
+    bind_integer(why, imp->reset_deleted, 4, file.mode);
+    single_step(why, imp->reset_deleted, imp->debugdb);
+  }
+
   end_txn();
 
   return out;
@@ -1514,7 +1553,8 @@ std::vector<FileReflection> Database::get_tree(int kind, long job) {
     std::string type = rip_column(imp->get_tree, 2);
     long mode = sqlite3_column_int64(imp->get_tree, 3);
     long modified = sqlite3_column_int64(imp->get_tree, 4);
-    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
+    bool deleted = sqlite3_column_int64(imp->get_tree, 5) != 0;
+    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified, deleted);
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
   end_txn();
@@ -1943,6 +1983,173 @@ std::vector<std::string> Database::get_outputs() const {
   end_txn();
 
   return out;
+}
+
+std::pair<std::vector<std::string>, std::vector<std::string>> Database::remove_blobs(
+    cas::Cas *cas, const std::vector<std::string> &paths) {
+  if (paths.empty()) {
+    return {{}, {}};
+  }
+
+  // Build a dynamic query for handling all files at once.  This allows defining query logic based
+  // on the operation in its entirety -- very helpful for determining what will still be referenced.
+  std::string paths_input_placeholders = "?";
+  for (size_t i = 1; i < paths.size(); ++i) {
+    paths_input_placeholders += ", ?";
+  }
+
+  // Begin exclusive transaction to prevent concurrent builds from referencing files we're in the
+  // middle of deleting.
+  begin_rw_txn();
+
+  // First stage: Get all requested paths that exist in the database.  Note that we'll need to
+  // unlink all requested files from the workspace, regardless of whether they share CAS blobs.
+  std::string paths_query = "select distinct path, type from files where path in (" +
+                            paths_input_placeholders + ") and deleted = 0";
+  sqlite3_stmt *paths_stmt = nullptr;
+  const char *why_paths = "Could not get paths to remove";
+  int ret = sqlite3_prepare_v2(imp->db, paths_query.c_str(), -1, &paths_stmt, 0);
+  if (ret != SQLITE_OK) {
+    std::cerr << why_paths << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
+    end_txn();
+    return {{}, {}};
+  }
+  for (size_t i = 0; i < paths.size(); ++i) {
+    bind_string(why_paths, paths_stmt, i + 1, paths[i]);
+  }
+
+  std::vector<std::string> paths_to_remove;
+  while (sqlite3_step(paths_stmt) == SQLITE_ROW) {
+    std::string path = rip_column(paths_stmt, 0);
+    std::string type = rip_column(paths_stmt, 1);
+    if (type == "directory") {
+      // TODO: This should recurse to all children of the directory.
+      std::cerr << "wake --rm: skipping directory: '" << path << "'" << std::endl;
+    } else {
+      paths_to_remove.emplace_back(path);
+    }
+  }
+
+  finish_stmt(why_paths, paths_stmt, imp->debugdb);
+  sqlite3_finalize(paths_stmt);
+
+  if (paths_to_remove.empty()) {
+    end_txn();
+    return {{}, {}};
+  }
+
+  // Second stage: Find hashes whose CAS blobs can be safely deleted.
+  // Only delete a blob if ALL files with that hash are being removed.
+  std::string hashes_input_placeholders = "(?)";
+  for (size_t i = 1; i < paths_to_remove.size(); ++i) {
+    hashes_input_placeholders += ", (?)";
+  }
+  std::string hashes_query =
+      // Use a CTE to define the removal list once for both select operations.
+      "with paths_to_remove(path) as (values " + hashes_input_placeholders +
+      ")"
+      " select distinct f1.hash from files f1"
+      " where f1.path in paths_to_remove"
+      " and f1.deleted = 0"
+      // Only include hashes where *all* files with that hash are in our removal list
+      // (i.e., exclude hashes that are shared with files we're *not* removing).
+      " and not exists ("
+      "   select 1 from files f2"
+      "   where f2.hash = f1.hash"
+      "   and f2.path not in paths_to_remove"
+      "   and f2.deleted = 0"
+      " )"
+      // For multi-wake safety, also exclude hashes currently in use by active runs.
+      " and not exists ("
+      "   select 1 from run_files rf"
+      "   join runs r on rf.run_id = r.run_id"
+      "   join files f2 on rf.file_id = f2.file_id"
+      "   where f2.hash = f1.hash"
+      "   and r.end_time is null"
+      " )";
+
+  sqlite3_stmt *hashes_stmt = nullptr;
+  const char *why_hashes = "Could not get blob hashes for paths";
+  ret = sqlite3_prepare_v2(imp->db, hashes_query.c_str(), -1, &hashes_stmt, 0);
+  if (ret != SQLITE_OK) {
+    std::cerr << why_hashes << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
+    end_txn();
+    return {{}, {}};
+  }
+  for (size_t i = 0; i < paths_to_remove.size(); ++i) {
+    bind_string(why_hashes, hashes_stmt, i + 1, paths_to_remove[i]);
+  }
+
+  std::vector<std::string> blobs_to_delete;
+  while (sqlite3_step(hashes_stmt) == SQLITE_ROW) {
+    std::string hash = rip_column(hashes_stmt, 0);
+    blobs_to_delete.emplace_back(hash);
+  }
+
+  finish_stmt(why_hashes, hashes_stmt, imp->debugdb);
+  sqlite3_finalize(hashes_stmt);
+
+  // Third stage: Remove the resulting blobs from the CAS (if any need deletion).
+  std::vector<std::string> deleted_blobs;
+  for (const auto hash : blobs_to_delete) {
+    // Parse and remove the CAS blob if CAS is available.
+    if (cas) {
+      auto hash_result = cas::ContentHash::from_hex(hash);
+      if (hash_result) {
+        auto remove_error = cas->remove_blob(*hash_result);
+        if (!remove_error) {
+          // Store hash for later batch database marking, if it was actually removed.
+          // If it wasn't this time, it likely was already handled in a previous iteration of this
+          // loop; either way, we don't have to visit this (twice) when updating the DB metadata.
+          deleted_blobs.push_back(hash);
+        }
+      }
+    } else {
+      // If there's no CAS, we still need to mark the hash for deletion in the database.
+      // This won't benefit from each element in the vector being unique, but some duplication
+      // here shouldn't cause any significant overhead.
+      deleted_blobs.push_back(hash);
+    }
+  }
+
+  // Mark all requested files as deleted in the database, even if their CAS blobs weren't removed
+  // (e.g., because they're shared with other files).  This *could* be implemented as a pre-prepared
+  // query by performing the `update` within the vector iteration, but we've seen repeated queries
+  // like that cause measurable overhead in the past.
+  std::string mark_input_placeholders = "?";
+  // TODO: Once this is extracted to a `blobs` table, it'll iterate over `deleted_blobs` instead.
+  for (size_t i = 1; i < paths_to_remove.size(); ++i) {
+    mark_input_placeholders += ", ?";
+  }
+  std::string mark_query =
+      "update files set deleted=1 where path in (" + mark_input_placeholders + ")";
+  sqlite3_stmt *mark_stmt = nullptr;
+  const char *why_mark = "Could not mark files as deleted";
+  ret = sqlite3_prepare_v2(imp->db, mark_query.c_str(), -1, &mark_stmt, 0);
+  if (ret != SQLITE_OK) {
+    // This is a bad place to error.  We can't roll back since we've already unlinked the CAS
+    // files, but we can't realistically recover since it was the same database update we'd need
+    // to make in order to rectify the database which caused the error in the first place.
+    // The best thing to do is to tell the user to run a (slower) command to check the DB and CAS
+    // against each other and fix any inconsistencies.
+    // TODO: Write that command and update this.  It'll likely be a manually-triggered deep GC.
+    std::cerr << why_mark << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl
+              << "The wake.db is likely corrupted." << std::endl;
+
+    end_txn();
+    return {paths_to_remove, deleted_blobs};
+  }
+  for (size_t i = 0; i < paths_to_remove.size(); ++i) {
+    bind_string(why_mark, mark_stmt, i + 1, paths_to_remove[i]);
+  }
+
+  single_step(why_mark, mark_stmt, imp->debugdb);
+  sqlite3_finalize(mark_stmt);
+
+  // Release the database lock now that both the CAS and the DB have been updated.
+  end_txn();
+
+  return {paths_to_remove, deleted_blobs};
 }
 
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,

@@ -1,0 +1,4 @@
+# write: output.txt 0644 (2) [inspect.visibility=hidden,]
+$ <write> -m 0644 output.txt
+# write: output.txt 0644 (2) [inspect.visibility=hidden,]
+$ <write> -m 0644 output.txt

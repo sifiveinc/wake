@@ -69,6 +69,7 @@ struct CommandLineOptions {
   bool clean;
   bool list_outputs;
   bool include_hidden;
+  bool rm;
   std::optional<bool> log_header_align;
   std::optional<bool> cache_miss_on_failure;
 
@@ -177,6 +178,7 @@ struct CommandLineOptions {
       {0, "stderr", GOPT_ARGUMENT_REQUIRED},
       {0, "clean", GOPT_ARGUMENT_FORBIDDEN },
       {0, "list-outputs", GOPT_ARGUMENT_FORBIDDEN },
+      {0, "rm", GOPT_ARGUMENT_FORBIDDEN },
       {0, "fd:3", GOPT_ARGUMENT_REQUIRED},
       {0, "fd:4", GOPT_ARGUMENT_REQUIRED},
       {0, "fd:5", GOPT_ARGUMENT_REQUIRED},
@@ -238,6 +240,7 @@ struct CommandLineOptions {
     clean = arg(options, "clean")->count;
     list_outputs = arg(options, "list-outputs")->count;
     include_hidden = arg(options, "include-hidden")->count;
+    rm = arg(options, "rm")->count;
 
     percent_str = arg(options, "percent")->argument;
     jobs_str = arg(options, "jobs")->argument;

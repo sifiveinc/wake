@@ -1,0 +1,14 @@
+# Test: Cache reuse works when one file is deleted but blob is still available via another file
+
+export def makeShared (args: List String) =
+    def content = "shared content for cache test"
+
+    # `write` sets `ReRun`, so use a version which allows testing the cache-hit behaviour.
+    def do file =
+        makeShellPlan "echo '{content}' > {file}" Nil
+        | runJobWith defaultRunner
+        | getJobOutput
+
+    map do args
+    | findFail
+    | rmap (\_ Unit)
