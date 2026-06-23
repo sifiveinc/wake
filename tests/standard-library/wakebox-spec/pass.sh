@@ -13,3 +13,5 @@ diff -u reference-compact.json output-compact.json
 
 "${WAKE:-wake}" --stdout=warning,report testWriteFull
 diff -u reference-full.json output-full.json
+
+rm output-minimal.json output-compact.json output-full.json
