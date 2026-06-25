@@ -2163,7 +2163,7 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
 
   // Third stage: Remove the resulting blobs from the CAS (if any need deletion).
   std::vector<std::string> deleted_blobs;
-  for (const auto hash : blobs_to_delete) {
+  for (const auto& hash : blobs_to_delete) {
     // Parse and remove the CAS blob if CAS is available.
     if (cas) {
       auto hash_result = cas::ContentHash::from_hex(hash);
