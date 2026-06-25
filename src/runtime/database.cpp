@@ -1986,7 +1986,7 @@ std::vector<std::string> Database::get_outputs() const {
 }
 
 Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
-                                                 const std::vector<std::string> &paths,
+                                                 const std::unordered_set<std::string> &paths,
                                                  bool recursive) {
   if (paths.empty()) {
     return {};
@@ -1995,6 +1995,7 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
   std::vector<std::string> paths_to_remove;
   std::vector<std::string> directories_to_remove;
   std::vector<std::string> blobs_to_delete;
+  std::vector<std::string> skipped_paths;
 
   // Query SQLite's parameter limit once at the start.  `SQLITE_MAX_VARIABLE_NUMBER` would provide
   // a constant based on the SQLite version, but it theoretically could have been lowered.
@@ -2007,6 +2008,7 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
   // First stage: Get all requested paths that exist in the database.  Note that we'll need to
   // unlink all requested files from the workspace, regardless of whether they share CAS blobs.
   const char *why_paths = "Could not get paths to remove";
+  auto paths_iter = paths.begin();
   for (size_t batch_start = 0; batch_start < paths.size(); batch_start += max_params) {
     size_t batch_size = std::min(max_params, paths.size() - batch_start);
 
@@ -2024,8 +2026,9 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
       end_txn();
       return {};
     }
-    for (size_t i = 0; i < batch_size; ++i) {
-      bind_string(why_paths, paths_stmt, i + 1, paths[batch_start + i]);
+    for (size_t i = 1; i <= batch_size; ++i) {
+      bind_string(why_paths, paths_stmt, i, *paths_iter);
+      ++paths_iter;
     }
 
     while (sqlite3_step(paths_stmt) == SQLITE_ROW) {
@@ -2036,6 +2039,7 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
           directories_to_remove.emplace_back(path);
         } else {
           std::cerr << "wake --rm: skipping directory: '" << path << "'" << std::endl;
+          skipped_paths.emplace_back(path);
         }
       } else {
         paths_to_remove.emplace_back(path);
@@ -2105,7 +2109,7 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
 
   if (paths_to_remove.empty()) {
     end_txn();
-    return {{}, directories_to_remove, {}};
+    return {{}, directories_to_remove, {}, skipped_paths};
   }
 
   // Second stage: Find hashes whose CAS blobs can be safely deleted.
@@ -2147,7 +2151,7 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
     if (ret != SQLITE_OK) {
       std::cerr << why_hashes << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
       end_txn();
-      return {{}, directories_to_remove, {}};
+      return {{}, directories_to_remove, {}, skipped_paths};
     }
     for (size_t i = 0; i < batch_size; ++i) {
       bind_string(why_hashes, hashes_stmt, i + 1, paths_to_remove[batch_start + i]);
@@ -2219,7 +2223,7 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
                 << "The wake.db is likely corrupted." << std::endl;
 
       end_txn();
-      return {paths_to_remove, directories_to_remove, deleted_blobs};
+      return {paths_to_remove, directories_to_remove, deleted_blobs, skipped_paths};
     }
     for (size_t i = 0; i < batch_size; ++i) {
       bind_string(why_mark, mark_stmt, i + 1, all_paths_to_mark[batch_start + i]);
@@ -2232,7 +2236,7 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
   // Release the database lock now that both the CAS and the DB have been updated.
   end_txn();
 
-  return {paths_to_remove, directories_to_remove, deleted_blobs};
+  return {paths_to_remove, directories_to_remove, deleted_blobs, skipped_paths};
 }
 
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,
