@@ -156,6 +156,18 @@ concurrent builds that might still be using the files being deleted. Paths may
 be given relative to the current directory, including from a subdirectory of the
 workspace.
 
+By default, directories are skipped with a warning. To remove directories and
+all of their contents, pass `-r`/`--recursive`:
+
+```
+wake --rm -r <path> [<path> ...]
+```
+
+With `--recursive`, every file beneath the given directories is removed at
+arbitrary nesting depth, and the now-empty directories are removed deepest-first.
+The same shared-content safety applies: a CAS blob is only deleted when every
+path referencing it is part of the removal.
+
 ### Cleaning up staging leftovers
 
 `.build/cas/staging/` can accumulate leftover files after a crash. If it grows
