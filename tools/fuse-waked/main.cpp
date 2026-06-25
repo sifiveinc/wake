@@ -1508,8 +1508,8 @@ static int wakefuse_link(const char *from, const char *to) {
     const StagedFileData *src_sf = std::get_if<StagedFileData>(&src.data);
     assert(src_sf && "must be staged file");
 
-    std::string new_staging_path = g_staging_dir + "/" + std::to_string(getpid()) + "_" +
-                                   std::to_string(++g_staging_counter);
+    std::string new_staging_path =
+        g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
     int res = link(src_staging_path->data(), new_staging_path.c_str());
     if (res < 0) return -errno;
 
