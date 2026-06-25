@@ -1,4 +1,4 @@
-#  (1)
-$ dash -c echo 'test content' > file.txt
-#  (5)
-$ dash -c echo 'test content' > file.txt
+#  (2)
+$ dash -c echo 'test content' > dir/file.txt
+#  (12)
+$ dash -c echo 'test content' > dir/file.txt

@@ -927,7 +927,7 @@ int main(int argc, char **argv) {
       paths.push_back(clo.argv[i]);
     }
 
-    return remove_paths(db, cas_ctx, paths, wake_cwd);
+    return remove_paths(db, cas_ctx, paths, wake_cwd, clo.recursive);
   }
 
   // seed the keyed hash function

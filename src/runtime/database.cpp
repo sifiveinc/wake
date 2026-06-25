@@ -1985,18 +1985,20 @@ std::vector<std::string> Database::get_outputs() const {
   return out;
 }
 
-std::pair<std::vector<std::string>, std::vector<std::string>> Database::remove_blobs(
-    cas::Cas *cas, const std::vector<std::string> &paths) {
+Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
+                                                 const std::vector<std::string> &paths,
+                                                 bool recursive) {
   if (paths.empty()) {
-    return {{}, {}};
+    return {};
   }
 
-  // Build a dynamic query for handling all files at once.  This allows defining query logic based
-  // on the operation in its entirety -- very helpful for determining what will still be referenced.
-  std::string paths_input_placeholders = "?";
-  for (size_t i = 1; i < paths.size(); ++i) {
-    paths_input_placeholders += ", ?";
-  }
+  std::vector<std::string> paths_to_remove;
+  std::vector<std::string> directories_to_remove;
+  std::vector<std::string> blobs_to_delete;
+
+  // Query SQLite's parameter limit once at the start.  `SQLITE_MAX_VARIABLE_NUMBER` would provide
+  // a constant based on the SQLite version, but it theoretically could have been lowered.
+  const size_t max_params = sqlite3_limit(imp->db, SQLITE_LIMIT_VARIABLE_NUMBER, -1);
 
   // Begin exclusive transaction to prevent concurrent builds from referencing files we're in the
   // middle of deleting.
@@ -2004,94 +2006,165 @@ std::pair<std::vector<std::string>, std::vector<std::string>> Database::remove_b
 
   // First stage: Get all requested paths that exist in the database.  Note that we'll need to
   // unlink all requested files from the workspace, regardless of whether they share CAS blobs.
-  std::string paths_query = "select distinct path, type from files where path in (" +
-                            paths_input_placeholders + ") and deleted = 0";
-  sqlite3_stmt *paths_stmt = nullptr;
   const char *why_paths = "Could not get paths to remove";
-  int ret = sqlite3_prepare_v2(imp->db, paths_query.c_str(), -1, &paths_stmt, 0);
-  if (ret != SQLITE_OK) {
-    std::cerr << why_paths << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
-    end_txn();
-    return {{}, {}};
-  }
-  for (size_t i = 0; i < paths.size(); ++i) {
-    bind_string(why_paths, paths_stmt, i + 1, paths[i]);
+  for (size_t batch_start = 0; batch_start < paths.size(); batch_start += max_params) {
+    size_t batch_size = std::min(max_params, paths.size() - batch_start);
+
+    std::string input_placeholders = "?";
+    for (size_t i = 1; i < batch_size; ++i) {
+      input_placeholders += ", ?";
+    }
+
+    std::string paths_query = "select distinct path, type from files where path in (" +
+                              input_placeholders + ") and deleted = 0";
+    sqlite3_stmt *paths_stmt = nullptr;
+    int ret = sqlite3_prepare_v2(imp->db, paths_query.c_str(), -1, &paths_stmt, 0);
+    if (ret != SQLITE_OK) {
+      std::cerr << why_paths << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
+      end_txn();
+      return {};
+    }
+    for (size_t i = 0; i < batch_size; ++i) {
+      bind_string(why_paths, paths_stmt, i + 1, paths[batch_start + i]);
+    }
+
+    while (sqlite3_step(paths_stmt) == SQLITE_ROW) {
+      std::string path = rip_column(paths_stmt, 0);
+      std::string type = rip_column(paths_stmt, 1);
+      if (type == "directory") {
+        if (recursive) {
+          directories_to_remove.emplace_back(path);
+        } else {
+          std::cerr << "wake --rm: skipping directory: '" << path << "'" << std::endl;
+        }
+      } else {
+        paths_to_remove.emplace_back(path);
+      }
+    }
+
+    finish_stmt(why_paths, paths_stmt, imp->debugdb);
+    sqlite3_finalize(paths_stmt);
   }
 
-  std::vector<std::string> paths_to_remove;
-  while (sqlite3_step(paths_stmt) == SQLITE_ROW) {
-    std::string path = rip_column(paths_stmt, 0);
-    std::string type = rip_column(paths_stmt, 1);
-    if (type == "directory") {
-      // TODO: This should recurse to all children of the directory.
-      std::cerr << "wake --rm: skipping directory: '" << path << "'" << std::endl;
-    } else {
-      paths_to_remove.emplace_back(path);
+  // If recursive (i.e. directories were marked for further processing), query for
+  // all files with paths that start with any of those directories' paths.
+  const char *why_dirs = "Could not get directory children";
+  if (!directories_to_remove.empty()) {
+    // `directories_to_remove` will grow over the course of this loop, but we only care about the
+    // original contents -- the new elements are just implicit descendents being made explicit.
+    size_t original_directory_size = directories_to_remove.size();
+    for (size_t batch_start = 0; batch_start < original_directory_size; batch_start += max_params) {
+      size_t batch_size = std::min(max_params, original_directory_size - batch_start);
+
+      std::string dir_input_placeholders = "?";
+      for (size_t i = 1; i < batch_size; ++i) {
+        dir_input_placeholders += ", ?";
+      }
+
+      // Build a query to find all descendants of the directories.
+      std::string dir_children_prefix_test = "(path like ? || '/%')";
+      std::string dir_children_query =
+          "select distinct path, type from files where deleted = 0 and (" +
+          dir_children_prefix_test;
+      for (size_t i = 1; i < batch_size; ++i) {
+        dir_children_query += " or " + dir_children_prefix_test;
+      }
+      // The exact order of the descendants isn't critical, so long as the parent/child
+      // relationships are predictable.  Thus, the length is used for a faster sort --
+      // a child necessarily has a longer path than its parent, no matter where it might
+      // fall alphabetically among "cousins".
+      dir_children_query += ") order by length(path)";
+
+      sqlite3_stmt *dir_stmt = nullptr;
+      int ret = sqlite3_prepare_v2(imp->db, dir_children_query.c_str(), -1, &dir_stmt, 0);
+      if (ret != SQLITE_OK) {
+        std::cerr << why_dirs << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
+        end_txn();
+        return {};
+      }
+      for (size_t i = 0; i < batch_size; ++i) {
+        bind_string(why_dirs, dir_stmt, i + 1, directories_to_remove[batch_start + i]);
+      }
+
+      while (sqlite3_step(dir_stmt) == SQLITE_ROW) {
+        std::string child_path = rip_column(dir_stmt, 0);
+        std::string child_type = rip_column(dir_stmt, 1);
+        if (child_type == "directory") {
+          // The prefix match (LIKE 'dir/%') naturally handles arbitrary nesting depth;
+          // e.g., 'a/' matches both 'a/b.txt' and 'a/subdir/c.txt'.
+          directories_to_remove.emplace_back(child_path);
+        } else {
+          paths_to_remove.emplace_back(child_path);
+        }
+      }
+
+      finish_stmt(why_dirs, dir_stmt, imp->debugdb);
+      sqlite3_finalize(dir_stmt);
     }
   }
 
-  finish_stmt(why_paths, paths_stmt, imp->debugdb);
-  sqlite3_finalize(paths_stmt);
-
   if (paths_to_remove.empty()) {
     end_txn();
-    return {{}, {}};
+    return {{}, directories_to_remove, {}};
   }
 
   // Second stage: Find hashes whose CAS blobs can be safely deleted.
   // Only delete a blob if ALL files with that hash are being removed.
-  std::string hashes_input_placeholders = "(?)";
-  for (size_t i = 1; i < paths_to_remove.size(); ++i) {
-    hashes_input_placeholders += ", (?)";
-  }
-  std::string hashes_query =
-      // Use a CTE to define the removal list once for both select operations.
-      "with paths_to_remove(path) as (values " + hashes_input_placeholders +
-      ")"
-      " select distinct f1.hash from files f1"
-      " where f1.path in paths_to_remove"
-      " and f1.deleted = 0"
-      // Only include hashes where *all* files with that hash are in our removal list
-      // (i.e., exclude hashes that are shared with files we're *not* removing).
-      " and not exists ("
-      "   select 1 from files f2"
-      "   where f2.hash = f1.hash"
-      "   and f2.path not in paths_to_remove"
-      "   and f2.deleted = 0"
-      " )"
-      // For multi-wake safety, also exclude hashes currently in use by active runs.
-      " and not exists ("
-      "   select 1 from run_files rf"
-      "   join runs r on rf.run_id = r.run_id"
-      "   join files f2 on rf.file_id = f2.file_id"
-      "   where f2.hash = f1.hash"
-      "   and r.end_time is null"
-      " )";
-
-  sqlite3_stmt *hashes_stmt = nullptr;
   const char *why_hashes = "Could not get blob hashes for paths";
-  ret = sqlite3_prepare_v2(imp->db, hashes_query.c_str(), -1, &hashes_stmt, 0);
-  if (ret != SQLITE_OK) {
-    std::cerr << why_hashes << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
-    end_txn();
-    return {{}, {}};
-  }
-  for (size_t i = 0; i < paths_to_remove.size(); ++i) {
-    bind_string(why_hashes, hashes_stmt, i + 1, paths_to_remove[i]);
-  }
+  for (size_t batch_start = 0; batch_start < paths_to_remove.size(); batch_start += max_params) {
+    size_t batch_size = std::min(max_params, paths_to_remove.size() - batch_start);
 
-  std::vector<std::string> blobs_to_delete;
-  while (sqlite3_step(hashes_stmt) == SQLITE_ROW) {
-    std::string hash = rip_column(hashes_stmt, 0);
-    blobs_to_delete.emplace_back(hash);
-  }
+    std::string hashes_input_placeholders = "(?)";
+    for (size_t i = 1; i < batch_size; ++i) {
+      hashes_input_placeholders += ", (?)";
+    }
+    std::string hashes_query =
+        // Use a CTE to define the removal list once for both select operations.
+        "with paths_to_remove(path) as (values " + hashes_input_placeholders +
+        ")"
+        " select distinct f1.hash from files f1"
+        " where f1.path in paths_to_remove"
+        " and f1.deleted = 0"
+        // Only include hashes where *all* files with that hash are in our removal list
+        // (i.e., exclude hashes that are shared with files we're *not* removing).
+        " and not exists ("
+        "   select 1 from files f2"
+        "   where f2.hash = f1.hash"
+        "   and f2.path not in paths_to_remove"
+        "   and f2.deleted = 0"
+        " )"
+        // For multi-wake safety, also exclude hashes currently in use by active runs.
+        " and not exists ("
+        "   select 1 from run_files rf"
+        "   join runs r on rf.run_id = r.run_id"
+        "   join files f2 on rf.file_id = f2.file_id"
+        "   where f2.hash = f1.hash"
+        "   and r.end_time is null"
+        " )";
 
-  finish_stmt(why_hashes, hashes_stmt, imp->debugdb);
-  sqlite3_finalize(hashes_stmt);
+    sqlite3_stmt *hashes_stmt = nullptr;
+    int ret = sqlite3_prepare_v2(imp->db, hashes_query.c_str(), -1, &hashes_stmt, 0);
+    if (ret != SQLITE_OK) {
+      std::cerr << why_hashes << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
+      end_txn();
+      return {{}, directories_to_remove, {}};
+    }
+    for (size_t i = 0; i < batch_size; ++i) {
+      bind_string(why_hashes, hashes_stmt, i + 1, paths_to_remove[batch_start + i]);
+    }
+
+    while (sqlite3_step(hashes_stmt) == SQLITE_ROW) {
+      std::string hash = rip_column(hashes_stmt, 0);
+      blobs_to_delete.emplace_back(hash);
+    }
+
+    finish_stmt(why_hashes, hashes_stmt, imp->debugdb);
+    sqlite3_finalize(hashes_stmt);
+  }
 
   // Third stage: Remove the resulting blobs from the CAS (if any need deletion).
   std::vector<std::string> deleted_blobs;
-  for (const auto hash : blobs_to_delete) {
+  for (const auto &hash : blobs_to_delete) {
     // Parse and remove the CAS blob if CAS is available.
     if (cas) {
       auto hash_result = cas::ContentHash::from_hex(hash);
@@ -2112,44 +2185,54 @@ std::pair<std::vector<std::string>, std::vector<std::string>> Database::remove_b
     }
   }
 
+  // Combine directories and paths into a single vector for easier batching.
+  std::vector<std::string> all_paths_to_mark;
+  all_paths_to_mark.reserve(directories_to_remove.size() + paths_to_remove.size());
+  all_paths_to_mark.insert(all_paths_to_mark.end(), directories_to_remove.begin(),
+                           directories_to_remove.end());
+  all_paths_to_mark.insert(all_paths_to_mark.end(), paths_to_remove.begin(), paths_to_remove.end());
+
   // Mark all requested files as deleted in the database, even if their CAS blobs weren't removed
   // (e.g., because they're shared with other files).  This *could* be implemented as a pre-prepared
   // query by performing the `update` within the vector iteration, but we've seen repeated queries
   // like that cause measurable overhead in the past.
-  std::string mark_input_placeholders = "?";
-  // TODO: Once this is extracted to a `blobs` table, it'll iterate over `deleted_blobs` instead.
-  for (size_t i = 1; i < paths_to_remove.size(); ++i) {
-    mark_input_placeholders += ", ?";
-  }
-  std::string mark_query =
-      "update files set deleted=1 where path in (" + mark_input_placeholders + ")";
-  sqlite3_stmt *mark_stmt = nullptr;
   const char *why_mark = "Could not mark files as deleted";
-  ret = sqlite3_prepare_v2(imp->db, mark_query.c_str(), -1, &mark_stmt, 0);
-  if (ret != SQLITE_OK) {
-    // This is a bad place to error.  We can't roll back since we've already unlinked the CAS
-    // files, but we can't realistically recover since it was the same database update we'd need
-    // to make in order to rectify the database which caused the error in the first place.
-    // The best thing to do is to tell the user to run a (slower) command to check the DB and CAS
-    // against each other and fix any inconsistencies.
-    // TODO: Write that command and update this.  It'll likely be a manually-triggered deep GC.
-    std::cerr << why_mark << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl
-              << "The wake.db is likely corrupted." << std::endl;
+  for (size_t batch_start = 0; batch_start < all_paths_to_mark.size(); batch_start += max_params) {
+    size_t batch_size = std::min(max_params, all_paths_to_mark.size() - batch_start);
 
-    end_txn();
-    return {paths_to_remove, deleted_blobs};
-  }
-  for (size_t i = 0; i < paths_to_remove.size(); ++i) {
-    bind_string(why_mark, mark_stmt, i + 1, paths_to_remove[i]);
-  }
+    std::string mark_input_placeholders = "?";
+    for (size_t i = 1; i < batch_size; ++i) {
+      mark_input_placeholders += ", ?";
+    }
+    std::string mark_query =
+        "update files set deleted=1 where path in (" + mark_input_placeholders + ")";
+    sqlite3_stmt *mark_stmt = nullptr;
+    int ret = sqlite3_prepare_v2(imp->db, mark_query.c_str(), -1, &mark_stmt, 0);
+    if (ret != SQLITE_OK) {
+      // This is a bad place to error.  We can't roll back since we've already unlinked the CAS
+      // files, but we can't realistically recover since it was the same database update we'd need
+      // to make in order to rectify the database which caused the error in the first place.
+      // The best thing to do is to tell the user to run a (slower) command to check the DB and CAS
+      // against each other and fix any inconsistencies.
+      // TODO: Write that command and update this.  It'll likely be a manually-triggered deep GC.
+      std::cerr << why_mark << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl
+                << "The wake.db is likely corrupted." << std::endl;
 
-  single_step(why_mark, mark_stmt, imp->debugdb);
-  sqlite3_finalize(mark_stmt);
+      end_txn();
+      return {paths_to_remove, directories_to_remove, deleted_blobs};
+    }
+    for (size_t i = 0; i < batch_size; ++i) {
+      bind_string(why_mark, mark_stmt, i + 1, all_paths_to_mark[batch_start + i]);
+    }
+
+    single_step(why_mark, mark_stmt, imp->debugdb);
+    sqlite3_finalize(mark_stmt);
+  }
 
   // Release the database lock now that both the CAS and the DB have been updated.
   end_txn();
 
-  return {paths_to_remove, deleted_blobs};
+  return {paths_to_remove, directories_to_remove, deleted_blobs};
 }
 
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,

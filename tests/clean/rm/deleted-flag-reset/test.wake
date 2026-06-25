@@ -1,11 +1,13 @@
-# Test: --rm correctly resets deleted flag when file is re-created
+# Test: --rm correctly resets deleted flag when file or directory is re-created
 
 export def makeFile (args: List String) =
     def content = "test content"
 
     # `write` sets `ReRun`, so use a version which allows testing the cache-hit behaviour.
     def do file =
-        makeShellPlan "echo '{content}' > {file}" Nil
+        require Pass dir = mkdir (dirname file)
+
+        makeShellPlan "echo '{content}' > {file}" (dir, Nil)
         | runJobWith defaultRunner
         | getJobOutput
 

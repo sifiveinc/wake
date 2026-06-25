@@ -30,7 +30,7 @@
 #include "util/execpath.h"
 
 int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::string> &paths,
-                 const std::string &wake_cwd) {
+                 const std::string &wake_cwd, bool recursive) {
   if (paths.empty()) {
     std::cerr << "error: no paths specified" << std::endl;
     return EX_USAGE;
@@ -80,13 +80,20 @@ int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::strin
   }
 
   // Remove files from database and CAS within a single transaction.
-  // `deleted_blobs` is currently unused, but is returned for future reporting (e.g. freed space).
-  auto [paths_to_remove, _] = db.remove_blobs(cas, normalized_paths);
+  auto result = db.remove_blobs(cas, normalized_paths, recursive);
 
   // Delete the returned workspace files outside of that transaction.
-  for (const auto &path : paths_to_remove) {
+  for (const auto &path : result.files) {
     if (unlink(path.c_str()) != 0 && errno != ENOENT) {
       std::cerr << "warning: failed to remove file '" << path << "': " << strerror(errno)
+                << std::endl;
+    }
+  }
+
+  // Remove directories in reverse order (deepest first) to ensure children are removed first.
+  for (auto it = result.directories.rbegin(); it != result.directories.rend(); ++it) {
+    if (rmdir(it->c_str()) != 0 && errno != ENOENT) {
+      std::cerr << "warning: failed to remove directory '" << *it << "': " << strerror(errno)
                 << std::endl;
     }
   }
