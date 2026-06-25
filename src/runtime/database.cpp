@@ -2064,7 +2064,8 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
       // Build a query to find all descendants of the directories.
       std::string dir_children_prefix_test = "(path like ? || '/%')";
       std::string dir_children_query =
-          "select distinct path, type from files where deleted = 0 and (" + dir_children_prefix_test;
+          "select distinct path, type from files where deleted = 0 and (" +
+          dir_children_prefix_test;
       for (size_t i = 1; i < batch_size; ++i) {
         dir_children_query += " or " + dir_children_prefix_test;
       }
@@ -2163,7 +2164,7 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
 
   // Third stage: Remove the resulting blobs from the CAS (if any need deletion).
   std::vector<std::string> deleted_blobs;
-  for (const auto& hash : blobs_to_delete) {
+  for (const auto &hash : blobs_to_delete) {
     // Parse and remove the CAS blob if CAS is available.
     if (cas) {
       auto hash_result = cas::ContentHash::from_hex(hash);
@@ -2187,7 +2188,8 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
   // Combine directories and paths into a single vector for easier batching.
   std::vector<std::string> all_paths_to_mark;
   all_paths_to_mark.reserve(directories_to_remove.size() + paths_to_remove.size());
-  all_paths_to_mark.insert(all_paths_to_mark.end(), directories_to_remove.begin(), directories_to_remove.end());
+  all_paths_to_mark.insert(all_paths_to_mark.end(), directories_to_remove.begin(),
+                           directories_to_remove.end());
   all_paths_to_mark.insert(all_paths_to_mark.end(), paths_to_remove.begin(), paths_to_remove.end());
 
   // Mark all requested files as deleted in the database, even if their CAS blobs weren't removed
