@@ -496,7 +496,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "   and substr(cast(j.commandline as varchar), 1, 8) != '<source>'"
       "   and substr(cast(j.commandline as varchar), 1, 7) != '<claim>'"
       " )";
-  const char *sql_get_all_file_paths = "select file_id, path, type from files";
+  const char *sql_get_all_file_paths = "select file_id, path, type, deleted from files";
   const char *sql_delete_jobs_by_dead_file =
       "delete from jobs where job_id in"
       " (select distinct job_id from filetree where file_id=?)";
@@ -1564,7 +1564,8 @@ std::optional<size_t> Database::prune_to_workspace(
     int64_t file_id = sqlite3_column_int64(imp->get_all_file_paths, 0);
     const char *path = (const char *)sqlite3_column_text(imp->get_all_file_paths, 1);
     const char *type = (const char *)sqlite3_column_text(imp->get_all_file_paths, 2);
-    if (path && type && !exists(path, type)) dead_files.push_back(file_id);
+    bool deleted = sqlite3_column_int64(imp->get_all_file_paths, 3) != 0;
+    if (path && type && (deleted || !exists(path, type))) dead_files.push_back(file_id);
   }
   finish_stmt(why, imp->get_all_file_paths, imp->debugdb);
 
