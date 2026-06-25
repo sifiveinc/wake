@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "cas/cas.h"
 #include "json/json5.h"
 #include "run_lock.h"
 #include "wcl/function_ref.h"
@@ -35,13 +36,15 @@ struct FileReflection {
   std::string hash;
   long mode;
   long modified;  // mtime in nanoseconds
+  bool deleted;   // true if CAS blob has been removed
   FileReflection(std::string &&path_, std::string &&type_, std::string &&hash_, long mode_,
-                 long modified_)
+                 long modified_, bool deleted_ = false)
       : path(std::move(path_)),
         type(std::move(type_)),
         hash(std::move(hash_)),
         mode(mode_),
-        modified(modified_) {}
+        modified(modified_),
+        deleted(deleted_) {}
 };
 
 struct Usage {
@@ -226,6 +229,19 @@ struct Database {
   // Returns the number of jobs pruned, or empty if refused due to active builds.
   std::optional<size_t> prune_to_workspace(
       wcl::function_ref<bool(const std::string &path, const std::string &type)> exists);
+
+  struct RemovalManifest {
+    std::vector<std::string> files;          // Files which need to be unlinked from the workspace
+    std::vector<std::string> directories;    // Directories to rmdir (ordered shallowest-first)
+    std::vector<std::string> deleted_blobs;  // Hashes of CAS blobs *already* removed
+  };
+
+  // Remove files from workspace and CAS within a single exclusive transaction.
+  // For each path, finds all jobs that output it, removes the CAS blobs, and marks them as deleted.
+  // Does *not* remove blobs which are still referenced by other files.
+  // If recursive is true, directories will recursively include all their children.
+  RemovalManifest remove_blobs(cas::Cas *cas, const std::vector<std::string> &paths,
+                               bool recursive);
 
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode);

@@ -19,6 +19,11 @@
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 
+// File tree access types (from database.cpp)
+#define VISIBLE 0
+#define INPUT 1
+#define OUTPUT 2
+
 #include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
@@ -41,6 +46,7 @@
 #include <set>
 #include <sstream>
 
+#include "clean.h"
 #include "cli_options.h"
 #include "describe.h"
 #include "dst/bind.h"
@@ -415,6 +421,7 @@ void print_help(const char *argv0) {
     << "    --list-outputs     List all job outputs"                                       << std::endl
     << "    --clean            Delete all job outputs"                                     << std::endl
     << "    --prune            Remove DB entries for jobs whose files no longer exist"     << std::endl
+    << "    --rm               Remove files from database (paths as arguments)"            << std::endl
     << "    --input    -i FILE Capture jobs which read FILE. (repeat for multiple files)"  << std::endl
     << "    --output   -o FILE Capture jobs which wrote FILE. (repeat for multiple files)" << std::endl
     << "    --label       GLOB Capture jobs where label matches GLOB"                      << std::endl
@@ -795,6 +802,10 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // Initialize CAS context (needed for --rm and other operations)
+  const std::string cas_dir = ".build/cas";
+  CASContext cas_ctx(cas_dir);
+
   if (!is_db_inspection) {
     std::error_code ec;
     std::filesystem::create_directories(".build/staging", ec);
@@ -925,6 +936,23 @@ int main(int argc, char **argv) {
         std::cerr << "CAS GC encountered errors (prune result unaffected)" << std::endl;
     }
     return 0;
+  }
+
+  if (clo.rm) {
+    std::string fail =
+        db.open(/*wait=*/false, /*memory=*/false, /*tty=*/isatty(0), /*readonly=*/false);
+    if (!fail.empty()) {
+      std::cerr << "error: " << fail << std::endl;
+      return EXIT_FAILURE;
+    }
+
+    // Collect all paths to remove.
+    std::vector<std::string> paths;
+    for (int i = 1; i < clo.argc; i++) {
+      paths.push_back(clo.argv[i]);
+    }
+
+    return remove_paths(db, cas_ctx, paths, wake_cwd, clo.recursive);
   }
 
   // seed the keyed hash function
@@ -1176,9 +1204,6 @@ int main(int argc, char **argv) {
                     clo.batch);
   StringInfo info(clo.verbose, clo.debug, clo.quiet, VERSION_STR, wcl::make_canonical(wake_cwd),
                   cmdline);
-
-  const std::string cas_dir = ".build/cas";
-  CASContext cas_ctx(cas_dir);
 
   PrimMap pmap = prim_register_all(&info, &jobtable, &cas_ctx);
 

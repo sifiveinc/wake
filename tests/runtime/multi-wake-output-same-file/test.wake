@@ -1,0 +1,24 @@
+
+export def goX (s : String) =
+    makeExecPlan ("sh", "-c", "echo {s} > shared.txt", Nil) Nil
+    | setPlanLabel "goX - {s}"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutput
+
+export def goY (s : String) =
+    makeExecPlan ("sh", "-c", "echo {s} > shared.txt", Nil) Nil
+    | setPlanLabel "goY - {s}"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutput
+
+export def test_same Unit =
+    require Pass x = goX "x"
+    require Pass y = goY "x"
+    Pass (Pair x y)
+
+export def test_diff Unit =
+    require Pass x = goX "xx"
+    require Pass y = goY "yy"
+    Pass (Pair x y)

@@ -1,0 +1,5 @@
+# write: shared1.txt 0644 (2) [inspect.visibility=hidden,]
+$ <write> -m 0644 shared1.txt
+
+# write: shared2.txt 0644 (4) [inspect.visibility=hidden,]
+$ <write> -m 0644 shared2.txt

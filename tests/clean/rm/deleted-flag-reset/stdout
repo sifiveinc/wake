@@ -1,0 +1,4 @@
+#  (2)
+$ dash -c echo 'test content' > dir/file.txt
+#  (12)
+$ dash -c echo 'test content' > dir/file.txt

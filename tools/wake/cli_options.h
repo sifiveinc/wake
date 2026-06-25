@@ -70,6 +70,8 @@ struct CommandLineOptions {
   bool prune;
   bool list_outputs;
   bool include_hidden;
+  bool rm;
+  bool recursive;
   std::optional<bool> log_header_align;
   std::optional<bool> cache_miss_on_failure;
 
@@ -179,6 +181,8 @@ struct CommandLineOptions {
       {0, "clean", GOPT_ARGUMENT_FORBIDDEN },
       {0, "prune", GOPT_ARGUMENT_FORBIDDEN },
       {0, "list-outputs", GOPT_ARGUMENT_FORBIDDEN },
+      {0, "rm", GOPT_ARGUMENT_FORBIDDEN },
+      {'r', "recursive", GOPT_ARGUMENT_FORBIDDEN},
       {0, "fd:3", GOPT_ARGUMENT_REQUIRED},
       {0, "fd:4", GOPT_ARGUMENT_REQUIRED},
       {0, "fd:5", GOPT_ARGUMENT_REQUIRED},
@@ -241,6 +245,8 @@ struct CommandLineOptions {
     prune = arg(options, "prune")->count;
     list_outputs = arg(options, "list-outputs")->count;
     include_hidden = arg(options, "include-hidden")->count;
+    rm = arg(options, "rm")->count;
+    recursive = arg(options, "recursive")->count;
 
     percent_str = arg(options, "percent")->argument;
     jobs_str = arg(options, "jobs")->argument;
