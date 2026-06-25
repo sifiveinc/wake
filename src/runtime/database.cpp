@@ -1988,14 +1988,11 @@ std::vector<std::string> Database::get_outputs() const {
 Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
                                                  const std::unordered_set<std::string> &paths,
                                                  bool recursive) {
-  if (paths.empty()) {
-    return {};
-  }
+  RemovalManifest result;
 
-  std::vector<std::string> paths_to_remove;
-  std::vector<std::string> directories_to_remove;
-  std::vector<std::string> blobs_to_delete;
-  std::vector<std::string> skipped_paths;
+  if (paths.empty()) {
+    return result;
+  }
 
   // Query SQLite's parameter limit once at the start.  `SQLITE_MAX_VARIABLE_NUMBER` would provide
   // a constant based on the SQLite version, but it theoretically could have been lowered.
@@ -2036,13 +2033,13 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
       std::string type = rip_column(paths_stmt, 1);
       if (type == "directory") {
         if (recursive) {
-          directories_to_remove.emplace_back(path);
+          result.directories.emplace_back(path);
         } else {
           std::cerr << "wake --rm: skipping directory: '" << path << "'" << std::endl;
-          skipped_paths.emplace_back(path);
+          result.skipped_paths.emplace_back(path);
         }
       } else {
-        paths_to_remove.emplace_back(path);
+        result.files.emplace_back(path);
       }
     }
 
@@ -2053,10 +2050,10 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
   // If recursive (i.e. directories were marked for further processing), query for
   // all files with paths that start with any of those directories' paths.
   const char *why_dirs = "Could not get directory children";
-  if (!directories_to_remove.empty()) {
-    // `directories_to_remove` will grow over the course of this loop, but we only care about the
+  if (!result.directories.empty()) {
+    // `result.directories` will grow over the course of this loop, but we only care about the
     // original contents -- the new elements are just implicit descendents being made explicit.
-    size_t original_directory_size = directories_to_remove.size();
+    size_t original_directory_size = result.directories.size();
     for (size_t batch_start = 0; batch_start < original_directory_size; batch_start += max_params) {
       size_t batch_size = std::min(max_params, original_directory_size - batch_start);
 
@@ -2087,7 +2084,7 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
         return {};
       }
       for (size_t i = 0; i < batch_size; ++i) {
-        bind_string(why_dirs, dir_stmt, i + 1, directories_to_remove[batch_start + i]);
+        bind_string(why_dirs, dir_stmt, i + 1, result.directories[batch_start + i]);
       }
 
       while (sqlite3_step(dir_stmt) == SQLITE_ROW) {
@@ -2096,9 +2093,9 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
         if (child_type == "directory") {
           // The prefix match (LIKE 'dir/%') naturally handles arbitrary nesting depth;
           // e.g., 'a/' matches both 'a/b.txt' and 'a/subdir/c.txt'.
-          directories_to_remove.emplace_back(child_path);
+          result.directories.emplace_back(child_path);
         } else {
-          paths_to_remove.emplace_back(child_path);
+          result.files.emplace_back(child_path);
         }
       }
 
@@ -2107,16 +2104,17 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
     }
   }
 
-  if (paths_to_remove.empty()) {
+  if (result.files.empty()) {
     end_txn();
-    return {{}, directories_to_remove, {}, skipped_paths};
+    return result;
   }
 
   // Second stage: Find hashes whose CAS blobs can be safely deleted.
   // Only delete a blob if ALL files with that hash are being removed.
+  std::vector<std::string> blobs_to_delete;
   const char *why_hashes = "Could not get blob hashes for paths";
-  for (size_t batch_start = 0; batch_start < paths_to_remove.size(); batch_start += max_params) {
-    size_t batch_size = std::min(max_params, paths_to_remove.size() - batch_start);
+  for (size_t batch_start = 0; batch_start < result.files.size(); batch_start += max_params) {
+    size_t batch_size = std::min(max_params, result.files.size() - batch_start);
 
     std::string hashes_input_placeholders = "(?)";
     for (size_t i = 1; i < batch_size; ++i) {
@@ -2151,10 +2149,10 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
     if (ret != SQLITE_OK) {
       std::cerr << why_hashes << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
       end_txn();
-      return {{}, directories_to_remove, {}, skipped_paths};
+      return result;
     }
     for (size_t i = 0; i < batch_size; ++i) {
-      bind_string(why_hashes, hashes_stmt, i + 1, paths_to_remove[batch_start + i]);
+      bind_string(why_hashes, hashes_stmt, i + 1, result.files[batch_start + i]);
     }
 
     while (sqlite3_step(hashes_stmt) == SQLITE_ROW) {
@@ -2167,7 +2165,6 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
   }
 
   // Third stage: Remove the resulting blobs from the CAS (if any need deletion).
-  std::vector<std::string> deleted_blobs;
   for (const auto &hash : blobs_to_delete) {
     // Parse and remove the CAS blob if CAS is available.
     if (cas) {
@@ -2178,23 +2175,23 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
           // Store hash for later batch database marking, if it was actually removed.
           // If it wasn't this time, it likely was already handled in a previous iteration of this
           // loop; either way, we don't have to visit this (twice) when updating the DB metadata.
-          deleted_blobs.push_back(hash);
+          result.deleted_blobs.push_back(hash);
         }
       }
     } else {
       // If there's no CAS, we still need to mark the hash for deletion in the database.
       // This won't benefit from each element in the vector being unique, but some duplication
       // here shouldn't cause any significant overhead.
-      deleted_blobs.push_back(hash);
+      result.deleted_blobs.push_back(hash);
     }
   }
 
   // Combine directories and paths into a single vector for easier batching.
   std::vector<std::string> all_paths_to_mark;
-  all_paths_to_mark.reserve(directories_to_remove.size() + paths_to_remove.size());
-  all_paths_to_mark.insert(all_paths_to_mark.end(), directories_to_remove.begin(),
-                           directories_to_remove.end());
-  all_paths_to_mark.insert(all_paths_to_mark.end(), paths_to_remove.begin(), paths_to_remove.end());
+  all_paths_to_mark.reserve(result.directories.size() + result.files.size());
+  all_paths_to_mark.insert(all_paths_to_mark.end(), result.directories.begin(),
+                           result.directories.end());
+  all_paths_to_mark.insert(all_paths_to_mark.end(), result.files.begin(), result.files.end());
 
   // Mark all requested files as deleted in the database, even if their CAS blobs weren't removed
   // (e.g., because they're shared with other files).  This *could* be implemented as a pre-prepared
@@ -2223,7 +2220,7 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
                 << "The wake.db is likely corrupted." << std::endl;
 
       end_txn();
-      return {paths_to_remove, directories_to_remove, deleted_blobs, skipped_paths};
+      return result;
     }
     for (size_t i = 0; i < batch_size; ++i) {
       bind_string(why_mark, mark_stmt, i + 1, all_paths_to_mark[batch_start + i]);
@@ -2236,7 +2233,7 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
   // Release the database lock now that both the CAS and the DB have been updated.
   end_txn();
 
-  return {paths_to_remove, directories_to_remove, deleted_blobs, skipped_paths};
+  return result;
 }
 
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,
