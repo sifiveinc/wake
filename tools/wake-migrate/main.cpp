@@ -507,7 +507,7 @@ static std::vector<Migration> get_migrations() {
          return exec_sql(
              db, "CREATE INDEX IF NOT EXISTS run_files_by_run ON run_files(run_id, file_id);");
        },
-        "Add run_files table for guarding files during active runs"},
+       "Add run_files table for guarding files during active runs"},
 
       // Version 10 -> 11: Add 'deleted' column to the files table.
       // All existing files are assumed to be present (deleted = 0).
@@ -526,18 +526,16 @@ static std::vector<Migration> get_migrations() {
       // cannot be converted to BLAKE3.
       {15, 16,
        [](sqlite3*) -> bool {
-         std::cerr
-             << "wake's content hash changed from BLAKE2b to BLAKE3, which invalidates the\n"
-                "entire build cache; no automatic migration is supported.\n"
-                "To start fresh, remove the database and rebuild:\n"
-                "    rm -f wake.db wake.db-wal wake.db-shm\n"
-             << std::endl;
+         std::cerr << "wake's content hash changed from BLAKE2b to BLAKE3, which invalidates the\n"
+                      "entire build cache; no automatic migration is supported.\n"
+                      "To start fresh, remove the database and rebuild:\n"
+                      "    rm -f wake.db wake.db-wal wake.db-shm\n"
+                   << std::endl;
          return false;
        },
        "Hash algorithm changed from BLAKE2b to BLAKE3; requires a fresh database."},
   };
 }
-
 
 // Apply a single migration step from from_version to to_version
 static bool apply_migrations(sqlite3* db, int from_version, int to_version) {
