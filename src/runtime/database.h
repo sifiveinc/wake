@@ -229,7 +229,7 @@ struct Database {
     std::vector<std::string> files;          // Files which need to be unlinked from the workspace
     std::vector<std::string> directories;    // Directories to rmdir (ordered shallowest-first)
     std::vector<std::string> deleted_blobs;  // Hashes of CAS blobs *already* removed
-    std::vector<std::string> skipped_paths;  // Paths that were skipped (e.g., non-recursive directories)
+    std::vector<std::string> skipped_paths;  // Paths which should *not* be deleted
   };
 
   // Remove files from workspace and CAS within a single exclusive transaction.

@@ -108,8 +108,8 @@ int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::strin
 
   // Warn about any paths that were not found in the database.
   for (const auto &unprocessed_path : normalized_paths) {
-    std::cerr << "warning: path wasn't registered in database (skipped): '" << unprocessed_path << "'"
-              << std::endl;
+    std::cerr << "warning: path wasn't registered in database (skipped): '" << unprocessed_path
+              << "'" << std::endl;
   }
 
   return EXIT_SUCCESS;
