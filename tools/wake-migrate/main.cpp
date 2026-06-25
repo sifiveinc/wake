@@ -521,23 +521,20 @@ static std::vector<Migration> get_migrations() {
        },
        "Add files.deleted column to retain metadata while allowing CAS space recovery"},
 
-       // Version 15 -> 16: Hash algorithm changed from BLAKE2b to BLAKE3
-      // All file hashes are now invalid and need to be recomputed
+      // Version 15 -> 16: Hash algorithm changed from BLAKE2b to BLAKE3.
+      // Every stored file hash, job signature, and CAS blob is BLAKE2b-based and
+      // cannot be converted to BLAKE3.
       {15, 16,
-       [](sqlite3* db) -> bool {
-         // Clear all file hashes by deleting files table entries
-         // This forces wake to rehash all files on next run
-         if (!exec_sql(db, "DELETE FROM filetree;")) return false;
-         if (!exec_sql(db, "DELETE FROM files;")) return false;
-         // Also clear jobs since their input/output file references are now invalid
-         if (!exec_sql(db, "DELETE FROM log;")) return false;
-         if (!exec_sql(db, "DELETE FROM tags;")) return false;
-         if (!exec_sql(db, "DELETE FROM unhashed_files;")) return false;
-         if (!exec_sql(db, "DELETE FROM jobs;")) return false;
-         if (!exec_sql(db, "DELETE FROM stats;")) return false;
-         return true;
+       [](sqlite3*) -> bool {
+         std::cerr
+             << "wake's content hash changed from BLAKE2b to BLAKE3, which invalidates the\n"
+                "entire build cache; no automatic migration is supported.\n"
+                "To start fresh, remove the database and rebuild:\n"
+                "    rm -f wake.db wake.db-wal wake.db-shm\n"
+             << std::endl;
+         return false;
        },
-       "Clear all cached data due to hash algorithm change from BLAKE2b to BLAKE3"},
+       "Hash algorithm changed from BLAKE2b to BLAKE3; requires a fresh database."},
   };
 }
 
