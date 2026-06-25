@@ -421,6 +421,7 @@ void print_help(const char *argv0) {
     << "    --list-outputs     List all job outputs"                                       << std::endl
     << "    --clean            Delete all job outputs"                                     << std::endl
     << "    --prune            Remove DB entries for jobs whose files no longer exist"     << std::endl
+    << "                         in the workspace"                                         << std::endl
     << "    --rm               Remove files from database (paths as arguments)"            << std::endl
     << "    --input    -i FILE Capture jobs which read FILE. (repeat for multiple files)"  << std::endl
     << "    --output   -o FILE Capture jobs which wrote FILE. (repeat for multiple files)" << std::endl
