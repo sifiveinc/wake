@@ -25,6 +25,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <unordered_set>
 
 #include "cas/content_hash.h"
 #include "util/execpath.h"
@@ -44,7 +45,7 @@ int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::strin
   // Normalize all paths to be relative to the workspace root, allowing this to be called from
   // directories other than the root.
   std::string workspace_root = get_cwd();
-  std::vector<std::string> normalized_paths;
+  std::unordered_set<std::string> normalized_paths;
   normalized_paths.reserve(paths.size());
 
   for (const auto &path : paths) {
@@ -76,7 +77,7 @@ int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::strin
       return EXIT_FAILURE;
     }
 
-    normalized_paths.push_back(workspace_path.string());
+    normalized_paths.insert(workspace_path.string());
   }
 
   // Remove files from database and CAS within a single transaction.
@@ -88,6 +89,7 @@ int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::strin
       std::cerr << "warning: failed to remove file '" << path << "': " << strerror(errno)
                 << std::endl;
     }
+    normalized_paths.erase(path);
   }
 
   // Remove directories in reverse order (deepest first) to ensure children are removed first.
@@ -96,6 +98,18 @@ int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::strin
       std::cerr << "warning: failed to remove directory '" << *it << "': " << strerror(errno)
                 << std::endl;
     }
+    normalized_paths.erase(*it);
+  }
+
+  // Remove skipped paths from the set so they don't trigger a (second) warning below.
+  for (const auto &skipped : result.skipped_paths) {
+    normalized_paths.erase(skipped);
+  }
+
+  // Warn about any paths that were not found in the database.
+  for (const auto &unprocessed_path : normalized_paths) {
+    std::cerr << "warning: path wasn't registered in database (skipped): '" << unprocessed_path
+              << "'" << std::endl;
   }
 
   return EXIT_SUCCESS;

@@ -22,6 +22,7 @@
 #include <optional>
 #include <string>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -228,13 +229,14 @@ struct Database {
     std::vector<std::string> files;          // Files which need to be unlinked from the workspace
     std::vector<std::string> directories;    // Directories to rmdir (ordered shallowest-first)
     std::vector<std::string> deleted_blobs;  // Hashes of CAS blobs *already* removed
+    std::vector<std::string> skipped_paths;  // Paths which should *not* be deleted
   };
 
   // Remove files from workspace and CAS within a single exclusive transaction.
   // For each path, finds all jobs that output it, removes the CAS blobs, and marks them as deleted.
   // Does *not* remove blobs which are still referenced by other files.
   // If recursive is true, directories will recursively include all their children.
-  RemovalManifest remove_blobs(cas::Cas *cas, const std::vector<std::string> &paths,
+  RemovalManifest remove_blobs(cas::Cas *cas, const std::unordered_set<std::string> &paths,
                                bool recursive);
 
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,

@@ -1,0 +1,2 @@
+warning: path wasn't registered in database (skipped): 'nonexistent.txt'
+warning: path wasn't registered in database (skipped): 'unregistered.txt'

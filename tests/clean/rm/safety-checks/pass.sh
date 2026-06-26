@@ -38,7 +38,9 @@ cd ..
 "${WAKE}" --rm .build/cas/somefile 2>&1 && fail "should reject '.build/cas/somefile'"
 
 # Test 6: Allow .build/other (not under cas/)
+"${WAKE}" -q --no-tty -x 'write ".build/other" ""'
 "${WAKE}" --rm .build/other 2>&1 || fail "should *not* reject '.build/other'"
+test -f .build/other && fail ".build/other still exists"
 
 echo "PASS: safety checks" >&2
 
