@@ -93,6 +93,8 @@ struct Database::detail {
   sqlite3_stmt *get_file_dependency;
   sqlite3_stmt *get_output_files;
   sqlite3_stmt *remove_output_files;
+  sqlite3_stmt *get_all_file_paths;
+  sqlite3_stmt *delete_jobs_by_dead_file;
   sqlite3_stmt *remove_all_jobs;
   sqlite3_stmt *get_unhashed_file_paths;
   sqlite3_stmt *insert_unhashed_file;
@@ -153,6 +155,8 @@ struct Database::detail {
         get_file_dependency(0),
         get_output_files(0),
         remove_output_files(0),
+        get_all_file_paths(0),
+        delete_jobs_by_dead_file(0),
         remove_all_jobs(0),
         get_unhashed_file_paths(0),
         insert_unhashed_file(0),
@@ -492,6 +496,10 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "   and substr(cast(j.commandline as varchar), 1, 8) != '<source>'"
       "   and substr(cast(j.commandline as varchar), 1, 7) != '<claim>'"
       " )";
+  const char *sql_get_all_file_paths = "select file_id, path, type, deleted from files";
+  const char *sql_delete_jobs_by_dead_file =
+      "delete from jobs where job_id in"
+      " (select distinct job_id from filetree where file_id=?)";
   const char *sql_remove_all_jobs = "delete from jobs";
   const char *sql_get_unhashed_file_paths = "select path from unhashed_files";
   const char *sql_insert_unhashed_file = "insert into unhashed_files(job_id, path) values(?, ?)";
@@ -579,6 +587,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_get_file_dependency, get_file_dependency);
   PREPARE(sql_get_output_files, get_output_files);
   PREPARE(sql_remove_output_files, remove_output_files);
+  PREPARE(sql_get_all_file_paths, get_all_file_paths);
+  PREPARE(sql_delete_jobs_by_dead_file, delete_jobs_by_dead_file);
   PREPARE(sql_remove_all_jobs, remove_all_jobs);
   PREPARE(sql_get_unhashed_file_paths, get_unhashed_file_paths);
   PREPARE(sql_insert_unhashed_file, insert_unhashed_file);
@@ -650,6 +660,8 @@ void Database::close() {
   FINALIZE(get_file_dependency);
   FINALIZE(get_output_files);
   FINALIZE(remove_output_files);
+  FINALIZE(get_all_file_paths);
+  FINALIZE(delete_jobs_by_dead_file);
   FINALIZE(remove_all_jobs);
   FINALIZE(get_unhashed_file_paths);
   FINALIZE(insert_unhashed_file);
@@ -1529,6 +1541,52 @@ bool Database::clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string
   end_txn();
 
   return true;
+}
+
+std::optional<size_t> Database::prune_to_workspace(
+    wcl::function_ref<bool(const std::string &path, const std::string &type)> exists) {
+  const char *why = "Could not prune workspace";
+
+  // Hold the write lock for the entire operation so no new run can start between the
+  // active check and the scan/delete, matching the pattern in clear_jobs_if_safe.
+  begin_rw_txn();
+
+  if (sqlite3_step(imp->get_incomplete_runs) == SQLITE_ROW) {
+    finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
+    end_txn();
+    return std::nullopt;
+  }
+  finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
+
+  // Check each unique output file_id once; collect those that fail the exists check.
+  std::vector<int64_t> dead_files;
+  while (sqlite3_step(imp->get_all_file_paths) == SQLITE_ROW) {
+    int64_t file_id = sqlite3_column_int64(imp->get_all_file_paths, 0);
+    const char *path = (const char *)sqlite3_column_text(imp->get_all_file_paths, 1);
+    const char *type = (const char *)sqlite3_column_text(imp->get_all_file_paths, 2);
+    bool deleted = sqlite3_column_int64(imp->get_all_file_paths, 3) != 0;
+    if (path && type && (deleted || !exists(path, type))) dead_files.push_back(file_id);
+  }
+  finish_stmt(why, imp->get_all_file_paths, imp->debugdb);
+
+  size_t pruned = 0;
+  for (int64_t file_id : dead_files) {
+    bind_integer(why, imp->delete_jobs_by_dead_file, 1, file_id);
+    single_step(why, imp->delete_jobs_by_dead_file, imp->debugdb);
+    pruned += sqlite3_changes(imp->db);
+  }
+  if (pruned > 0) {
+    single_step("Could not clean orphan files", imp->delete_orphan_files, imp->debugdb);
+  }
+
+  end_txn();
+
+  if (pruned > 0) {
+    checkpoint(false);
+    vacuum();
+  }
+
+  return pruned;
 }
 
 void Database::tag_job(long job, const std::string &uri, const std::string &content) {
