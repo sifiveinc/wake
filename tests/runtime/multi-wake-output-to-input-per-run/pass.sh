@@ -27,3 +27,5 @@ wait
 
 # (output.txt can have either value)
 tail result-a.txt result-b.txt
+
+rm output.txt result-a.txt result-b.txt

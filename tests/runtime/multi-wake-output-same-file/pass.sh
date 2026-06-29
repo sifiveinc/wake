@@ -13,3 +13,5 @@ rm -f wake.db* wake.log shared.txt err.txt
 ! "${WAKE}" -q -x 'test_diff Unit' > err.txt
 
 sed 's/job \([0-9]\+\)/job -/' err.txt
+
+rm .wake/locks/* shared.txt err.txt
