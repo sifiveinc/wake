@@ -574,8 +574,8 @@ static PRIMFN(prim_cas_blob_abs_path) {
 
 void prim_register_cas(CASContext* ctx, PrimMap& pmap) {
   prim_register(pmap, "cas_dir", prim_cas_dir, type_cas_dir, PRIM_PURE, ctx);
-  prim_register(pmap, "cas_blob_abs_path", prim_cas_blob_abs_path, type_cas_blob_abs_path, PRIM_PURE,
-                ctx);
+  prim_register(pmap, "cas_blob_abs_path", prim_cas_blob_abs_path, type_cas_blob_abs_path,
+                PRIM_PURE, ctx);
   prim_register(pmap, "cas_materialize_item", prim_cas_materialize_item, type_cas_materialize_item,
                 PRIM_IMPURE, ctx);
   prim_register(pmap, "materialize_staged_workspace_item", prim_materialize_staged_workspace_item,
