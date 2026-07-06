@@ -9,8 +9,6 @@ WAKE="${WAKE:-wake}"
 # Get absolute path to wake binary before changing directories
 WAKE="$(realpath "$WAKE")"
 
-export WAKE_CAS=1
-
 rm -rf wake.db* wake.log .wake .build subdir
 
 fail() {

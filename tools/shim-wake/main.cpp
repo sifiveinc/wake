@@ -31,47 +31,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#include "cas/content_hash.h"
 #include "wcl/filepath.h"
-
-// TODO: Remove do_hash and the "<hash>" shim path entirely once WAKE_CAS is the default.
-static int do_hash(const char *file) {
-  struct stat st;
-  if (lstat(file, &st) != 0) {
-    fprintf(stderr, "shim hash: lstat(%s): %s\n", file, strerror(errno));
-    return 1;
-  }
-
-  if (S_ISDIR(st.st_mode)) {
-    printf("0000000000000000000000000000000000000000000000000000000000000000\n");
-    return 0;
-  }
-
-  if (S_ISLNK(st.st_mode)) {
-    char buf[8192];
-    ssize_t len = readlink(file, buf, sizeof(buf));
-    if (len < 0) {
-      fprintf(stderr, "shim hash: readlink(%s): %s\n", file, strerror(errno));
-      return 1;
-    }
-    auto hash = cas::ContentHash::from_string(std::string(buf, len));
-    printf("%s\n", hash.to_hex().c_str());
-    return 0;
-  }
-
-  if (S_ISREG(st.st_mode)) {
-    auto result = cas::ContentHash::from_file(file);
-    if (!result) {
-      fprintf(stderr, "shim hash: read(%s): %s\n", file, strerror(result.error()));
-      return 1;
-    }
-    printf("%s\n", result->to_hex().c_str());
-    return 0;
-  }
-
-  fprintf(stderr, "shim hash: unsupported file type for %s\n", file);
-  return 1;
-}
 
 int main(int argc, char **argv) {
   int stdin_fd, stdout_fd, stderr_fd;
@@ -189,11 +149,7 @@ int main(int argc, char **argv) {
     close(fd);
   }
 
-  if (strcmp(argv[7], "<hash>")) {
-    execvp(argv[7], argv + 7);
-    fprintf(stderr, "execvp: %s: %s\n", argv[7], strerror(errno));
-    return 127;
-  } else {
-    return do_hash(argv[8]);
-  }
+  execvp(argv[7], argv + 7);
+  fprintf(stderr, "execvp: %s: %s\n", argv[7], strerror(errno));
+  return 127;
 }

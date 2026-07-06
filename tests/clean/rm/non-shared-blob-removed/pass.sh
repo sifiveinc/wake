@@ -6,8 +6,6 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-export WAKE_CAS=1
-
 rm -rf wake.db* wake.log .wake .build unique.txt
 
 fail() {
