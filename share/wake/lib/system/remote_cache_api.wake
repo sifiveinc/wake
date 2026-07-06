@@ -366,7 +366,7 @@ export def rscApiPostFileBlob (name: String) (hash: String) (api: RemoteCacheApi
     require Pass _ = guardRemoteCacheDisabled Unit
 
     require Pass sourcePath =
-        primCasBlobPathStr hash
+        primCasBlobAbsPathStr hash
         | addErrorContext "rsc: blob {hash} expected in CAS but not found"
 
     def contentType = match (unsafe_stat sourcePath)

@@ -25,8 +25,8 @@ export def primCasDir: String =
 
 # Returns the absolute CAS filesystem path for the blob with the given content hash.
 # Fails if the blob is not present in the local CAS store.
-export def primCasBlobPathStr (hash: String): Result String Error =
-    def raw hash = prim "cas_blob_path"
+export def primCasBlobAbsPathStr (hash: String): Result String Error =
+    def raw hash = prim "cas_blob_abs_path"
 
     raw hash
     | rmapError makeError
