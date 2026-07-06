@@ -30,7 +30,7 @@ enum class ContentHashError { InvalidHexLength, InvalidHexChar };
 static constexpr unsigned HASH_BITS_LEN = 256U;
 static constexpr unsigned HASH_HEX_LEN = HASH_BITS_LEN >> 2U;
 
-// 256-bit content hash using BLAKE2b
+// 256-bit content hash using BLAKE3
 struct ContentHash {
   static constexpr unsigned NUM_HASH_ELEMENTS = HASH_BITS_LEN >> 6U;
   uint64_t data[NUM_HASH_ELEMENTS] = {0};

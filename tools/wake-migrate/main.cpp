@@ -521,6 +521,19 @@ static std::vector<Migration> get_migrations() {
        },
        "Add files.deleted column to retain metadata while allowing CAS space recovery"},
 
+      // Version 15 -> 16: Hash algorithm changed from BLAKE2b to BLAKE3.
+      // Every stored file hash, job signature, and CAS blob is BLAKE2b-based and
+      // cannot be converted to BLAKE3.
+      {15, 16,
+       [](sqlite3*) -> bool {
+         std::cerr << "wake's content hash changed from BLAKE2b to BLAKE3, which invalidates the\n"
+                      "entire build cache; no automatic migration is supported.\n"
+                      "To start fresh, remove the database and rebuild:\n"
+                      "    rm -f wake.db wake.db-wal wake.db-shm\n"
+                   << std::endl;
+         return false;
+       },
+       "Hash algorithm changed from BLAKE2b to BLAKE3; requires a fresh database."},
   };
 }
 

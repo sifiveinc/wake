@@ -26,7 +26,7 @@
 
 #include <algorithm>
 
-#include "blake2/blake2.h"
+#include "blake3/blake3.h"
 #include "wcl/unique_fd.h"
 
 namespace cas {
@@ -44,10 +44,10 @@ static uint8_t hex_to_nibble(char hex) {
 
 ContentHash ContentHash::from_bytes(const uint8_t* bytes, size_t len) {
   ContentHash hash;
-  blake2b_state state;
-  blake2b_init(&state, sizeof(hash.data));
-  blake2b_update(&state, bytes, len);
-  blake2b_final(&state, reinterpret_cast<uint8_t*>(hash.data), sizeof(hash.data));
+  blake3_hasher state;
+  blake3_hasher_init(&state);
+  blake3_hasher_update(&state, bytes, len);
+  blake3_hasher_finalize(&state, reinterpret_cast<uint8_t*>(hash.data), sizeof(hash.data));
   return hash;
 }
 
@@ -62,20 +62,20 @@ wcl::result<ContentHash, wcl::posix_error_t> ContentHash::from_file(const std::s
   }
 
   ContentHash hash;
-  blake2b_state state;
-  blake2b_init(&state, sizeof(hash.data));
+  blake3_hasher state;
+  blake3_hasher_init(&state);
 
   static thread_local uint8_t buffer[8192];
   ssize_t bytes_read;
   while ((bytes_read = read(fd->get(), buffer, sizeof(buffer))) > 0) {
-    blake2b_update(&state, buffer, bytes_read);
+    blake3_hasher_update(&state, buffer, bytes_read);
   }
 
   if (bytes_read < 0) {
     return wcl::make_errno<ContentHash>();
   }
 
-  blake2b_final(&state, reinterpret_cast<uint8_t*>(hash.data), sizeof(hash.data));
+  blake3_hasher_finalize(&state, reinterpret_cast<uint8_t*>(hash.data), sizeof(hash.data));
   return wcl::make_result<ContentHash, wcl::posix_error_t>(hash);
 }
 

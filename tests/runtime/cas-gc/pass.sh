@@ -10,12 +10,12 @@ rm -rf .build wake.db* wake.log shared.txt
 
 "${WAKE}" -q -x 'job2 Unit'
 echo "After job2"
-[ ! -e .build/cas/blobs/aa/5cd7c969cdd10dc5788d1f72c92ec4540655325f17ee2cee8c8531fe836b40 ]
-[ -e .build/cas/blobs/9f/5e6365d73eb89106c29f314d72b5b1e0d3b3a37598d3ada8f38b58532ecf77 ]
+[ ! -e .build/cas/blobs/4a/89eb54e03e4e519e659ac83101df1e9773409425193964610cc52bee4fd06f ]
+[ -e .build/cas/blobs/28/c2c99e8f8894c4d70f5d202056d9f3dc8bc920348137ab957eaa0e5e5cd79e ]
 
 rm wake.db*
-[ -e .build/cas/blobs/9f/5e6365d73eb89106c29f314d72b5b1e0d3b3a37598d3ada8f38b58532ecf77 ]
+[ -e .build/cas/blobs/28/c2c99e8f8894c4d70f5d202056d9f3dc8bc920348137ab957eaa0e5e5cd79e ]
 "${WAKE}" -q -x 'job1 Unit'
 echo "After nuking DB and running job1"
-[ ! -e .build/cas/blobs/9f/5e6365d73eb89106c29f314d72b5b1e0d3b3a37598d3ada8f38b58532ecf77 ]
-[ -e .build/cas/blobs/aa/5cd7c969cdd10dc5788d1f72c92ec4540655325f17ee2cee8c8531fe836b40 ]
+[ ! -e .build/cas/blobs/28/c2c99e8f8894c4d70f5d202056d9f3dc8bc920348137ab957eaa0e5e5cd79e ]
+[ -e .build/cas/blobs/4a/89eb54e03e4e519e659ac83101df1e9773409425193964610cc52bee4fd06f ]

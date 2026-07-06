@@ -1,4 +1,4 @@
 === Run 1: symlink ===
-Pass "readlink=target\n hash=874c10b404c95b0d503ef6afb0fb228aaa313a6195a64075843f405eb8449444"
+Pass "readlink=target\n hash=ff2f93d50d44841205d987fb24ba10d956ecb35998a4931f7bef74e6319cce0a"
 === Run 2: file ===
-Pass "readlink=FAILED hash=874c10b404c95b0d503ef6afb0fb228aaa313a6195a64075843f405eb8449444"
+Pass "readlink=FAILED hash=ff2f93d50d44841205d987fb24ba10d956ecb35998a4931f7bef74e6319cce0a"
