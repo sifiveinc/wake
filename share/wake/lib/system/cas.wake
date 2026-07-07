@@ -19,6 +19,14 @@ package wake
 export def primCasDir: String =
     prim "cas_dir"
 
+# Returns the absolute CAS filesystem path for the blob with the given content hash.
+# Fails if the blob is not present in the local CAS store.
+export def primCasBlobAbsPathStr (hash: String): Result String Error =
+    def raw hash = prim "cas_blob_abs_path"
+
+    raw hash
+    | rmapError makeError
+
 # Materialize an item from CAS to workspace.
 def primCasMaterializeItem (destPath: String) (itemType: String) (hashOrTarget: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
     def raw destPath itemType hashOrTarget mode mtimeSec mtimeNsec = prim "cas_materialize_item"
