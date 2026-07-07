@@ -10,7 +10,7 @@ Both are built on the same foundation: wake stores everything jobs produce in a
 content-addressed store and treats your workspace as a *projection* of that
 state, rather than as the source of truth. This shift is what
 concurrent builds possible, naturally deduplicates storage, and lays the
-groundwork for richer cache management.
+groundwork for richer workspace management.
 
 ## Overview
 
@@ -32,8 +32,8 @@ Some things this makes possible:
 
 - Run wake interactively — lint, format-check, test a variant — while one or
   more long builds are already in progress.
-- Use `bsp-wake` / Scala Metals without waiting for other wake activity to
-  finish.
+- Run IDE or editor integrations (such as language servers)
+  without waiting for other wake activity to finish (e.g. Scala Metals).
 - Kick off multiple independent builds (different configs, different targets) in
   the same workspace without maintaining separate checkouts.
 
@@ -41,17 +41,17 @@ Some things this makes possible:
 
 ### Workspace virtualization
 
-Sandboxed runners (the default) no longer write directly through to your
+Sandboxed runners (that utilize FUSE) do not write directly through to your
 workspace. Instead:
 
 1. While a job runs, the data it writes lands in a staging directory under
    `.build/cas/staging/`.
 2. When the job completes, its outputs are ingested into the CAS.
 3. Wake materializes those outputs into their destination paths using
-   **reflinks** (copy-on-write) rather than writing them directly.
+   **reflinks** (copy-on-write).
 
 Materializing through reflinks means identical content is stored only once on
-disk, and runs do not interfere with one another.
+disk, and runs do not interfere with one another. This also means that changes that a user makes to the workspace don't propogate back to invalidate the CAS.
 
 ### Content-addressed storage (CAS)
 
@@ -74,9 +74,9 @@ underlying disk footprint**, because the outputs still live in the CAS. If you
 delete materialized outputs and later re-run that job, wake can re-materialize
 the outputs from the CAS without re-executing the work.
 
-This is also why a common debugging technique — editing a file in the workspace
-and re-running a `wakebox` spec — no longer behaves as it used to. Wakebox
-refers to the CAS, not the workspace.
+This also affects a debugging technique sometimes utilized — editing a file in the workspace
+and re-running a `wakebox` spec. Wakebox refers to the CAS, not the workspace,
+so edits made directly in the workspace are not picked up.
 
 ## Running multiple wake invocations concurrently
 
@@ -113,7 +113,7 @@ Reflinked, content-addressed storage means:
 - Identical outputs are stored once and shared, so the CAS is typically far
   smaller than the sum of all materialized copies would suggest.
 - Removing materialized files (for example, `rm -rf` of a build directory) frees
-  only the lightweight reflinked references, **not** the underlying blobs in the
+  only the lightweight reflinked references, *not* the underlying blobs in the
   CAS. The footprint persists until the corresponding entries are removed from
   wake's state.
 
@@ -130,6 +130,18 @@ wake --prune
 in the workspace, then garbage-collects any CAS blobs that are no longer
 referenced. It reports how many jobs were pruned.
 
+This makes `--prune` a convenient way to resync the CAS with the current state
+of your workspace after deleting outputs directly. For example:
+
+```
+rm -rf build/test
+wake --prune
+```
+
+Wake detects that the outputs under `build/test` are gone, drops the
+corresponding job entries from the database, and garbage-collects the CAS
+blobs that are no longer referenced.
+
 `--prune` first reaps dead runs and will refuse to run while builds are in
 progress:
 
@@ -140,7 +152,7 @@ hint: use 'wake --history' to see active runs
 
 Use `wake --history` to confirm no runs are active before pruning.
 
-### Safely deleting specific files: `--rm`
+### Safely deleting specific files/directories: `--rm`
 
 ```
 wake --rm <path> [<path> ...]
@@ -168,6 +180,17 @@ arbitrary nesting depth, and the now-empty directories are removed deepest-first
 The same shared-content safety applies: a CAS blob is only deleted when every
 path referencing it is part of the removal.
 
+For example, to conveniently remove a whole build subtree from both the workspace and the
+CAS in one step:
+
+```
+wake --rm -r build/test
+```
+
+Wake deletes every tracked file under `build/test`, removes their database
+entries, drops the CAS blobs no longer referenced by any remaining path, and
+removes the emptied directories.
+
 ### Cleaning up staging leftovers
 
 `.build/cas/staging/` can accumulate leftover files after a crash. If it grows
@@ -182,10 +205,6 @@ running**.
   one run progress far enough to populate the cache before fanning out into
   parallel invocations. Correctness is unaffected; only resource usage is.
 
-- **Schema versioning.** The database schema may change between releases and may
-  not always migrate forward automatically. After an upgrade you may need to run
-  `wake --clean` to start fresh. Release notes will call this out when relevant.
-
 - **CAS file ownership.** Blobs are owned by the user and group running wake.
   Some workflows switch the effective user/group for specific jobs; those
   changes apply within the job, but the content written to the CAS is owned by
@@ -195,3 +214,8 @@ running**.
 - **Never hand-edit the CAS.** As noted above, any modification to files under
   `.build/cas/` results in undefined behavior. This space is owned entirely by
   wake.
+
+- **Disk usage tools over-report reflinked space.** Tools like `du` do not
+  account for deduplicated reflinks, so they may report inflated usage (e.g.
+  roughly 2x) for content shared between the workspace and the CAS. We are
+  investigating how to address this.
