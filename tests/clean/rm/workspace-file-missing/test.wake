@@ -1,0 +1,8 @@
+# Test: --rm works when workspace file is already deleted
+
+export def makeFile (args: List String) =
+    def content = "content"
+
+    map (write _ content) args
+    | findFail
+    | rmap (\_ Unit)

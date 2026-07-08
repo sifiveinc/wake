@@ -1,7 +1,7 @@
 #ifndef WAKE_SCHEMA_H
 #define WAKE_SCHEMA_H
 
-#define SCHEMA_VERSION "10"
+#define SCHEMA_VERSION "16"
 
 // Per-connection settings to always apply.  Do this first!
 inline const char *getCommonPragmaSQL() {
@@ -29,21 +29,24 @@ inline const char *getWakeSchemaSQLTxn() {
          "create table if not exists entropy("
          "  row_id integer primary key autoincrement,"
          "  seed   integer not null);"
-         "update entropy set seed=0 where 0;"  // "write" to acquire exclusive lock
          "create table if not exists schema("
          "  version integer primary key);"
          "create table if not exists runs("
-         "  run_id  integer primary key autoincrement,"
-         "  time    integer not null,"
-         "  cmdline text    not null);"
+         "  run_id   integer primary key autoincrement,"
+         "  time     integer not null,"
+         "  cmdline  text    not null,"
+         "  end_time integer);"
          "create table if not exists files("
          "  file_id   integer primary key,"
          "  path      text    not null,"
          "  hash      text    not null,"
          "  type      text    not null,"
          "  mode      integer not null,"
-         "  modified  integer not null);"
-         "create unique index if not exists filenames on files(path);"
+         "  deleted   integer not null default 0);"
+         "create unique index if not exists file_path_hash_type_mode on files(path, hash, type, "
+         "mode);"
+         "create index if not exists filenames on files(path);"
+         "create index if not exists hashes on files(hash);"
          "create table if not exists stats("
          "  stat_id    integer primary key autoincrement,"
          "  hashcode   integer not null,"  // on collision, prefer largest stat_id (ie: newest)
@@ -58,7 +61,6 @@ inline const char *getWakeSchemaSQLTxn() {
          "create table if not exists jobs("
          "  job_id      integer primary key autoincrement,"
          "  run_id      integer not null references runs(run_id),"
-         "  use_id      integer not null references runs(run_id),"
          "  label       text    not null,"
          "  directory   text    not null,"
          "  commandline blob    not null,"
@@ -70,7 +72,6 @@ inline const char *getWakeSchemaSQLTxn() {
          "  starttime   integer not null default 0,"
          "  endtime     integer not null default 0,"
          "  keep        integer not null default 0,"
-         "  stale       integer not null default 0,"  // 0=false, 1=true
          "  is_atty     integer not null default 0,"  // 0=false, 1=true
          "  runner_status text);"  // NULL=success, non-null string=failure message
          "create index if not exists job on jobs(directory, commandline, environment, stdin, "
@@ -83,6 +84,7 @@ inline const char *getWakeSchemaSQLTxn() {
          "  access   integer not null,"  // 0=visible, 1=input, 2=output
          "  job_id   integer not null references jobs(job_id) on delete cascade,"
          "  file_id  integer not null references files(file_id),"
+         "  modified integer not null,"
          "  unique(job_id, access, file_id) on conflict ignore);"
          "create index if not exists filesearch on filetree(file_id, access, job_id);"
          "create table if not exists log("
@@ -102,6 +104,16 @@ inline const char *getWakeSchemaSQLTxn() {
          "  job_id integer not null references jobs(job_id) on delete cascade,"
          "  path             text not null);"
          "create index if not exists unhashed_outputs on unhashed_files(job_id);"
+         "create table if not exists run_jobs("
+         "  run_id integer not null references runs(run_id) on delete cascade,"
+         "  job_id integer not null references jobs(job_id) on delete cascade,"
+         "  primary key(job_id, run_id));"
+         "create index if not exists run_jobs_by_run on run_jobs(run_id, job_id);"
+         "create table if not exists run_files("
+         "  run_id integer not null references runs(run_id) on delete cascade,"
+         "  file_id integer not null references files(file_id) on delete cascade,"
+         "  primary key(file_id, run_id));"
+         "create index if not exists run_files_by_run on run_files(run_id, file_id);"
          // clang-format off
          "insert or ignore into schema(version) values(" SCHEMA_VERSION ");"
          "pragma user_version=" SCHEMA_VERSION ";"

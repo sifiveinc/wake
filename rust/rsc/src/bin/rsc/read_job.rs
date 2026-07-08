@@ -223,6 +223,7 @@ pub async fn read_job(
         .map(|m| Symlink {
             path: m.path,
             link: m.link,
+            hash: m.hash,
         })
         .collect();
 

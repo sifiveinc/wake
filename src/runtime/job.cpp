@@ -904,6 +904,9 @@ static void launch(JobTable *jobtable) {
     jobtable->imp->pidmap[pid] = entry;
     entry->job->pid = entry->pid = pid;
     entry->job->state |= STATE_FORKED;
+    int64_t starttime_ns =
+        (int64_t)entry->job->start.tv_sec * 1000000000LL + entry->job->start.tv_nsec;
+    jobtable->imp->db->start_job(entry->job->job, starttime_ns);
     close(stdout_stream[1]);
     close(stderr_stream[1]);
     close(runner_out_stream[1]);
@@ -1327,6 +1330,8 @@ static PRIMFN(prim_job_virtual) {
 
   clock_gettime(CLOCK_REALTIME, &job->start);
   job->stop = job->start;
+  int64_t starttime_ns = (int64_t)job->start.tv_sec * 1000000000LL + job->start.tv_nsec;
+  job->db->start_job(job->job, starttime_ns);
 
   if (!stdout_payload->empty())
     job->db->save_output(job->job, 1, stdout_payload->c_str(), stdout_payload->size(), 0);
@@ -1786,68 +1791,23 @@ static PRIMFN(prim_job_tag) {
   RETURN(claim_unit(runtime.heap));
 }
 
-// add_hash: stores the hash and metadata for a file. mtime_ns == 0 means read from filesystem.
+// add_hash: stores the hash and metadata for a file.
 static PRIMTYPE(type_add_hash) {
-  return args.size() == 5 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
+  return args.size() == 4 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
          args[2]->unify(Data::typeString) && args[3]->unify(Data::typeInteger) &&
-         args[4]->unify(Data::typeInteger) && out->unify(Data::typeString);
+         out->unify(Data::typeString);
 }
 
 static PRIMFN(prim_add_hash) {
   JobTable *jobtable = static_cast<JobTable *>(data);
-  EXPECT(5);
+  EXPECT(4);
   STRING(file, 0);
   STRING(type, 1);
   STRING(hash, 2);
   INTEGER_MPZ(mode, 3);
-  INTEGER_MPZ(mtime_ns, 4);
   long mode_bits = mpz_get_si(mode);
-  long mtime = mpz_get_si(mtime_ns);
-  long actual_mtime = (mtime != 0) ? mtime : getmtime_ns(file->c_str());
-  jobtable->imp->db->add_hash(file->as_str(), type->as_str(), hash->as_str(), mode_bits,
-                              actual_mtime);
+  jobtable->imp->db->add_hash(file->as_str(), type->as_str(), hash->as_str(), mode_bits);
   RETURN(args[0]);
-}
-
-static PRIMTYPE(type_get_hash) {
-  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(Data::typeString);
-}
-
-static PRIMFN(prim_get_hash) {
-  JobTable *jobtable = static_cast<JobTable *>(data);
-  EXPECT(1);
-  STRING(file, 0);
-  std::string hash = jobtable->imp->db->get_hash(file->as_str(), getmtime_ns(file->c_str()));
-  RETURN(String::alloc(runtime.heap, hash));
-}
-
-static PRIMTYPE(type_get_cached_path) {
-  TypeVar outer, inner;
-  Data::typePair.clone(outer);
-  Data::typePair.clone(inner);
-  outer[0].unify(Data::typeString);
-  inner[0].unify(Data::typeString);
-  inner[1].unify(Data::typeInteger);
-  outer[1].unify(inner);
-  return args.size() == 2 && args[0]->unify(Data::typeString) &&
-         args[1]->unify(Data::typeInteger) && out->unify(outer);
-}
-
-static PRIMFN(prim_get_cached_path) {
-  JobTable *jobtable = static_cast<JobTable *>(data);
-  EXPECT(2);
-  STRING(file, 0);
-  INTEGER_MPZ(mtime_mpz, 1);
-  long mtime = mpz_get_si(mtime_mpz);
-  auto cached_path = jobtable->imp->db->get_cached_path(file->as_str(), mtime);
-  const std::string &hash = std::get<0>(cached_path);
-  const std::string &type = std::get<1>(cached_path);
-  long mode = std::get<2>(cached_path);
-  runtime.heap.reserve(reserve_tuple2() * 2 + String::reserve(type.size()) +
-                       String::reserve(hash.size()) + Integer::reserve(mode));
-  RETURN(claim_tuple2(runtime.heap, String::claim(runtime.heap, type),
-                      claim_tuple2(runtime.heap, String::claim(runtime.heap, hash),
-                                   Integer::claim(runtime.heap, mode))));
 }
 
 static PRIMTYPE(type_get_modtime) {
@@ -2143,12 +2103,6 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   /*****************************************************************************************
    * Dead-code elimination ok, but not CSE/const-prop ok (must be ordered wrt. filesystem) *
    *****************************************************************************************/
-
-  // Get's the hash of a file if it was previouslly hashed in the database by a cached
-  // job this session. Returns the empty string otherwise.
-  prim_register(pmap, "get_hash", prim_get_hash, type_get_hash, PRIM_ORDERED, jobtable);
-  prim_register(pmap, "get_cached_path", prim_get_cached_path, type_get_cached_path, PRIM_ORDERED,
-                jobtable);
 
   // Get's the modtime of a file, super simple
   prim_register(pmap, "get_modtime", prim_get_modtime, type_get_modtime, PRIM_ORDERED);

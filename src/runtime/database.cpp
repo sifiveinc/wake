@@ -29,6 +29,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <charconv>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <set>
@@ -37,8 +40,10 @@
 #include <unordered_set>
 #include <vector>
 
+#include "run_lock.h"
 #include "schema.h"
 #include "status.h"
+#include "util/mkdir_parents.h"
 #include "wcl/iterator.h"
 
 #define VISIBLE 0
@@ -59,23 +64,23 @@ struct Database::detail {
   sqlite3_stmt *stats_job;
   sqlite3_stmt *insert_job;
   sqlite3_stmt *insert_tree;
+  sqlite3_stmt *insert_tree_file_id;
   sqlite3_stmt *insert_log;
-  sqlite3_stmt *wipe_file;
   sqlite3_stmt *insert_file;
-  sqlite3_stmt *update_file;
+  sqlite3_stmt *reset_deleted;
+  sqlite3_stmt *claim_file;
   sqlite3_stmt *get_log;
   sqlite3_stmt *replay_log;
   sqlite3_stmt *get_tree;
+  sqlite3_stmt *get_tree_id;
   sqlite3_stmt *add_stats;
   sqlite3_stmt *link_stats;
   sqlite3_stmt *detect_overlap;
   sqlite3_stmt *delete_overlap;
   sqlite3_stmt *find_prior;
-  sqlite3_stmt *update_prior;
   sqlite3_stmt *delete_prior;
-  sqlite3_stmt *fetch_hash;
-  sqlite3_stmt *fetch_cached_path;
   sqlite3_stmt *delete_jobs;
+  sqlite3_stmt *delete_orphan_files;
   sqlite3_stmt *delete_dups;
   sqlite3_stmt *delete_stats;
   sqlite3_stmt *revtop_order;
@@ -88,14 +93,26 @@ struct Database::detail {
   sqlite3_stmt *get_file_dependency;
   sqlite3_stmt *get_output_files;
   sqlite3_stmt *remove_output_files;
+  sqlite3_stmt *get_all_file_paths;
+  sqlite3_stmt *delete_jobs_by_dead_file;
   sqlite3_stmt *remove_all_jobs;
   sqlite3_stmt *get_unhashed_file_paths;
   sqlite3_stmt *insert_unhashed_file;
   sqlite3_stmt *get_interleaved_output;
   sqlite3_stmt *set_runner_status;
   sqlite3_stmt *get_runner_status;
+  sqlite3_stmt *insert_run_job;
+  sqlite3_stmt *check_job_exists;
+  sqlite3_stmt *get_gc_watermark;
+  sqlite3_stmt *set_run_end_time;
+  sqlite3_stmt *get_incomplete_runs;
+  sqlite3_stmt *clear_run_files;
+  sqlite3_stmt *set_starttime;
+  sqlite3_stmt *get_dead_hashes;
 
   long run_id;
+  long gc_watermark;
+  std::optional<RunLock> run_lock;
   detail(bool debugdb_)
       : debugdb(debugdb_),
         db(0),
@@ -109,23 +126,23 @@ struct Database::detail {
         stats_job(0),
         insert_job(0),
         insert_tree(0),
+        insert_tree_file_id(0),
         insert_log(0),
-        wipe_file(0),
         insert_file(0),
-        update_file(0),
+        reset_deleted(0),
+        claim_file(0),
         get_log(0),
         replay_log(0),
         get_tree(0),
+        get_tree_id(0),
         add_stats(0),
         link_stats(0),
         detect_overlap(0),
         delete_overlap(0),
         find_prior(0),
-        update_prior(0),
         delete_prior(0),
-        fetch_hash(0),
-        fetch_cached_path(0),
         delete_jobs(0),
+        delete_orphan_files(0),
         delete_dups(0),
         delete_stats(0),
         revtop_order(0),
@@ -138,12 +155,24 @@ struct Database::detail {
         get_file_dependency(0),
         get_output_files(0),
         remove_output_files(0),
+        get_all_file_paths(0),
+        delete_jobs_by_dead_file(0),
         remove_all_jobs(0),
         get_unhashed_file_paths(0),
         insert_unhashed_file(0),
         get_interleaved_output(0),
         set_runner_status(0),
-        get_runner_status(0) {}
+        get_runner_status(0),
+        insert_run_job(0),
+        check_job_exists(0),
+        get_gc_watermark(0),
+        set_run_end_time(0),
+        get_incomplete_runs(0),
+        clear_run_files(0),
+        set_starttime(0),
+        get_dead_hashes(0),
+        run_id(0),
+        gc_watermark(0) {}
 };
 
 class WaitingIndicator {
@@ -175,6 +204,12 @@ class WaitingIndicator {
   ~WaitingIndicator() { finish(); }
 };
 
+static int64_t gettime_ns() {
+  using namespace std::chrono;
+  auto now = system_clock::now();
+  return duration_cast<nanoseconds>(now.time_since_epoch()).count();
+}
+
 static void close_db(Database *db) {
   if (!db || !db->imp || !db->imp->db) {
     return;
@@ -195,13 +230,6 @@ Database::~Database() { close(); }
 
 std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   if (imp->db) return "";
-
-  // Try to acquire build lock for write operations
-  if (!readonly) {
-    if (!try_acquire_build_lock(wait, tty)) {
-      return "Failed to acquire build lock";
-    }
-  }
 
   int flags = readonly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE;
 
@@ -342,61 +370,82 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "select status, runtime, cputime, membytes, ibytes, obytes, pathtime"
       " from stats where stat_id=?";
   const char *sql_insert_job =
-      "insert into jobs(run_id, use_id, label, directory, commandline, environment, stdin, "
+      "insert into jobs(run_id, label, directory, commandline, environment, stdin, "
       "signature, stack, is_atty)"
-      " values(?, ?1, ?, ?, ?, ?, ?, ?, ?, ?)";
+      " values(?, ?, ?, ?, ?, ?, ?, ?, ?)";
   const char *sql_insert_tree =
-      "insert into filetree(access, job_id, file_id)"
-      " values(?, ?, (select file_id from files where path=?))";
+      "insert into filetree(access, job_id, file_id, modified)"
+      " values(?, ?, (select file_id from files where path=? and hash=? and type=? and mode=?), ?)";
+  const char *sql_insert_tree_file_id =
+      "insert into filetree(access, job_id, file_id, modified)"
+      " values(?, ?, ?, ?)";
   const char *sql_insert_log =
       "insert into log(job_id, descriptor, seconds, output)"
       " values(?, ?, ?, ?)";
-  const char *sql_wipe_file =
-      "update jobs set stale=1 where job_id in"
-      " (select t.job_id from files f, filetree t"
-      "  where f.path=? and f.hash<>? and t.file_id=f.file_id and t.access=1)";
   const char *sql_insert_file =
-      "insert or ignore into files(hash, type, mode, modified, path) values (?, ?, ?, ?, ?)";
-  const char *sql_update_file = "update files set hash=?, type=?, mode=?, modified=? where path=?";
+      "insert into files(hash, type, mode, path, deleted) values (?, ?, ?, ?, 0)"
+      " on conflict(hash, type, mode, path) do update set deleted=0";
+  const char *sql_reset_deleted =
+      "update files set deleted=0 where path=? and hash=? and type=? and mode=?";
+  const char *sql_claim_file =
+      "insert or ignore into run_files(run_id, file_id)"
+      " values(?, (select file_id from files where path=? and hash=? and type=? and mode=?))";
   const char *sql_get_log =
       "select output from log where job_id=? and descriptor=? order by log_id";
   const char *sql_replay_log = "select descriptor, output from log where job_id=? order by log_id";
   const char *sql_get_tree =
-      "select f.path, f.hash, f.type, f.mode, f.modified from filetree t, files f"
+      "select f.path, f.hash, f.type, f.mode, t.modified, f.deleted,"
+      " exists(select 1 from files f2 where f2.hash=f.hash and f2.deleted=false) as blob_available"
+      " from filetree t, files f"
+      " where t.job_id=? and t.access=? and f.file_id=t.file_id order by t.tree_id";
+  const char *sql_get_tree_id =
+      "select f.path, f.file_id, t.modified from filetree t, files f"
       " where t.job_id=? and t.access=? and f.file_id=t.file_id order by t.tree_id";
   const char *sql_add_stats =
       "insert into stats(hashcode, status, runtime, cputime, membytes, ibytes, obytes)"
       " values(?, ?, ?, ?, ?, ?, ?)";
-  const char *sql_link_stats =
-      "update jobs set stat_id=?, starttime=?, endtime=?, keep=? where job_id=?";
+  const char *sql_link_stats = "update jobs set stat_id=?, endtime=?, keep=? where job_id=?";
   const char *sql_detect_overlap =
-      "select f.path from filetree t1, filetree t2, files f"
-      " where t1.job_id=?1 and t1.access=2 and t2.file_id=t1.file_id and t2.access=2 and "
-      "t2.job_id<>?1 and f.file_id=t1.file_id";
+      "select f1.path, f1.hash, f1.mode, f1.type, f2.hash, f2.mode, f2.type, t2.job_id from "
+      "filetree t1, filetree t2, files f1, files f2, run_jobs rj"
+      " where t1.job_id=?1 and t1.access=2"
+      " and f1.file_id=t1.file_id"
+      " and f2.path=f1.path"         // Same path
+      " and t2.file_id<>t1.file_id"  // And different file record (hash or other detail)
+      " and t2.file_id=f2.file_id and t2.access=2 and t2.job_id<>?1"
+      " and rj.run_id=?2 and rj.job_id=t2.job_id";
   const char *sql_delete_overlap =
-      "delete from jobs where use_id<>? and job_id in "
-      "(select t2.job_id from filetree t1, filetree t2"
-      "  where t1.job_id=?2 and t1.access=2 and t2.file_id=t1.file_id and t2.access=2 and "
-      "t2.job_id<>?2)";
+      "delete from jobs where job_id in ("
+      "  select t2.job_id from filetree t1, filetree t2, files f1, files f2"
+      "  where t1.job_id=?2 and t1.access=2"
+      "  and f1.file_id=t1.file_id"
+      "  and f2.path=f1.path"  // Same path, possibly different hash/file_id
+      "  and t2.file_id=f2.file_id and t2.access=2"
+      "  and t2.job_id<>?2"
+      "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=t2.job_id) <= ?1"
+      ")";
   const char *sql_find_prior =
       "select job_id, stat_id, label from jobs where "
       "directory=? and commandline=? and environment=? and stdin=? and signature=? and is_atty=? "
-      "and keep=1 and stale=0 and stat_id is not null";
-  const char *sql_update_prior = "update jobs set use_id=? where job_id=?";
+      "and keep=1 and stat_id is not null";
   const char *sql_delete_prior =
-      "delete from jobs where use_id<>?1 and job_id in"
-      " (select j2.job_id from jobs j1, jobs j2"
+      "delete from jobs where job_id in ("
+      "  select j2.job_id from jobs j1, jobs j2"
       "  where j1.job_id=?2 and j1.directory=j2.directory and j1.commandline=j2.commandline"
-      "  and j1.environment=j2.environment and j1.stdin=j2.stdin and j1.is_atty=j2.is_atty and "
-      "j2.job_id<>?2)";
-  const char *sql_fetch_hash = "select hash from files where path=? and modified=?";
-  const char *sql_fetch_cached_path =
-      "select hash, type, mode from files where path=? and modified=?";
+      "  and j1.environment=j2.environment and j1.stdin=j2.stdin and j1.is_atty=j2.is_atty"
+      "  and j2.job_id<>?2"
+      "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=j2.job_id) <= ?1"
+      ")";
   const char *sql_delete_jobs =
-      " delete from jobs where keep=0 and use_id<>? "
-      " and not exists (select 1 from filetree where "
-      "                 filetree.job_id=jobs.job_id and "
-      "                 filetree.access=2)";
+      "delete from jobs where keep=0"
+      "  and not exists (select 1 from filetree where"
+      "                  filetree.job_id=jobs.job_id and"
+      "                  filetree.access=2)"
+      "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=jobs.job_id) <= ?1";
+  const char *sql_delete_orphan_files =
+      "delete from files"
+      "  where file_id not in (select file_id from filetree)"
+      "  and   file_id not in (select file_id from run_files)";
   const char *sql_delete_dups =
       "delete from stats where stat_id in"
       " (select stat_id from (select hashcode, count(*) as num, max(stat_id) as keep from stats "
@@ -408,18 +457,18 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " (select stat_id from stats"
       "  where stat_id not in (select stat_id from jobs)"
       "  order by stat_id desc limit 9999999 offset 4*(select count(*) from jobs))";
-  const char *sql_revtop_order =
-      "select job_id from jobs where use_id=(select max(run_id) from runs) order by job_id desc";
+  const char *sql_revtop_order = "select job_id from run_jobs where run_id=? order by job_id desc";
   const char *sql_setcrit_path =
       "update stats set pathtime=runtime+("
       "  select coalesce(max(s.pathtime),0) from filetree f1, filetree f2, jobs j, stats s"
       "  where f1.job_id=?1 and f1.access=2 and f1.file_id=f2.file_id and f2.access=1 and "
-      "f2.job_id=j.job_id and j.stat_id=s.stat_id"
+      "f2.job_id=j.job_id and j.stat_id=s.stat_id and f1.modified=f2.modified"
       ") where stat_id=(select stat_id from jobs where job_id=?1)";
   const char *sql_tag_job = "insert into tags(job_id, uri, content) values(?, ?, ?)";
   const char *sql_get_tags = "select job_id, uri, content from tags where job_id=?";
   const char *sql_get_all_tags = "select job_id, uri, content from tags";
-  const char *sql_get_all_runs = "select run_id, time, cmdline from runs order by time ASC";
+  const char *sql_get_all_runs =
+      "select run_id, time, end_time, cmdline from runs order by time ASC";
   const char *sql_get_edges =
       "select distinct user.job_id as user, used.job_id as used"
       "  from filetree user, filetree used"
@@ -434,6 +483,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "select f.path"
       " from filetree ft join files f on f.file_id=ft.file_id join jobs j on ft.job_id=j.job_id"
       " where ft.access = 2"
+      " and f.deleted = 0"
       " and substr(cast(j.commandline as varchar), 1, 8) != '<source>'"
       " and substr(cast(j.commandline as varchar), 1, 7) != '<claim>'";
   const char *sql_remove_output_files =
@@ -442,9 +492,14 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "   select f.file_id"
       "   from filetree ft join files f on f.file_id=ft.file_id join jobs j on ft.job_id=j.job_id"
       "   where ft.access = 2"
+      "   and f.deleted = 0"
       "   and substr(cast(j.commandline as varchar), 1, 8) != '<source>'"
       "   and substr(cast(j.commandline as varchar), 1, 7) != '<claim>'"
       " )";
+  const char *sql_get_all_file_paths = "select file_id, path, type, deleted from files";
+  const char *sql_delete_jobs_by_dead_file =
+      "delete from jobs where job_id in"
+      " (select distinct job_id from filetree where file_id=?)";
   const char *sql_remove_all_jobs = "delete from jobs";
   const char *sql_get_unhashed_file_paths = "select path from unhashed_files";
   const char *sql_insert_unhashed_file = "insert into unhashed_files(job_id, path) values(?, ?)";
@@ -455,6 +510,35 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " order by l.seconds";
   const char *sql_set_runner_status = "update jobs set runner_status=? where job_id=?";
   const char *sql_get_runner_status = "select runner_status from jobs where job_id=?";
+  const char *sql_insert_run_job = "insert or ignore into run_jobs(run_id, job_id) values(?, ?)";
+  const char *sql_check_job_exists = "select 1 from jobs where job_id=?";
+  const char *sql_get_gc_watermark = "select min(run_id) - 1 from runs where end_time is null";
+  const char *sql_set_run_end_time = "update runs set end_time = ? where run_id = ?";
+  const char *sql_get_incomplete_runs = "select run_id, time from runs where end_time is null";
+  const char *sql_clear_run_files = "delete from run_files where run_id = ?";
+  const char *sql_set_starttime = "update jobs set starttime=? where job_id=?";
+  const char *sql_get_dead_hashes =
+      "with disk_batch(hash) as ("
+      " VALUES "
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?),"
+      "   (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?), (?))"
+      "select d.hash from disk_batch d where d.hash is not null and not exists ("
+      "  select 1 from files where hash=d.hash and deleted=0"
+      ")";
 
 #define PREPARE(sql, member)                                                                     \
   ret = sqlite3_prepare_v2(imp->db, sql, -1, &imp->member, 0);                                   \
@@ -474,23 +558,23 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_stats_job, stats_job);
   PREPARE(sql_insert_job, insert_job);
   PREPARE(sql_insert_tree, insert_tree);
+  PREPARE(sql_insert_tree_file_id, insert_tree_file_id);
   PREPARE(sql_insert_log, insert_log);
-  PREPARE(sql_wipe_file, wipe_file);
   PREPARE(sql_insert_file, insert_file);
-  PREPARE(sql_update_file, update_file);
+  PREPARE(sql_reset_deleted, reset_deleted);
+  PREPARE(sql_claim_file, claim_file);
   PREPARE(sql_get_log, get_log);
   PREPARE(sql_replay_log, replay_log);
   PREPARE(sql_get_tree, get_tree);
+  PREPARE(sql_get_tree_id, get_tree_id);
   PREPARE(sql_add_stats, add_stats);
   PREPARE(sql_link_stats, link_stats);
   PREPARE(sql_detect_overlap, detect_overlap);
   PREPARE(sql_delete_overlap, delete_overlap);
   PREPARE(sql_find_prior, find_prior);
-  PREPARE(sql_update_prior, update_prior);
   PREPARE(sql_delete_prior, delete_prior);
-  PREPARE(sql_fetch_hash, fetch_hash);
-  PREPARE(sql_fetch_cached_path, fetch_cached_path);
   PREPARE(sql_delete_jobs, delete_jobs);
+  PREPARE(sql_delete_orphan_files, delete_orphan_files);
   PREPARE(sql_delete_dups, delete_dups);
   PREPARE(sql_delete_stats, delete_stats);
   PREPARE(sql_revtop_order, revtop_order);
@@ -503,12 +587,22 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_get_file_dependency, get_file_dependency);
   PREPARE(sql_get_output_files, get_output_files);
   PREPARE(sql_remove_output_files, remove_output_files);
+  PREPARE(sql_get_all_file_paths, get_all_file_paths);
+  PREPARE(sql_delete_jobs_by_dead_file, delete_jobs_by_dead_file);
   PREPARE(sql_remove_all_jobs, remove_all_jobs);
   PREPARE(sql_get_unhashed_file_paths, get_unhashed_file_paths);
   PREPARE(sql_insert_unhashed_file, insert_unhashed_file);
   PREPARE(sql_get_interleaved_output, get_interleaved_output);
   PREPARE(sql_set_runner_status, set_runner_status);
   PREPARE(sql_get_runner_status, get_runner_status);
+  PREPARE(sql_insert_run_job, insert_run_job);
+  PREPARE(sql_check_job_exists, check_job_exists);
+  PREPARE(sql_get_gc_watermark, get_gc_watermark);
+  PREPARE(sql_set_run_end_time, set_run_end_time);
+  PREPARE(sql_get_incomplete_runs, get_incomplete_runs);
+  PREPARE(sql_clear_run_files, clear_run_files);
+  PREPARE(sql_set_starttime, set_starttime);
+  PREPARE(sql_get_dead_hashes, get_dead_hashes);
 
   return "";
 }
@@ -537,23 +631,23 @@ void Database::close() {
   FINALIZE(stats_job);
   FINALIZE(insert_job);
   FINALIZE(insert_tree);
+  FINALIZE(insert_tree_file_id);
   FINALIZE(insert_log);
-  FINALIZE(wipe_file);
   FINALIZE(insert_file);
-  FINALIZE(update_file);
+  FINALIZE(reset_deleted);
+  FINALIZE(claim_file);
   FINALIZE(get_log);
   FINALIZE(replay_log);
   FINALIZE(get_tree);
+  FINALIZE(get_tree_id);
   FINALIZE(add_stats);
   FINALIZE(link_stats);
   FINALIZE(detect_overlap);
   FINALIZE(delete_overlap);
   FINALIZE(find_prior);
-  FINALIZE(update_prior);
   FINALIZE(delete_prior);
-  FINALIZE(fetch_hash);
-  FINALIZE(fetch_cached_path);
   FINALIZE(delete_jobs);
+  FINALIZE(delete_orphan_files);
   FINALIZE(delete_dups);
   FINALIZE(delete_stats);
   FINALIZE(revtop_order);
@@ -566,84 +660,26 @@ void Database::close() {
   FINALIZE(get_file_dependency);
   FINALIZE(get_output_files);
   FINALIZE(remove_output_files);
+  FINALIZE(get_all_file_paths);
+  FINALIZE(delete_jobs_by_dead_file);
   FINALIZE(remove_all_jobs);
   FINALIZE(get_unhashed_file_paths);
   FINALIZE(insert_unhashed_file);
   FINALIZE(get_interleaved_output);
   FINALIZE(set_runner_status);
   FINALIZE(get_runner_status);
+  FINALIZE(insert_run_job);
+  FINALIZE(check_job_exists);
+  FINALIZE(get_gc_watermark);
+  FINALIZE(set_run_end_time);
+  FINALIZE(get_incomplete_runs);
+  FINALIZE(clear_run_files);
+  FINALIZE(set_starttime);
+  FINALIZE(get_dead_hashes);
+
+  imp->run_lock.reset();
+
   close_db(this);
-  release_build_lock();
-}
-
-bool Database::try_acquire_build_lock(bool wait, bool tty) {
-  const char *lock_file = ".wake-build-lock";
-  WaitingIndicator indicator(tty);
-
-  while (true) {
-    int fd = ::open(lock_file, O_CREAT | O_EXCL | O_WRONLY, 0644);
-
-    if (fd != -1) {
-      // Successfully acquired lock
-      char pid_str[32];
-      snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
-      ssize_t written = ::write(fd, pid_str, strlen(pid_str));
-      ::close(fd);
-
-      if (written < (ssize_t)strlen(pid_str)) {
-        std::cerr << "Failed to create build lock: "
-                  << (written < 0 ? strerror(errno) : "incomplete pid written") << std::endl;
-        unlink(lock_file);
-        return false;
-      }
-
-      indicator.finish();
-      build_lock_acquired = true;
-      return true;
-    }
-
-    if (errno != EEXIST) {
-      std::cerr << "Failed to create build lock: " << strerror(errno) << std::endl;
-      return false;
-    }
-
-    // Lock exists - check if process is still alive
-    if (!is_lock_valid(lock_file)) {
-      unlink(lock_file);  // Stale lock, remove and retry
-      continue;
-    }
-
-    if (!wait) {
-      std::cerr << "Another wake target is running. Exiting early because of '--no-wait' argument."
-                << std::endl;
-      return false;
-    }
-
-    indicator.show_waiting("Another wake target is running; waiting");
-    sleep(1);
-  }
-}
-
-void Database::release_build_lock() {
-  if (build_lock_acquired) {
-    unlink(".wake-build-lock");
-    build_lock_acquired = false;
-  }
-}
-
-bool Database::is_lock_valid(const char *lock_file) {
-  FILE *f = fopen(lock_file, "r");
-  if (!f) return false;
-
-  int pid;
-  if (fscanf(f, "%d", &pid) != 1) {
-    fclose(f);
-    return false;
-  }
-  fclose(f);
-
-  // Check if process exists
-  return kill(pid, 0) == 0;
 }
 
 static void finish_stmt(const char *why, sqlite3_stmt *stmt, bool debug) {
@@ -738,7 +774,7 @@ static void bind_string(const char *why, sqlite3_stmt *stmt, int index, const ch
   }
 }
 
-static void bind_string(const char *why, sqlite3_stmt *stmt, int index, const std::string &x) {
+static void bind_string(const char *why, sqlite3_stmt *stmt, int index, std::string_view x) {
   bind_string(why, stmt, index, x.data(), x.size());
 }
 
@@ -757,6 +793,16 @@ static void bind_double(const char *why, sqlite3_stmt *stmt, int index, double x
   ret = sqlite3_bind_double(stmt, index, x);
   if (ret != SQLITE_OK) {
     std::cerr << why << "; sqlite3_bind_double(" << index
+              << "): " << sqlite3_errmsg(sqlite3_db_handle(stmt)) << std::endl;
+    exit(1);
+  }
+}
+
+static void bind_null(const char *why, sqlite3_stmt *stmt, int index) {
+  int ret;
+  ret = sqlite3_bind_null(stmt, index);
+  if (ret != SQLITE_OK) {
+    std::cerr << why << "; sqlite3_bind_null(" << index
               << "): " << sqlite3_errmsg(sqlite3_db_handle(stmt)) << std::endl;
     exit(1);
   }
@@ -801,9 +847,7 @@ void Database::entropy(uint64_t *key, int words) {
 }
 
 void Database::prepare(const std::string &cmdline) {
-  struct timespec now;
-  clock_gettime(CLOCK_REALTIME, &now);
-  int64_t ts = static_cast<int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+  auto ts = gettime_ns();
 
   const char *why = "Could not insert run";
   begin_rw_txn();
@@ -811,22 +855,110 @@ void Database::prepare(const std::string &cmdline) {
   bind_string(why, imp->add_run, 2, cmdline);
   single_step(why, imp->add_run, imp->debugdb);
   imp->run_id = sqlite3_last_insert_rowid(imp->db);
+
+  // Acquire lock before committing, so we never appear incomplete without one.
+  auto lock = RunLock::create_and_acquire(imp->run_id, true);
+  if (!lock) {
+    std::cerr << "error: " << lock.error() << std::endl;
+    exit(1);
+  }
+  imp->run_lock = std::move(*lock);
   end_txn();
+
+  // Reap any dead runs (our run_id is automatically excluded).
+  reap_dead_runs();
+
+  begin_ro_txn();
+  why = "Could not compute GC watermark";
+  if (sqlite3_step(imp->get_gc_watermark) == SQLITE_ROW) {
+    imp->gc_watermark = sqlite3_column_int64(imp->get_gc_watermark, 0);
+  } else {
+    std::cerr << "warning: unable to compute GC watermark" << std::endl;
+    imp->gc_watermark = 0;
+  }
+  finish_stmt(why, imp->get_gc_watermark, imp->debugdb);
+
+  end_txn();
+}
+
+void Database::finish_run() {
+  auto ts = gettime_ns();
+
+  const char *why = "Could not set run end_time";
+  begin_rw_txn();
+  bind_integer(why, imp->set_run_end_time, 1, ts);
+  bind_integer(why, imp->set_run_end_time, 2, imp->run_id);
+  single_step(why, imp->set_run_end_time, imp->debugdb);
+  bind_integer(why, imp->clear_run_files, 1, imp->run_id);
+  single_step("Could not clear run_files for finished run", imp->clear_run_files, imp->debugdb);
+  end_txn();
+
+  // Remove our own lock file - we're done with this run
+  if (imp->run_lock) {
+    imp->run_lock->unlink_file();
+  }
+}
+
+void Database::reap_dead_runs() {
+  auto ts = gettime_ns();
+
+  // Query incomplete runs, excluding our own (imp->run_id is 0 if no run).
+  auto *why = "Could not query incomplete runs";
+  std::vector<std::pair<long, int64_t>> incomplete_runs;  // (run_id, start_time)
+  begin_ro_txn();
+  while (sqlite3_step(imp->get_incomplete_runs) == SQLITE_ROW) {
+    long run_id = sqlite3_column_int64(imp->get_incomplete_runs, 0);
+    int64_t start_time = sqlite3_column_int64(imp->get_incomplete_runs, 1);
+    if (run_id != imp->run_id) {
+      incomplete_runs.emplace_back(run_id, start_time);
+    }
+  }
+  finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
+  end_txn();
+
+  // Probe locks outside any transaction to avoid blocking DB during IO.
+  // If we can acquire a run's lock, that process is dead.
+  std::vector<long> dead_runs;
+  for (const auto &[run_id, start_time] : incomplete_runs) {
+    auto result = RunLockProbe::probe(run_id, start_time, ts, /*cleanup=*/true);
+    if (!result) {
+      std::cerr << "warning: " << result.error() << std::endl;
+    } else if (*result) {
+      dead_runs.push_back(run_id);
+    }
+  }
+
+  // Mark dead runs as reaped (end_time := -1).
+  if (!dead_runs.empty()) {
+    begin_rw_txn();
+    why = "Could not reap dead run";
+    for (long dead_run : dead_runs) {
+      bind_integer(why, imp->set_run_end_time, 1, static_cast<int64_t>(-1));
+      bind_integer(why, imp->set_run_end_time, 2, dead_run);
+      single_step(why, imp->set_run_end_time, imp->debugdb);
+      bind_integer(why, imp->clear_run_files, 1, dead_run);
+      single_step("Could not clear run_files for dead run", imp->clear_run_files, imp->debugdb);
+    }
+    end_txn();
+  }
 }
 
 void Database::clean() {
   const char *why = "Could not compute critical path";
   begin_rw_txn();
+  bind_integer(why, imp->revtop_order, 1, imp->run_id);
   while (sqlite3_step(imp->revtop_order) == SQLITE_ROW) {
     bind_integer(why, imp->setcrit_path, 1, sqlite3_column_int64(imp->revtop_order, 0));
     single_step(why, imp->setcrit_path, imp->debugdb);
   }
   finish_stmt(why, imp->revtop_order, imp->debugdb);
 
-  bind_integer(why, imp->delete_jobs, 1, imp->run_id);
+  bind_integer(why, imp->delete_jobs, 1, imp->gc_watermark);
   single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
+  single_step("Could not clean orphan files", imp->delete_orphan_files, imp->debugdb);
   single_step("Could not clean database dups", imp->delete_dups, imp->debugdb);
   single_step("Could not clean database stats", imp->delete_stats, imp->debugdb);
+
   end_txn();
 
   // Add checkpoint after cleanup operations
@@ -874,39 +1006,169 @@ void Database::end_txn() const {
   single_step("Could not commit a transaction", imp->commit_txn, imp->debugdb);
 }
 
+namespace {
+struct PathInfo {
+  std::string_view path;
+  std::string_view hash;
+  std::string_view type;
+  long mode;
+  long modified;
+
+  // Compare, ignoring mtime.
+  bool same_identity(const PathInfo &b) const {
+    return path == b.path && hash == b.hash && type == b.type && mode == b.mode;
+  }
+  bool operator==(const PathInfo &b) const { return same_identity(b) && modified == b.modified; }
+  bool operator!=(const PathInfo &b) const { return !(*this == b); }
+};
+}  // end namespace
+
+template <typename F>
+static bool foreach_pathinfo(std::string_view s, F &&f) {
+  static_assert(std::is_invocable_v<F &, PathInfo>, "Callback must be invocable with PathInfo");
+  using R = std::invoke_result_t<F &, PathInfo>;
+
+  static_assert(std::is_same_v<R, void> || std::is_same_v<R, bool>,
+                "Callback must return void or bool");
+
+  if (!s.empty() && s.back() != '\0') return false;
+
+  size_t pos = 0;
+  size_t sz = s.size();
+  while (pos < sz) {
+    size_t p_end = s.find('\0', pos);
+    if (p_end == pos) return false;
+
+    size_t h_start = p_end + 1;
+    size_t h_end = s.find('\0', h_start);
+    if (h_end == std::string_view::npos || h_end == h_start) return false;
+
+    size_t t_start = h_end + 1;
+    size_t t_end = s.find('\0', t_start);
+    if (t_end == std::string_view::npos || t_end == t_start) return false;
+
+    size_t m_start = t_end + 1;
+    size_t m_end = s.find('\0', m_start);
+    if (m_end == std::string_view::npos || m_end == m_start) return false;
+
+    long mode;
+    if (auto [_, ec] = std::from_chars(s.data() + m_start, s.data() + m_end, mode);
+        ec != std::errc())
+      return false;
+
+    size_t mod_start = m_end + 1;
+    size_t mod_end = s.find('\0', mod_start);
+    if (mod_end == std::string_view::npos || mod_end == mod_start) return false;
+
+    long modified;
+    if (auto [_, ec] = std::from_chars(s.data() + mod_start, s.data() + mod_end, modified);
+        ec != std::errc())
+      return false;
+
+    const PathInfo pi{s.substr(pos, p_end - pos), s.substr(h_start, h_end - h_start),
+                      s.substr(t_start, t_end - t_start), mode, modified};
+
+    if constexpr (!std::is_void_v<R>) {
+      if (!std::invoke(f, pi)) return false;
+    } else {
+      std::invoke(f, pi);
+    }
+
+    pos = mod_end + 1;
+  }
+
+  return true;
+}
+
+static std::optional<std::unordered_map<std::string_view, PathInfo>> build_path_to_pathinfo(
+    std::string_view s) {
+  std::unordered_map<std::string_view, PathInfo> m;
+
+  bool res = foreach_pathinfo(s, [&m](const PathInfo &pi) { m.emplace(pi.path, pi); });
+
+  if (!res) return std::nullopt;
+
+  return m;
+}
+
 // This function needs to be able to run twice in succession and return the same results
 // ... because heap allocations are created to hold the file list output by this function.
-// Fortunately, updating use_id is the only side-effect and it does not affect reuse_job.
 Usage Database::reuse_job(const std::string &directory, const std::string &environment,
                           const std::string &commandline, const std::string &stdin_file,
                           uint64_t signature, bool is_atty, const std::string &visible, bool check,
                           long &job, std::string &label, std::vector<FileReflection> &files,
                           double *pathtime) {
   Usage out;
-  long stat_id;
-
   const char *why = "Could not check for a cached job";
-  begin_rw_txn();
+
+  auto vis_hashes = build_path_to_pathinfo(visible);
+  if (!vis_hashes) {
+    status_get_generic_stream(STREAM_ERROR)
+        << "reuse_job given invalid 'visible' string" << std::endl;
+    exit(1);
+  }
+
+  struct JobCandidate {
+    long job;
+    long stat_id;
+    std::string label;
+  };
+  std::vector<JobCandidate> matches;
+
+  // (RO) Look for candidate prior jobs, check visible set.
+  begin_ro_txn();
   bind_string(why, imp->find_prior, 1, directory);
   bind_blob(why, imp->find_prior, 2, commandline);
   bind_blob(why, imp->find_prior, 3, environment);
   bind_string(why, imp->find_prior, 4, stdin_file);
   bind_integer(why, imp->find_prior, 5, signature);
   bind_integer(why, imp->find_prior, 6, is_atty);
-  out.found = sqlite3_step(imp->find_prior) == SQLITE_ROW;
-  if (out.found) {
-    job = sqlite3_column_int64(imp->find_prior, 0);
-    stat_id = sqlite3_column_int64(imp->find_prior, 1);
-    label = rip_column(imp->find_prior, 2);
+  while (sqlite3_step(imp->find_prior) == SQLITE_ROW) {
+    auto job = static_cast<long>(sqlite3_column_int64(imp->find_prior, 0));
+    auto stat_id = static_cast<long>(sqlite3_column_int64(imp->find_prior, 1));
+    auto label = rip_column(imp->find_prior, 2);
+    matches.push_back({job, stat_id, std::move(label)});
   }
   finish_stmt(why, imp->find_prior, imp->debugdb);
 
+  if (matches.empty()) {
+    out.found = false;
+    end_txn();
+    return out;
+  }
+
+  auto match_it = std::find_if(matches.begin(), matches.end(), [&](const auto &candidate) -> bool {
+    bind_integer(why, imp->get_tree, 1, candidate.job);
+    bind_integer(why, imp->get_tree, 2, INPUT);
+
+    while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
+      auto path = rip_column(imp->get_tree, 0);
+      auto hash = rip_column(imp->get_tree, 1);
+      auto type = rip_column(imp->get_tree, 2);
+      long mode = sqlite3_column_int64(imp->get_tree, 3);
+      PathInfo vis{path, hash, type, mode, /*modified=*/0};
+
+      // Deliberately do not consider 'modified' for purposes of job reuse.
+      auto it = vis_hashes->find(path);
+      if (it == vis_hashes->end() || !it->second.same_identity(vis)) {
+        finish_stmt(why, imp->get_tree, imp->debugdb);
+        return false;
+      }
+    }
+    finish_stmt(why, imp->get_tree, imp->debugdb);
+    return true;
+  });
+  out.found = match_it != matches.end();
   if (!out.found) {
     end_txn();
     return out;
   }
 
-  bind_integer(why, imp->stats_job, 1, stat_id);
+  job = match_it->job;
+  label = match_it->label;
+
+  // Gather statistics
+  bind_integer(why, imp->stats_job, 1, match_it->stat_id);
   if (sqlite3_step(imp->stats_job) == SQLITE_ROW) {
     out.status = sqlite3_column_int64(imp->stats_job, 0);
     out.runtime = sqlite3_column_double(imp->stats_job, 1);
@@ -920,26 +1182,12 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
   }
   finish_stmt(why, imp->stats_job, imp->debugdb);
 
-  // Create a hash table of visible files
-  std::unordered_set<std::string> vis;
-  const char *tok = visible.c_str();
-  const char *end = tok + visible.size();
-  for (const char *scan = tok; scan != end; ++scan) {
-    if (*scan == 0 && scan != tok) {
-      vis.emplace(tok, scan - tok);
-      tok = scan + 1;
-    }
+  if (!out.found) {
+    end_txn();
+    return out;
   }
 
-  // Confirm all inputs are still visible
-  bind_integer(why, imp->get_tree, 1, job);
-  bind_integer(why, imp->get_tree, 2, INPUT);
-  while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
-    if (vis.find(rip_column(imp->get_tree, 0)) == vis.end()) out.found = false;
-  }
-  finish_stmt(why, imp->get_tree, imp->debugdb);
-
-  // Confirm all outputs still exist, and report their old hashes
+  // Gather list of outputs.
   bind_integer(why, imp->get_tree, 1, job);
   bind_integer(why, imp->get_tree, 2, OUTPUT);
   while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
@@ -948,20 +1196,56 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     std::string type = rip_column(imp->get_tree, 2);
     long mode = sqlite3_column_int64(imp->get_tree, 3);
     long modified = sqlite3_column_int64(imp->get_tree, 4);
-    if (faccessat(AT_FDCWD, path.c_str(), R_OK, AT_SYMLINK_NOFOLLOW) != 0) out.found = false;
-    files.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
+    bool deleted = sqlite3_column_int64(imp->get_tree, 5) != 0;
+    bool blob_available = sqlite3_column_int64(imp->get_tree, 6) != 0;
+    files.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified, deleted);
+    // If the CAS blob is not available (no live files reference this hash), invalidate the cache.
+    out.found = out.found && blob_available;
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
 
-  // If we need to rerun the job (outputs don't exist), wipe the files-to-check list
+  end_txn();  // End RO transaction
+
   if (!out.found) {
-    files.clear();
+    return out;
   }
 
-  if (out.found && !check) {
-    bind_integer(why, imp->update_prior, 1, imp->run_id);
-    bind_integer(why, imp->update_prior, 2, job);
-    single_step(why, imp->update_prior, imp->debugdb);
+  // Only grab write lock if plan to actually use this!
+  begin_rw_txn();
+
+  // Double-check our job match is still present...
+  bind_integer(why, imp->check_job_exists, 1, job);
+  if (sqlite3_step(imp->check_job_exists) != SQLITE_ROW) {
+    finish_stmt(why, imp->check_job_exists, imp->debugdb);
+    files.clear();
+    end_txn();
+    out.found = false;
+    return out;
+  }
+  finish_stmt(why, imp->check_job_exists, imp->debugdb);
+
+  // Claim it!
+  bind_integer(why, imp->insert_run_job, 1, imp->run_id);
+  bind_integer(why, imp->insert_run_job, 2, job);
+  single_step(why, imp->insert_run_job, imp->debugdb);
+
+  // Additionally claim all output files into run_files for GC protection,
+  // and reset the deleted flag.
+  for (const auto &file : files) {
+    bind_integer(why, imp->claim_file, 1, imp->run_id);
+    bind_string(why, imp->claim_file, 2, file.path);
+    bind_string(why, imp->claim_file, 3, file.hash);
+    bind_string(why, imp->claim_file, 4, file.type);
+    bind_integer(why, imp->claim_file, 5, file.mode);
+    single_step(why, imp->claim_file, imp->debugdb);
+
+    // The ability to perform this update within the same `claim_file` statement is gated behind
+    // the `RETURNING` clause introduced in SQLite 3.35.0
+    bind_string(why, imp->reset_deleted, 1, file.path);
+    bind_string(why, imp->reset_deleted, 2, file.hash);
+    bind_string(why, imp->reset_deleted, 3, file.type);
+    bind_integer(why, imp->reset_deleted, 4, file.mode);
+    single_step(why, imp->reset_deleted, imp->debugdb);
   }
 
   end_txn();
@@ -1015,18 +1299,31 @@ void Database::insert_job(const std::string &directory, const std::string &comma
   bind_integer(why, imp->insert_job, 9, is_atty);
   single_step(why, imp->insert_job, imp->debugdb);
   *job = sqlite3_last_insert_rowid(imp->db);
-  const char *tok = visible.c_str();
-  const char *end = tok + visible.size();
-  for (const char *scan = tok; scan != end; ++scan) {
-    if (*scan == 0 && scan != tok) {
-      bind_integer(why, imp->insert_tree, 1, VISIBLE);
-      bind_integer(why, imp->insert_tree, 2, *job);
-      bind_string(why, imp->insert_tree, 3, tok, scan - tok);
-      single_step(why, imp->insert_tree, imp->debugdb);
-      tok = scan + 1;
-    }
-  }
+
+  // Record this job as part of the current run
+  bind_integer(why, imp->insert_run_job, 1, imp->run_id);
+  bind_integer(why, imp->insert_run_job, 2, *job);
+  single_step(why, imp->insert_run_job, imp->debugdb);
+
+  bool valid_vis = foreach_pathinfo(visible, [&](const PathInfo &pi) {
+    // Insert into filetree (using file_id looked up by path details).
+    bind_integer(why, imp->insert_tree, 1, VISIBLE);
+    bind_integer(why, imp->insert_tree, 2, *job);
+    bind_string(why, imp->insert_tree, 3, pi.path);
+    bind_string(why, imp->insert_tree, 4, pi.hash);
+    bind_string(why, imp->insert_tree, 5, pi.type);
+    bind_integer(why, imp->insert_tree, 6, pi.mode);
+    bind_integer(why, imp->insert_tree, 7, pi.modified);
+    single_step(why, imp->insert_tree, imp->debugdb);
+  });
+
   end_txn();
+
+  if (!valid_vis) {
+    status_get_generic_stream(STREAM_ERROR)
+        << "insert_job given invalid 'visible' string" << std::endl;
+    exit(1);
+  }
 }
 
 template <class F>
@@ -1053,10 +1350,21 @@ static void scan_until_sep(char sep, const std::string &to_scan, F f) {
 void Database::finish_job(long job, const std::string &inputs, const std::string &outputs,
                           const std::string &all_outputs, int64_t starttime, int64_t endtime,
                           uint64_t hashcode, bool keep, Usage reality) {
+  std::unordered_set<std::string_view> output_set;
+  std::vector<PathInfo> output_paths;
+
+  bool res = foreach_pathinfo(outputs, [&output_set, &output_paths](const auto &pi) {
+    output_set.insert(pi.path);
+    output_paths.emplace_back(pi);
+  });
+  if (!res) {
+    status_get_generic_stream(STREAM_ERROR)
+        << "finish_job given invalid 'output' string" << std::endl;
+    exit(1);
+  }
+
   // Compute the unhashed_outputs
-  std::set<std::string> output_set;
   std::vector<std::string> unhashed_outputs;
-  scan_until_sep('\0', outputs, [&](std::string &&path) { output_set.emplace(std::move(path)); });
   scan_until_sep('\0', all_outputs, [&](std::string &&path) {
     if (!output_set.count(path)) unhashed_outputs.emplace_back(std::move(path));
   });
@@ -1073,39 +1381,53 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   bind_integer(why, imp->add_stats, 7, reality.obytes);
   single_step(why, imp->add_stats, imp->debugdb);
   bind_integer(why, imp->link_stats, 1, sqlite3_last_insert_rowid(imp->db));
-  bind_integer(why, imp->link_stats, 2, starttime);
-  bind_integer(why, imp->link_stats, 3, endtime);
-  bind_integer(why, imp->link_stats, 4, keep ? 1 : 0);
-  bind_integer(why, imp->link_stats, 5, job);
+  bind_integer(why, imp->link_stats, 2, endtime);
+  bind_integer(why, imp->link_stats, 3, keep ? 1 : 0);
+  bind_integer(why, imp->link_stats, 4, job);
   single_step(why, imp->link_stats, imp->debugdb);
 
-  // Grab the visible set
-  std::set<std::string> visible;
-  bind_integer(why, imp->get_tree, 1, job);
-  bind_integer(why, imp->get_tree, 2, VISIBLE);
-  while (sqlite3_step(imp->get_tree) == SQLITE_ROW) visible.insert(rip_column(imp->get_tree, 0));
-  finish_stmt(why, imp->get_tree, imp->debugdb);
+  // Grab the visible set.
+  struct FileAndMtime {
+    long file_id;
+    long mtime;
+  };
+  std::unordered_map<std::string, FileAndMtime> visible_files;
+  bind_integer(why, imp->get_tree_id, 1, job);
+  bind_integer(why, imp->get_tree_id, 2, VISIBLE);
+  while (sqlite3_step(imp->get_tree_id) == SQLITE_ROW) {
+    auto path = rip_column(imp->get_tree_id, 0);
+    auto file_id = sqlite3_column_int64(imp->get_tree_id, 1);
+    auto modified = sqlite3_column_int64(imp->get_tree_id, 2);
+    visible_files.emplace(std::move(path), FileAndMtime{file_id, modified});
+  }
+  finish_stmt(why, imp->get_tree_id, imp->debugdb);
 
   // Insert inputs, confirming they are visible
   scan_until_sep('\0', inputs, [&, this](const std::string &input) {
-    if (visible.find(input) == visible.end()) {
+    auto it = visible_files.find(input);
+    if (it == visible_files.end()) {
       std::stringstream s;
       s << "Job " << job << " erroneously added input '" << input
         << "' which was not a visible file." << std::endl;
       status_get_generic_stream(STREAM_ERROR) << s.str() << std::endl;
     } else {
-      bind_integer(why, imp->insert_tree, 1, INPUT);
-      bind_integer(why, imp->insert_tree, 2, job);
-      bind_string(why, imp->insert_tree, 3, input);
-      single_step(why, imp->insert_tree, imp->debugdb);
+      bind_integer(why, imp->insert_tree_file_id, 1, INPUT);
+      bind_integer(why, imp->insert_tree_file_id, 2, job);
+      bind_integer(why, imp->insert_tree_file_id, 3, it->second.file_id);
+      bind_integer(why, imp->insert_tree_file_id, 4, it->second.mtime);
+      single_step(why, imp->insert_tree_file_id, imp->debugdb);
     }
   });
 
-  // Insert outputs
-  for (const auto &output : output_set) {
+  // Insert outputs.
+  for (const auto &output : output_paths) {
     bind_integer(why, imp->insert_tree, 1, OUTPUT);
     bind_integer(why, imp->insert_tree, 2, job);
-    bind_string(why, imp->insert_tree, 3, output);
+    bind_string(why, imp->insert_tree, 3, output.path);
+    bind_string(why, imp->insert_tree, 4, output.hash);
+    bind_string(why, imp->insert_tree, 5, output.type);
+    bind_integer(why, imp->insert_tree, 6, output.mode);
+    bind_integer(why, imp->insert_tree, 7, output.modified);
     single_step(why, imp->insert_tree, imp->debugdb);
   }
 
@@ -1116,19 +1438,35 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
     single_step(why, imp->insert_unhashed_file, imp->debugdb);
   }
 
-  bind_integer(why, imp->delete_prior, 1, imp->run_id);
+  // Eagerly delete duplicate jobs (same command signature) from completed runs
+  bind_integer(why, imp->delete_prior, 1, imp->gc_watermark);
   bind_integer(why, imp->delete_prior, 2, job);
   single_step(why, imp->delete_prior, imp->debugdb);
 
-  bind_integer(why, imp->delete_overlap, 1, imp->run_id);
+  // Eagerly delete jobs with overlapping outputs from completed runs
+  bind_integer(why, imp->delete_overlap, 1, imp->gc_watermark);
   bind_integer(why, imp->delete_overlap, 2, job);
   single_step(why, imp->delete_overlap, imp->debugdb);
 
+  // Detect if multiple jobs in this run output the same file (an error condition).
+  // The run_jobs table tracks all jobs in the current run, allowing us to constrain
+  // the overlap check to only jobs in this run (not jobs from previous runs).
   bool fail = false;
   bind_integer(why, imp->detect_overlap, 1, job);
+  bind_integer(why, imp->detect_overlap, 2, imp->run_id);
   while (sqlite3_step(imp->detect_overlap) == SQLITE_ROW) {
     std::stringstream s;
-    s << "File output by multiple Jobs: " << rip_column(imp->detect_overlap, 0) << std::endl;
+    auto path = rip_column(imp->detect_overlap, 0);
+    auto hash1 = rip_column(imp->detect_overlap, 1);
+    long mode1 = sqlite3_column_int64(imp->detect_overlap, 2);
+    auto type1 = rip_column(imp->detect_overlap, 3);
+    auto hash2 = rip_column(imp->detect_overlap, 4);
+    long mode2 = sqlite3_column_int64(imp->detect_overlap, 5);
+    auto type2 = rip_column(imp->detect_overlap, 6);
+    auto job2 = sqlite3_column_int64(imp->detect_overlap, 7);
+    s << "File output by multiple Jobs: " << path << ":\n\tjob " << job << " has hash '" << hash1
+      << "', mode: " << std::oct << mode1 << ", type: " << type1 << ";\n\tjob " << job2
+      << " has hash '" << hash2 << "', mode: " << std::oct << mode2 << ", type: " << type2;
     status_get_generic_stream(STREAM_ERROR) << s.str() << std::endl;
     fail = true;
   }
@@ -1170,6 +1508,87 @@ std::vector<std::string> Database::clear_jobs() {
   return out;
 }
 
+bool Database::clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files) {
+  const char *why = "Could not clear jobs";
+  std::vector<std::string> out;
+
+  // Ensure no new runs while we're cleaning, and that we have latest + consistent view.
+  begin_rw_txn();
+
+  if (sqlite3_step(imp->get_incomplete_runs) == SQLITE_ROW) {
+    finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
+    end_txn();
+    return false;
+  }
+  finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
+  while (sqlite3_step(imp->get_output_files) == SQLITE_ROW) {
+    out.emplace_back(rip_column(imp->get_output_files, 0));
+  }
+  finish_stmt(why, imp->get_output_files, imp->debugdb);
+
+  while (sqlite3_step(imp->get_unhashed_file_paths) == SQLITE_ROW) {
+    out.emplace_back(rip_column(imp->get_unhashed_file_paths, 0));
+  }
+  finish_stmt(why, imp->get_unhashed_file_paths, imp->debugdb);
+
+  single_step(why, imp->remove_all_jobs, imp->debugdb);
+  single_step(why, imp->remove_output_files, imp->debugdb);
+
+  // Delete files while still holding write lock. This prevents new
+  // builds from starting until cleanup is complete.
+  delete_files(std::move(out));
+
+  end_txn();
+
+  return true;
+}
+
+std::optional<size_t> Database::prune_to_workspace(
+    wcl::function_ref<bool(const std::string &path, const std::string &type)> exists) {
+  const char *why = "Could not prune workspace";
+
+  // Hold the write lock for the entire operation so no new run can start between the
+  // active check and the scan/delete, matching the pattern in clear_jobs_if_safe.
+  begin_rw_txn();
+
+  if (sqlite3_step(imp->get_incomplete_runs) == SQLITE_ROW) {
+    finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
+    end_txn();
+    return std::nullopt;
+  }
+  finish_stmt(why, imp->get_incomplete_runs, imp->debugdb);
+
+  // Check each unique output file_id once; collect those that fail the exists check.
+  std::vector<int64_t> dead_files;
+  while (sqlite3_step(imp->get_all_file_paths) == SQLITE_ROW) {
+    int64_t file_id = sqlite3_column_int64(imp->get_all_file_paths, 0);
+    const char *path = (const char *)sqlite3_column_text(imp->get_all_file_paths, 1);
+    const char *type = (const char *)sqlite3_column_text(imp->get_all_file_paths, 2);
+    bool deleted = sqlite3_column_int64(imp->get_all_file_paths, 3) != 0;
+    if (path && type && (deleted || !exists(path, type))) dead_files.push_back(file_id);
+  }
+  finish_stmt(why, imp->get_all_file_paths, imp->debugdb);
+
+  size_t pruned = 0;
+  for (int64_t file_id : dead_files) {
+    bind_integer(why, imp->delete_jobs_by_dead_file, 1, file_id);
+    single_step(why, imp->delete_jobs_by_dead_file, imp->debugdb);
+    pruned += sqlite3_changes(imp->db);
+  }
+  if (pruned > 0) {
+    single_step("Could not clean orphan files", imp->delete_orphan_files, imp->debugdb);
+  }
+
+  end_txn();
+
+  if (pruned > 0) {
+    checkpoint(false);
+    vacuum();
+  }
+
+  return pruned;
+}
+
 void Database::tag_job(long job, const std::string &uri, const std::string &content) {
   const char *why = "Could not tag a job";
   begin_rw_txn();
@@ -1192,7 +1611,8 @@ std::vector<FileReflection> Database::get_tree(int kind, long job) {
     std::string type = rip_column(imp->get_tree, 2);
     long mode = sqlite3_column_int64(imp->get_tree, 3);
     long modified = sqlite3_column_int64(imp->get_tree, 4);
-    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
+    bool deleted = sqlite3_column_int64(imp->get_tree, 5) != 0;
+    out.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified, deleted);
   }
   finish_stmt(why, imp->get_tree, imp->debugdb);
   end_txn();
@@ -1251,54 +1671,23 @@ void Database::replay_output(long job, const char *stdout, const char *stderr,
 }
 
 void Database::add_hash(const std::string &file, const std::string &type, const std::string &hash,
-                        long mode, long modified) {
+                        long mode) {
   const char *why = "Could not insert a hash";
   begin_rw_txn();
-  bind_string(why, imp->wipe_file, 1, file);
-  bind_string(why, imp->wipe_file, 2, hash);
-  single_step(why, imp->wipe_file, imp->debugdb);
-  bind_string(why, imp->update_file, 1, hash);
-  bind_string(why, imp->update_file, 2, type);
-  bind_integer(why, imp->update_file, 3, mode);
-  bind_integer(why, imp->update_file, 4, modified);
-  bind_string(why, imp->update_file, 5, file);
-  single_step(why, imp->update_file, imp->debugdb);
   bind_string(why, imp->insert_file, 1, hash);
   bind_string(why, imp->insert_file, 2, type);
   bind_integer(why, imp->insert_file, 3, mode);
-  bind_integer(why, imp->insert_file, 4, modified);
-  bind_string(why, imp->insert_file, 5, file);
+  bind_string(why, imp->insert_file, 4, file);
   single_step(why, imp->insert_file, imp->debugdb);
-  end_txn();
-}
 
-std::string Database::get_hash(const std::string &file, long modified) {
-  std::string out;
-  const char *why = "Could not fetch a hash";
-  begin_ro_txn();
-  bind_string(why, imp->fetch_hash, 1, file);
-  bind_integer(why, imp->fetch_hash, 2, modified);
-  if (sqlite3_step(imp->fetch_hash) == SQLITE_ROW) out = rip_column(imp->fetch_hash, 0);
-  finish_stmt(why, imp->fetch_hash, imp->debugdb);
-  end_txn();
-  return out;
-}
+  bind_integer(why, imp->claim_file, 1, imp->run_id);
+  bind_string(why, imp->claim_file, 2, file);
+  bind_string(why, imp->claim_file, 3, hash);
+  bind_string(why, imp->claim_file, 4, type);
+  bind_integer(why, imp->claim_file, 5, mode);
+  single_step(why, imp->claim_file, imp->debugdb);
 
-std::tuple<std::string, std::string, long> Database::get_cached_path(const std::string &file,
-                                                                     long modified) {
-  std::tuple<std::string, std::string, long> out;
-  const char *why = "Could not fetch a cached path";
-  begin_ro_txn();
-  bind_string(why, imp->fetch_cached_path, 1, file);
-  bind_integer(why, imp->fetch_cached_path, 2, modified);
-  if (sqlite3_step(imp->fetch_cached_path) == SQLITE_ROW) {
-    std::get<0>(out) = rip_column(imp->fetch_cached_path, 0);
-    std::get<1>(out) = rip_column(imp->fetch_cached_path, 1);
-    std::get<2>(out) = sqlite3_column_int64(imp->fetch_cached_path, 2);
-  }
-  finish_stmt(why, imp->fetch_cached_path, imp->debugdb);
   end_txn();
-  return out;
 }
 
 static std::vector<std::string> chop_null(const std::string &str) {
@@ -1354,7 +1743,6 @@ JAST JobReflection::to_structured_json() const {
   JAST json(JSON_OBJECT);
   json.add("job", job);
   json.add("label", label);
-  json.add("stale", stale);
   json.add("directory", directory);
 
   JAST &commandline_json = json.add("commandline", JSON_ARRAY);
@@ -1445,7 +1833,6 @@ JAST JobReflection::to_json() const {
   JAST json(JSON_OBJECT);
   json.add("job", job);
   json.add("label", label.c_str());
-  json.add("stale", stale);
   json.add("directory", directory.c_str());
 
   std::stringstream commandline_stream;
@@ -1558,23 +1945,22 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
   desc.stdin_file = rip_column(query, 6);
   desc.starttime = DBTime(sqlite3_column_int64(query, 7));
   desc.endtime = DBTime(sqlite3_column_int64(query, 8));
-  desc.stale = sqlite3_column_int64(query, 9) != 0;
-  desc.wake_start = DBTime(sqlite3_column_int64(query, 10));
-  desc.wake_cmdline = rip_column(query, 11);
-  desc.usage.status = sqlite3_column_int64(query, 12);
-  desc.usage.runtime = sqlite3_column_double(query, 13);
-  desc.usage.cputime = sqlite3_column_double(query, 14);
-  desc.usage.membytes = sqlite3_column_int64(query, 15);
-  desc.usage.ibytes = sqlite3_column_int64(query, 16);
-  desc.usage.obytes = sqlite3_column_int64(query, 17);
+  desc.wake_start = DBTime(sqlite3_column_int64(query, 9));
+  desc.wake_cmdline = rip_column(query, 10);
+  desc.usage.status = sqlite3_column_int64(query, 11);
+  desc.usage.runtime = sqlite3_column_double(query, 12);
+  desc.usage.cputime = sqlite3_column_double(query, 13);
+  desc.usage.membytes = sqlite3_column_int64(query, 14);
+  desc.usage.ibytes = sqlite3_column_int64(query, 15);
+  desc.usage.obytes = sqlite3_column_int64(query, 16);
 
-  int runner_status_type = sqlite3_column_type(query, 18);
+  int runner_status_type = sqlite3_column_type(query, 17);
   if (runner_status_type == SQLITE_NULL) {
     // NULL in database - return false to indicate success (no error)
     desc.runner_status = {false, ""};
   } else {
     // Non-NULL value (including empty string) - return true with the actual status message
-    desc.runner_status = {true, rip_column(query, 18)};
+    desc.runner_status = {true, rip_column(query, 17)};
   }
 
   if (desc.stdin_file.empty()) desc.stdin_file = "/dev/null";
@@ -1657,6 +2043,257 @@ std::vector<std::string> Database::get_outputs() const {
   return out;
 }
 
+Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
+                                                 const std::unordered_set<std::string> &paths,
+                                                 bool recursive) {
+  RemovalManifest result;
+
+  if (paths.empty()) {
+    return result;
+  }
+
+  // Query SQLite's parameter limit once at the start.  `SQLITE_MAX_VARIABLE_NUMBER` would provide
+  // a constant based on the SQLite version, but it theoretically could have been lowered.
+  const size_t max_params = sqlite3_limit(imp->db, SQLITE_LIMIT_VARIABLE_NUMBER, -1);
+
+  // Begin exclusive transaction to prevent concurrent builds from referencing files we're in the
+  // middle of deleting.
+  begin_rw_txn();
+
+  // First stage: Get all requested paths that exist in the database.  Note that we'll need to
+  // unlink all requested files from the workspace, regardless of whether they share CAS blobs.
+  const char *why_paths = "Could not get paths to remove";
+  auto paths_iter = paths.begin();
+  for (size_t batch_start = 0; batch_start < paths.size(); batch_start += max_params) {
+    size_t batch_size = std::min(max_params, paths.size() - batch_start);
+
+    std::string input_placeholders = "?";
+    for (size_t i = 1; i < batch_size; ++i) {
+      input_placeholders += ", ?";
+    }
+
+    std::string paths_query = "select distinct path, type from files where path in (" +
+                              input_placeholders + ") and deleted = 0";
+    sqlite3_stmt *paths_stmt = nullptr;
+    int ret = sqlite3_prepare_v2(imp->db, paths_query.c_str(), -1, &paths_stmt, 0);
+    if (ret != SQLITE_OK) {
+      std::cerr << why_paths << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
+      end_txn();
+      return {};
+    }
+    for (size_t i = 1; i <= batch_size; ++i) {
+      bind_string(why_paths, paths_stmt, i, *paths_iter);
+      ++paths_iter;
+    }
+
+    while (sqlite3_step(paths_stmt) == SQLITE_ROW) {
+      std::string path = rip_column(paths_stmt, 0);
+      std::string type = rip_column(paths_stmt, 1);
+      if (type == "directory") {
+        if (recursive) {
+          result.directories.emplace_back(path);
+        } else {
+          std::cerr << "wake --rm: skipping directory: '" << path << "'" << std::endl;
+          result.skipped_paths.emplace_back(path);
+        }
+      } else {
+        result.files.emplace_back(path);
+      }
+    }
+
+    finish_stmt(why_paths, paths_stmt, imp->debugdb);
+    sqlite3_finalize(paths_stmt);
+  }
+
+  // If recursive (i.e. directories were marked for further processing), query for
+  // all files with paths that start with any of those directories' paths.
+  const char *why_dirs = "Could not get directory children";
+  if (!result.directories.empty()) {
+    // `result.directories` will grow over the course of this loop, but we only care about the
+    // original contents -- the new elements are just implicit descendents being made explicit.
+    size_t original_directory_size = result.directories.size();
+    for (size_t batch_start = 0; batch_start < original_directory_size; batch_start += max_params) {
+      size_t batch_size = std::min(max_params, original_directory_size - batch_start);
+
+      std::string dir_input_placeholders = "?";
+      for (size_t i = 1; i < batch_size; ++i) {
+        dir_input_placeholders += ", ?";
+      }
+
+      // Build a query to find all descendants of the directories.
+      std::string dir_children_prefix_test = "(path like ? || '/%')";
+      std::string dir_children_query =
+          "select distinct path, type from files where deleted = 0 and (" +
+          dir_children_prefix_test;
+      for (size_t i = 1; i < batch_size; ++i) {
+        dir_children_query += " or " + dir_children_prefix_test;
+      }
+      // The exact order of the descendants isn't critical, so long as the parent/child
+      // relationships are predictable.  Thus, the length is used for a faster sort --
+      // a child necessarily has a longer path than its parent, no matter where it might
+      // fall alphabetically among "cousins".
+      dir_children_query += ") order by length(path)";
+
+      sqlite3_stmt *dir_stmt = nullptr;
+      int ret = sqlite3_prepare_v2(imp->db, dir_children_query.c_str(), -1, &dir_stmt, 0);
+      if (ret != SQLITE_OK) {
+        std::cerr << why_dirs << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
+        end_txn();
+        return {};
+      }
+      for (size_t i = 0; i < batch_size; ++i) {
+        bind_string(why_dirs, dir_stmt, i + 1, result.directories[batch_start + i]);
+      }
+
+      while (sqlite3_step(dir_stmt) == SQLITE_ROW) {
+        std::string child_path = rip_column(dir_stmt, 0);
+        std::string child_type = rip_column(dir_stmt, 1);
+        if (child_type == "directory") {
+          // The prefix match (LIKE 'dir/%') naturally handles arbitrary nesting depth;
+          // e.g., 'a/' matches both 'a/b.txt' and 'a/subdir/c.txt'.
+          result.directories.emplace_back(child_path);
+        } else {
+          result.files.emplace_back(child_path);
+        }
+      }
+
+      finish_stmt(why_dirs, dir_stmt, imp->debugdb);
+      sqlite3_finalize(dir_stmt);
+    }
+  }
+
+  if (result.files.empty()) {
+    end_txn();
+    return result;
+  }
+
+  // Second stage: Find hashes whose CAS blobs can be safely deleted.
+  // Only delete a blob if ALL files with that hash are being removed.
+  std::vector<std::string> blobs_to_delete;
+  const char *why_hashes = "Could not get blob hashes for paths";
+  for (size_t batch_start = 0; batch_start < result.files.size(); batch_start += max_params) {
+    size_t batch_size = std::min(max_params, result.files.size() - batch_start);
+
+    std::string hashes_input_placeholders = "(?)";
+    for (size_t i = 1; i < batch_size; ++i) {
+      hashes_input_placeholders += ", (?)";
+    }
+    std::string hashes_query =
+        // Use a CTE to define the removal list once for both select operations.
+        "with paths_to_remove(path) as (values " + hashes_input_placeholders +
+        ")"
+        " select distinct f1.hash from files f1"
+        " where f1.path in paths_to_remove"
+        " and f1.deleted = 0"
+        // Only include hashes where *all* files with that hash are in our removal list
+        // (i.e., exclude hashes that are shared with files we're *not* removing).
+        " and not exists ("
+        "   select 1 from files f2"
+        "   where f2.hash = f1.hash"
+        "   and f2.path not in paths_to_remove"
+        "   and f2.deleted = 0"
+        " )"
+        // For multi-wake safety, also exclude hashes currently in use by active runs.
+        " and not exists ("
+        "   select 1 from run_files rf"
+        "   join runs r on rf.run_id = r.run_id"
+        "   join files f2 on rf.file_id = f2.file_id"
+        "   where f2.hash = f1.hash"
+        "   and r.end_time is null"
+        " )";
+
+    sqlite3_stmt *hashes_stmt = nullptr;
+    int ret = sqlite3_prepare_v2(imp->db, hashes_query.c_str(), -1, &hashes_stmt, 0);
+    if (ret != SQLITE_OK) {
+      std::cerr << why_hashes << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl;
+      end_txn();
+      return result;
+    }
+    for (size_t i = 0; i < batch_size; ++i) {
+      bind_string(why_hashes, hashes_stmt, i + 1, result.files[batch_start + i]);
+    }
+
+    while (sqlite3_step(hashes_stmt) == SQLITE_ROW) {
+      std::string hash = rip_column(hashes_stmt, 0);
+      blobs_to_delete.emplace_back(hash);
+    }
+
+    finish_stmt(why_hashes, hashes_stmt, imp->debugdb);
+    sqlite3_finalize(hashes_stmt);
+  }
+
+  // Third stage: Remove the resulting blobs from the CAS (if any need deletion).
+  for (const auto &hash : blobs_to_delete) {
+    // Parse and remove the CAS blob if CAS is available.
+    if (cas) {
+      auto hash_result = cas::ContentHash::from_hex(hash);
+      if (hash_result) {
+        auto remove_error = cas->remove_blob(*hash_result);
+        if (!remove_error) {
+          // Store hash for later batch database marking, if it was actually removed.
+          // If it wasn't this time, it likely was already handled in a previous iteration of this
+          // loop; either way, we don't have to visit this (twice) when updating the DB metadata.
+          result.deleted_blobs.push_back(hash);
+        }
+      }
+    } else {
+      // If there's no CAS, we still need to mark the hash for deletion in the database.
+      // This won't benefit from each element in the vector being unique, but some duplication
+      // here shouldn't cause any significant overhead.
+      result.deleted_blobs.push_back(hash);
+    }
+  }
+
+  // Combine directories and paths into a single vector for easier batching.
+  std::vector<std::string> all_paths_to_mark;
+  all_paths_to_mark.reserve(result.directories.size() + result.files.size());
+  all_paths_to_mark.insert(all_paths_to_mark.end(), result.directories.begin(),
+                           result.directories.end());
+  all_paths_to_mark.insert(all_paths_to_mark.end(), result.files.begin(), result.files.end());
+
+  // Mark all requested files as deleted in the database, even if their CAS blobs weren't removed
+  // (e.g., because they're shared with other files).  This *could* be implemented as a pre-prepared
+  // query by performing the `update` within the vector iteration, but we've seen repeated queries
+  // like that cause measurable overhead in the past.
+  const char *why_mark = "Could not mark files as deleted";
+  for (size_t batch_start = 0; batch_start < all_paths_to_mark.size(); batch_start += max_params) {
+    size_t batch_size = std::min(max_params, all_paths_to_mark.size() - batch_start);
+
+    std::string mark_input_placeholders = "?";
+    for (size_t i = 1; i < batch_size; ++i) {
+      mark_input_placeholders += ", ?";
+    }
+    std::string mark_query =
+        "update files set deleted=1 where path in (" + mark_input_placeholders + ")";
+    sqlite3_stmt *mark_stmt = nullptr;
+    int ret = sqlite3_prepare_v2(imp->db, mark_query.c_str(), -1, &mark_stmt, 0);
+    if (ret != SQLITE_OK) {
+      // This is a bad place to error.  We can't roll back since we've already unlinked the CAS
+      // files, but we can't realistically recover since it was the same database update we'd need
+      // to make in order to rectify the database which caused the error in the first place.
+      // The best thing to do is to tell the user to run a (slower) command to check the DB and CAS
+      // against each other and fix any inconsistencies.
+      // TODO: Write that command and update this.  It'll likely be a manually-triggered deep GC.
+      std::cerr << why_mark << "; sqlite3_prepare_v2: " << sqlite3_errmsg(imp->db) << std::endl
+                << "The wake.db is likely corrupted." << std::endl;
+
+      end_txn();
+      return result;
+    }
+    for (size_t i = 0; i < batch_size; ++i) {
+      bind_string(why_mark, mark_stmt, i + 1, all_paths_to_mark[batch_start + i]);
+    }
+
+    single_step(why_mark, mark_stmt, imp->debugdb);
+    sqlite3_finalize(mark_stmt);
+  }
+
+  // Release the database lock now that both the CAS and the DB have been updated.
+  end_txn();
+
+  return result;
+}
+
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,
                                                                   sqlite3_stmt *query) {
   const char *why = "Could not get file dependencies";
@@ -1719,14 +2356,11 @@ std::string collapse_and(const std::vector<std::vector<std::string>> &ands, int 
   return out;
 }
 
-std::vector<JobReflection> Database::matching(
-    const std::vector<std::vector<std::string>> &core_filters,
-    std::vector<std::vector<std::string>> input_file_filters,
-    std::vector<std::vector<std::string>> output_file_filters) {
+static std::string build_matching_id_query(MatchingQueryFilters filters) {
   std::string input_file_join = "";
-  if (!input_file_filters.empty()) {
-    input_file_filters.push_back({"access = 1"});
-    std::string conds = collapse_and(input_file_filters, 3);
+  if (!filters.input_file_filters.empty()) {
+    filters.input_file_filters.push_back({"access = 1"});
+    std::string conds = collapse_and(filters.input_file_filters, 3);
     input_file_join =
         "        INNER JOIN (\n"
         "            SELECT filetree.job_id FROM filetree\n"
@@ -1738,9 +2372,9 @@ std::vector<JobReflection> Database::matching(
   }
 
   std::string output_file_join = "";
-  if (!output_file_filters.empty()) {
-    output_file_filters.push_back({"access = 2"});
-    std::string conds = collapse_and(output_file_filters, 3);
+  if (!filters.output_file_filters.empty()) {
+    filters.output_file_filters.push_back({"access = 2"});
+    std::string conds = collapse_and(filters.output_file_filters, 3);
     output_file_join =
         "        INNER JOIN (\n"
         "            SELECT filetree.job_id FROM filetree\n"
@@ -1751,37 +2385,20 @@ std::vector<JobReflection> Database::matching(
         conds + "\n" + "        ) ft_output ON core.job_id = ft_output.job_id\n";
   }
 
-  // This query creates a subtable of the following shape:
-  //
-  // clang-format off
-  // | job_id | label | run_id | use_id | endtime | commandline | runner_status | status | runtime |       tags       |
-  // -----------------------------------------------------------------------------------------------------------------------
-  // |    1   |  foo  |   1    |    1   |  1234   | ls lah .    | NULL          |   0    |   2.8   | <d>a=b<d>c=d<d>  |
-  // |    2   |  bar  |   1    |    1   |  0000   | cat f.txt   | "Job failed"  |   0    |   0.0   |      null        |
-  // clang-format on
-  //
-  // The subtable is constructed by joining the jobs table with the minimal set of other dependent
-  // tables with the following extra processing excluding input_files and output_files which are
-  // too expensive to include.
-  // 1. tags are flattened from two columns (uri, content) to one column (tags) with a = separator
-  // 2. tags are group_concat'd into a single row per job. <d> is
-  //    used as a deliminator between each value. The deliminator is also placed at the beginning
-  //    and end of each row so that queries don't need to special case the first/last entry.
-  //
-  // Any inspection flag/user code may add any WHERE expression conditions to the main query using
-  // the columns of the subtable for fine grain filters.
-  //
-  // For example, the query below will return all jobs that exited with status code 0 and where
-  // tagged with key = foo, value = var
-  //   SELECT job_id FROM **SUBTABLE**
-  //   WHERE status = 0 AND tags like '%<d>foo=bar<d>%'
-  std::string core_table = R"delim(        (
+  // Build the core table based on what features the filters need.
+  // Performance optimization: skip expensive GROUP BY + tag concatenation if not needed.
+  std::string core_table;
+
+  if (filters.needs_tag_concat) {
+    // Full query with GROUP BY for tag concatenation (needed for LIKE queries on tags)
+    core_table = R"delim(        (
             SELECT
                 j.job_id,
                 j.label,
                 j.run_id,
-                j.use_id,
+                j.starttime,
                 j.endtime,
+                j.stat_id,
                 j.commandline,
                 j.runner_status,
                 s.status,
@@ -1800,28 +2417,56 @@ std::vector<JobReflection> Database::matching(
                 j.job_id
         ) core
 )delim";
+  } else {
+    // Simplified query without tag concatenation (much faster!)
+    core_table = R"delim(        (
+            SELECT
+                j.job_id,
+                j.label,
+                j.run_id,
+                j.starttime,
+                j.endtime,
+                j.stat_id,
+                j.commandline,
+                j.runner_status,
+                s.status,
+                s.runtime
+            FROM jobs j
+            LEFT JOIN (
+                SELECT stat_id, status, runtime FROM stats
+            ) s
+            ON j.stat_id=s.stat_id
+        ) core
+)delim";
+  }
 
   std::string subtable = core_table + input_file_join + output_file_join;
 
-  // This query wraps the subtable, applies the requested filters, and returns the matching jobs
+  // This query selects from the subtable, applies the requested filters,
+  // and returns matching job_ids.
   std::string id_query =
       "    SELECT core.job_id\n"
-      "    FROM\n"
-      "    (\n" +
-      subtable + "    )";
+      "    FROM\n" +
+      subtable;
 
-  if (!core_filters.empty()) {
+  if (!filters.core_filters.empty()) {
     id_query +=
         "\n"
         "    WHERE\n"
         "        " +
-        collapse_and(core_filters, 1);
+        collapse_and(filters.core_filters, 1);
   }
+
+  return id_query;
+}
+
+std::vector<JobReflection> Database::matching(MatchingQueryFilters filters) {
+  auto id_query = build_matching_id_query(std::move(filters));
 
   // Adapts the id_query to match the columns needed to create a JobReflection
   std::string query =
       "SELECT j.job_id, j.label, j.directory, j.commandline, j.environment, j.stack, j.stdin, "
-      "j.starttime, j.endtime, j.stale, r.time, r.cmdline, s.status, s.runtime, s.cputime, "
+      "j.starttime, j.endtime, r.time, r.cmdline, s.status, s.runtime, s.cputime, "
       "s.membytes, s.ibytes, s.obytes, j.runner_status\n"
       "FROM jobs j\n"
       "LEFT JOIN stats s\n"
@@ -1846,6 +2491,43 @@ std::vector<JobReflection> Database::matching(
   end_txn();
 
   sqlite3_finalize(stmt);
+  return out;
+}
+
+std::vector<OpenRunJobReflection> Database::matching_open_runs(MatchingQueryFilters filters) {
+  auto id_query = build_matching_id_query(std::move(filters));
+
+  auto query = R"(
+    SELECT rj.run_id, j.job_id, j.label, j.starttime
+    FROM run_jobs rj
+    JOIN jobs j ON rj.job_id = j.job_id
+    JOIN runs r on rj.run_id = r.run_id
+    WHERE r.end_time IS NULL and j.stat_id IS NULL and j.job_id IN (
+  )" + id_query +
+               R"()
+    ORDER BY rj.run_id, j.starttime, j.job_id;
+  )";
+
+  sqlite3_stmt *stmt;
+  if (sqlite3_prepare_v2(imp->db, query.c_str(), -1, &stmt, 0) != SQLITE_OK) {
+    std::string out = std::string("sqlite3_prepare_v2 (dyn ps): ") + sqlite3_errmsg(imp->db);
+    std::cerr << out << std::endl;
+    sqlite3_finalize(stmt);
+    return {};
+  }
+
+  std::vector<OpenRunJobReflection> out;
+  begin_ro_txn();
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    auto run_id = sqlite3_column_int(stmt, 0);
+    auto job_id = sqlite3_column_int64(stmt, 1);
+    auto label = rip_column(stmt, 2);
+    auto starttime = sqlite3_column_int64(stmt, 3);
+    out.emplace_back(OpenRunJobReflection{run_id, job_id, std::move(label), starttime});
+  }
+  sqlite3_finalize(stmt);
+  end_txn();
+
   return out;
 }
 
@@ -1922,13 +2604,27 @@ std::vector<RunReflection> Database::get_runs() const {
   while (sqlite3_step(imp->get_all_runs) == SQLITE_ROW) {
     RunReflection run;
     run.id = sqlite3_column_int(imp->get_all_runs, 0);
-    run.time = DBTime(sqlite3_column_int64(imp->get_all_runs, 1));
-    run.cmdline = rip_column(imp->get_all_runs, 2);
+    run.start_time = DBTime(sqlite3_column_int64(imp->get_all_runs, 1));
+    if (sqlite3_column_type(imp->get_all_runs, 2) == SQLITE_NULL) {
+      run.end_time = std::nullopt;
+    } else {
+      run.end_time = sqlite3_column_int64(imp->get_all_runs, 2);
+    }
+    run.cmdline = rip_column(imp->get_all_runs, 3);
     out.emplace_back(run);
   }
   finish_stmt("Could not retrieve runs", imp->get_all_runs, imp->debugdb);
   end_txn();
   return out;
+}
+
+void Database::start_job(long job, int64_t starttime) {
+  const char *why = "Could not record job start time";
+  begin_rw_txn();
+  bind_integer(why, imp->set_starttime, 1, starttime);
+  bind_integer(why, imp->set_starttime, 2, job);
+  single_step(why, imp->set_starttime, imp->debugdb);
+  end_txn();
 }
 
 std::vector<std::pair<std::string, int>> Database::get_interleaved_output(long job_id) const {
@@ -1943,4 +2639,38 @@ std::vector<FileDependency> Database::get_file_dependencies() const {
   auto out = get_all_file_dependencies_impl(this, imp->get_file_dependency);
   end_txn();
   return out;
+}
+
+void Database::gc_if_dead(const std::vector<std::string> &hashes,
+                          wcl::function_ref<void(std::vector<std::string>)> callback) {
+  constexpr size_t BATCH_SIZE = 256;            // number of hashes per query, must match statement!
+  constexpr size_t TXN_DEAD_SIZE = 1ULL << 11;  // transaction limit for dead hashes
+  constexpr size_t TXN_HASHES = 1ULL << 13;     // transaction limit for total hashes checked
+  size_t idx = 0;
+  size_t n = hashes.size();
+  const char *why = "Could not lookup dead hashes";
+  while (idx < n) {
+    std::vector<std::string> dead;
+    size_t hashes_count = 0;
+    begin_rw_txn();
+    // Check batches of hashes until hit one of two limits.
+    while (idx < n && dead.size() < TXN_DEAD_SIZE && hashes_count < TXN_HASHES) {
+      for (size_t off = 0; off < BATCH_SIZE; ++off) {
+        auto t = idx + off;
+        if (t < n)
+          bind_string(why, imp->get_dead_hashes, off + 1, hashes[t]);
+        else
+          bind_null(why, imp->get_dead_hashes, off + 1);
+      }
+      idx += BATCH_SIZE;
+      hashes_count += BATCH_SIZE;
+      while (sqlite3_step(imp->get_dead_hashes) == SQLITE_ROW) {
+        dead.emplace_back(rip_column(imp->get_dead_hashes, 0));
+      }
+      finish_stmt(why, imp->get_dead_hashes, imp->debugdb);
+    }
+
+    if (!dead.empty()) callback(std::move(dead));
+    end_txn();
+  }
 }

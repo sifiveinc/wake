@@ -49,8 +49,7 @@ static void indent(std::ostream &s, const std::string &tab, const std::string &b
   s << std::endl;
 }
 
-static std::string describe_hash(const std::string &hash, bool verbose, bool stale) {
-  if (stale) return "<out-of-date>";
+static std::string describe_hash(const std::string &hash, bool verbose) {
   if (verbose) return hash;
   return hash.substr(0, SHORT_HASH);
 }
@@ -97,17 +96,16 @@ static void describe_metadata(const std::vector<JobReflection> &jobs, bool debug
           << std::endl;
       out << "Visible:" << std::endl;
       for (auto &in : job.visible)
-        out << "  " << describe_hash(in.hash, verbose, job.stale) << " " << in.path << std::endl;
+        out << "  " << describe_hash(in.hash, verbose) << " " << in.path << std::endl;
     }
     if (files) {
       out << "Inputs:" << std::endl;
       for (auto &in : job.inputs) {
-        out << "  " << describe_hash(in.hash, verbose, job.stale) << " " << in.path << std::endl;
+        out << "  " << describe_hash(in.hash, verbose) << " " << in.path << std::endl;
       }
       out << "Outputs:" << std::endl;
       for (auto &output : job.outputs) {
-        out << "  " << describe_hash(output.hash, verbose, false) << " " << output.path
-            << std::endl;
+        out << "  " << describe_hash(output.hash, verbose) << " " << output.path << std::endl;
       }
     }
     if (debug) {
@@ -208,14 +206,14 @@ static void describe_shell(const std::vector<JobReflection> &jobs, bool debug, b
           << std::endl;
       out << "# Visible:" << std::endl;
       for (auto &in : job.visible)
-        out << "#  " << describe_hash(in.hash, verbose, job.stale) << " " << in.path << std::endl;
+        out << "#  " << describe_hash(in.hash, verbose) << " " << in.path << std::endl;
     }
     out << "# Inputs:" << std::endl;
     for (auto &in : job.inputs)
-      out << "#  " << describe_hash(in.hash, verbose, job.stale) << " " << in.path << std::endl;
+      out << "#  " << describe_hash(in.hash, verbose) << " " << in.path << std::endl;
     out << "# Outputs:" << std::endl;
     for (auto &output : job.outputs)
-      out << "#  " << describe_hash(output.hash, verbose, false) << " " << output.path << std::endl;
+      out << "#  " << describe_hash(output.hash, verbose) << " " << output.path << std::endl;
     if (debug) {
       out << "# Stack:";
       indent(out, "#   ", job.stack);

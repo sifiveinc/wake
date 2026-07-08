@@ -41,6 +41,8 @@ struct CommandLineOptions {
   bool last_use;
   bool last_exe;
   bool history;
+  bool ps;
+  bool active;
   bool lsp;
   bool failed;
   bool script;
@@ -62,9 +64,14 @@ struct CommandLineOptions {
   bool simple_timeline;
   bool simple;
   bool canceled;
+  bool queued;
+  bool in_flight;
   bool clean;
+  bool prune;
   bool list_outputs;
   bool include_hidden;
+  bool rm;
+  bool recursive;
   std::optional<bool> log_header_align;
   std::optional<bool> cache_miss_on_failure;
 
@@ -140,6 +147,10 @@ struct CommandLineOptions {
       {0, "last-used", GOPT_ARGUMENT_FORBIDDEN},
       {0, "last-executed", GOPT_ARGUMENT_FORBIDDEN},
       {0, "history", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "ps", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "active", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "queued", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "in-flight", GOPT_ARGUMENT_FORBIDDEN},
       {0, "lsp", GOPT_ARGUMENT_FORBIDDEN},
       {'f', "failed", GOPT_ARGUMENT_FORBIDDEN},
       {'s', "script", GOPT_ARGUMENT_FORBIDDEN},
@@ -168,7 +179,10 @@ struct CommandLineOptions {
       {0, "stdout", GOPT_ARGUMENT_REQUIRED},
       {0, "stderr", GOPT_ARGUMENT_REQUIRED},
       {0, "clean", GOPT_ARGUMENT_FORBIDDEN },
+      {0, "prune", GOPT_ARGUMENT_FORBIDDEN },
       {0, "list-outputs", GOPT_ARGUMENT_FORBIDDEN },
+      {0, "rm", GOPT_ARGUMENT_FORBIDDEN },
+      {'r', "recursive", GOPT_ARGUMENT_FORBIDDEN},
       {0, "fd:3", GOPT_ARGUMENT_REQUIRED},
       {0, "fd:4", GOPT_ARGUMENT_REQUIRED},
       {0, "fd:5", GOPT_ARGUMENT_REQUIRED},
@@ -202,6 +216,10 @@ struct CommandLineOptions {
     last_use = arg(options, "last")->count || arg(options, "last-used")->count;
     last_exe = arg(options, "last-executed")->count;
     history = arg(options, "history")->count;
+    ps = arg(options, "ps")->count;
+    active = arg(options, "active")->count;
+    queued = arg(options, "queued")->count;
+    in_flight = arg(options, "in-flight")->count;
     lsp = arg(options, "lsp")->count;
     failed = arg(options, "failed")->count;
     script = arg(options, "script")->count;
@@ -224,8 +242,11 @@ struct CommandLineOptions {
     simple = arg(options, "simple")->count;
     canceled = arg(options, "canceled")->count;
     clean = arg(options, "clean")->count;
+    prune = arg(options, "prune")->count;
     list_outputs = arg(options, "list-outputs")->count;
     include_hidden = arg(options, "include-hidden")->count;
+    rm = arg(options, "rm")->count;
+    recursive = arg(options, "recursive")->count;
 
     percent_str = arg(options, "percent")->argument;
     jobs_str = arg(options, "jobs")->argument;

@@ -88,10 +88,12 @@ tuple CacheSearchOutputDirectory =
 
 # A symlink created by a cached job
 tuple CacheSearchOutputSymlink =
-    # The path on disk of the symlink
+    # The symlink target (what the symlink points to)
     Path: String
-    # The file being linked to
+    # The symlink disk path (where the symlink lives on disk)
     Link: String
+    # The hash of the target string for CAS addressing; "" for legacy entries
+    Hash: String
 
 # A match response from the server. Specifies all details of a cached job
 tuple CacheSearchResponseMatch =
@@ -147,10 +149,12 @@ tuple CachePostRequestOutputDirectory =
 
 # A symlink created by a job
 tuple CachePostRequestOutputSymlink =
-    # The path on disk of the symlink
+    # The symlink target (what the symlink points to)
     Path: String
-    # The file being linked to
+    # The symlink disk path (where the symlink lives on disk)
     Link: String
+    # The hash of the symlink target string for CAS addressing
+    Hash: String
 
 # A request to the remote server to cache a job
 tuple CachePostRequest =
@@ -351,28 +355,25 @@ export def rscApiPostStringBlob (name: String) (value: String) (api: RemoteCache
 
     uploadBlobRequest api setBlobFn
 
-# rscApiPostFileBlob: Posts a named file on disk to the remote server defined by *api*
-#                     then returns the id associated to the blob. Requires authorization.
+# rscApiPostFileBlob: Posts a named file to the remote server defined by *api*, sourcing bytes from the
+#                     CAS blob path. Returns the blob id. Requires authorization.
 #
 # ```
-#  api | rscApiPostFileBlob "foo" "/some/path/to/foo" = Pass "asdf-fdsa-asdf-fdsa"
-#  (RemoteCacheApi "foo" 1 None) | rscApiPostFileBlob "foo" "/some/path/to/foo" = Fail "authorization required"
+#  api | rscApiPostFileBlob "foo" "abc123..." = Pass "asdf-fdsa-asdf-fdsa"
+#  (RemoteCacheApi "foo" 1 None) | rscApiPostFileBlob "foo" "abc123..." = Fail "authorization required"
 # ```
-export def rscApiPostFileBlob (name: String) (file: String) (api: RemoteCacheApi): Result String Error =
+export def rscApiPostFileBlob (name: String) (hash: String) (api: RemoteCacheApi): Result String Error =
     require Pass _ = guardRemoteCacheDisabled Unit
 
-    # We must use unsafe here since we cannot elevate *file* to a Path without either copying it
-    # or triggering the 'job output by multiple files' error.
+    require Pass sourcePath =
+        primCasBlobAbsPathStr hash
+        | addErrorContext "rsc: blob {hash} expected in CAS but not found"
 
-    def contentType = match (unsafe_stat file)
+    def contentType = match (unsafe_stat sourcePath)
         Pass (Stat _ _ size) -> contentTypeFromSize size
         Fail _ -> None
 
-    require Pass hash = rscHashFile file
-
-    def setBlobFn = addFormDataWithHash name file contentType hash
-
-    uploadBlobRequest api setBlobFn
+    uploadBlobRequest api (addFormDataWithHash name sourcePath contentType hash)
 
 # rscApiPostJob: Posts a job defined by *req* to the remote cache server. Requires authorization.
 #
@@ -690,41 +691,24 @@ export def rscApiGetFileBlob ((CacheSearchBlob blobId uri contentHash): CacheSea
     require Pass blobPath = (uri | resolveUriResponse resolveDbSchemeToFile resolveBlobFileScheme)
 
     # Verify content hash if provided
-    require Pass actualHash = rscHashFile blobPath.getPathName
+    def actualHash = blobPath.getPathHash
+
     require Pass _ = verifyBlobHash blobId actualHash contentHash
 
-    def fixupScript =
-        """
-        # 1. No failures are acceptable
-        set -e
-        # 2. Remove the old rsctmp file if it exists
-        rm -f '%{path}.rsctmp'
-        # 3. Hardlink the file to not use 2x disk space
-        cp -l %{blobPath.getPathName} '%{path}.rsctmp'
-        # 4. Set the permissions as specified
-        chmod %{mode | strOctal} '%{path}.rsctmp'
-        # 5. If the file was previously created with the exact inode by the rsc but not cleaned up
-        #    then it needs to be removed so we can complete the atomic mv
-        [ '%{path}.rsctmp' -ef '%{path}' ] && rm '%{path}'
-        # 6. Atomically move so interruptions don't effect the build.
-        mv '%{path}.rsctmp' '%{path}'
-        """
+    # Build a synthetic PreparedStagingItem from the staging path under ".build/wake-{pid}/...".
+    # That path will be ingested and reflink/copy'd into CAS.
+    def preparedItem =
+        PreparedStagingItem
+        (StagingFile (StagingFileOutput path blobPath.getPathName mode 0 0)) # use 0 for mtime; This will be set to the current time on materialization.
+        contentHash
 
-    def job =
-        makeShellPlan fixupScript (blobPath, Nil)
-        | setPlanLabel "rsc: fixup blob {path} from {blobPath.getPathName}"
-        | setPlanPersistence Once
-        # We need to copy the file over another jobs output space so:
-        #   - We must run with the localRunner
-        #   - We must lie and say we output nothing
-        #   - The *path* must be listed as another jobs output to be available to the system
-        | setPlanFnOutputs (\_ Nil)
-        | setPlanEcho logDebug
-        | runJobWith localRunner
-        | setJobInspectVisibilityHidden
+    require Pass _ =
+        ingestPreparedStagingItemIntoCas preparedItem
+        | addErrorContext "rsc: Failed to ingest blob {blobId} into CAS for {path}"
 
-    require True = job.isJobOk
-    else failWithError "Failed to cleanup downloaded file {path} from {blobPath.getPathName}"
+    require Pass _ =
+        materializePreparedStagingItemFromCas preparedItem
+        | addErrorContext "rsc: Failed to materialize blob {blobId} to {path}"
 
     Pass path
 
@@ -826,6 +810,8 @@ def getPathAsJson path =
     JObject (
         "path" :-> JString path.getPathName,
         "hash" :-> JString path.getPathHash,
+        "type" :-> JString (pathTypeToString path.getPathType),
+        "mode" :-> JInteger path.getPathMode,
     )
 
 # Helper function for further processing the result of a http request in relation to the rsc
@@ -986,10 +972,11 @@ def getCachePostRequestJson (req: CachePostRequest): JValue =
             "hidden" :-> JBoolean hidden,
         )
 
-    def mkOutputSymlinkJson (CachePostRequestOutputSymlink path link) =
+    def mkOutputSymlinkJson (CachePostRequestOutputSymlink path link hash) =
         JObject (
             "path" :-> JString path,
             "link" :-> JString link,
+            "hash" :-> JString hash,
         )
 
     JObject (
@@ -1084,7 +1071,12 @@ def mkCacheSearchResponse (json: JValue): Result CacheSearchResponse Error =
             failWithError
             "rsc: JSON response has incorrect schema. output_symlinks[x] must have string key 'link'"
 
-        CacheSearchOutputSymlink path link
+        require Pass (JString hash) = jField v "hash"
+        else
+            failWithError
+            "rsc: JSON response has incorrect schema. output_symlinks[x] must have string key 'hash'"
+
+        CacheSearchOutputSymlink path link hash
         | Pass
 
     def mkOutputDirectory (v: JValue): Result CacheSearchOutputDirectory Error =
@@ -1157,12 +1149,3 @@ def mkCacheSearchResponse (json: JValue): Result CacheSearchResponse Error =
     | Match
     | Pass
 
-# RSC version of computing hashes for files, similar to Hashcode target in path.wake
-def rscHashFile (file: String): Result String Error =
-    def get f = prim "get_hash"
-    def cached = get file
-
-    if cached !=* "" then
-        Pass cached
-    else
-        failWithError "rsc: hash not found in DB for {file}"

@@ -1,0 +1,5 @@
+wake --rm: cannot remove the workspace root: '.'
+wake --rm: cannot remove the workspace root: '..'
+wake --rm: cannot remove the Wake database: 'wake.db'
+wake --rm: remove materialized paths, not the CAS blobs directly: '.build/cas'
+wake --rm: remove materialized paths, not the CAS blobs directly: '.build/cas/somefile'

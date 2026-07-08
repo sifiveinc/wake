@@ -19,6 +19,11 @@
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 
+// File tree access types (from database.cpp)
+#define VISIBLE 0
+#define INPUT 1
+#define OUTPUT 2
+
 #include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
@@ -41,6 +46,7 @@
 #include <set>
 #include <sstream>
 
+#include "clean.h"
 #include "cli_options.h"
 #include "describe.h"
 #include "dst/bind.h"
@@ -59,6 +65,7 @@
 #include "runtime/job.h"
 #include "runtime/prim.h"
 #include "runtime/profile.h"
+#include "runtime/run_lock.h"
 #include "runtime/runtime.h"
 #include "runtime/sources.h"
 #include "runtime/status.h"
@@ -169,62 +176,192 @@ void make_and_group(const std::vector<std::vector<std::string>> &query, const st
 }
 
 void hide_internal_jobs(std::vector<std::vector<std::string>> &out) {
-  out.push_back({"tags NOT LIKE '%<d>inspect.visibility=hidden<d>%'", "tags IS NULL"});
+  // Use a NOT IN subquery instead of LIKE on concatenated tags.
+  // This avoids the expensive tag concatenation on the common path.
+  out.push_back(
+      {"core.job_id NOT IN (SELECT job_id FROM tags\n"
+       "                    WHERE uri = 'inspect.visibility' AND content = 'hidden')"});
+}
+
+static std::string format_duration(int64_t nanos) {
+  using namespace std::chrono;
+  auto total = duration_cast<seconds>(nanoseconds(nanos));
+
+  auto h = duration_cast<hours>(total);
+  auto m = duration_cast<minutes>(total) % 60;
+  auto s = total % 60;
+
+  int64_t days = h.count() / 24;
+  int64_t hrs = h.count() % 24;
+
+  if (days > 0) return std::to_string(days) + "d" + std::to_string(hrs) + "h";
+  if (hrs > 0) return std::to_string(hrs) + "h" + std::to_string(m.count()) + "m";
+  if (m.count() > 0) return std::to_string(m.count()) + "m" + std::to_string(s.count()) + "s";
+  return std::to_string(s.count()) + "s";
 }
 
 void query_runs(Database &db) {
   const auto runs = db.get_runs();
   for (const auto &run : runs) {
-    std::cout << run.time.as_string() << " " << run.cmdline << std::endl;
+    std::cout << run.start_time.as_string() << " -> ";
+
+    bool live = !run.end_time && RunLockProbe::is_live(run.id);
+    if (live) {
+      std::cout << "...                  [running]  ";
+    } else if (run.end_time < 0) {
+      std::cout << "???                  [crashed]  ";
+    } else {
+      DBTime end(*run.end_time);
+      int64_t duration = *run.end_time - run.start_time.as_int64();
+      std::cout << end.as_string() << "  " << std::setw(9) << std::left
+                << ("[" + format_duration(duration) + "]") << "  ";
+    }
+    std::cout << run.cmdline << std::endl;
   }
 }
 
-void query_jobs(const CommandLineOptions &clo, Database &db) {
-  std::vector<std::vector<std::string>> collect_ands = {};
-  std::vector<std::vector<std::string>> collect_input_ands = {};
-  std::vector<std::vector<std::string>> collect_output_ands = {};
+// Returns lock-proven live run_ids (DB-open runs confirmed by lock probe).
+std::vector<int> get_live_run_ids(Database &db) {
+  std::vector<int> live;
+  for (auto &r : db.get_runs())
+    if (!r.end_time && RunLockProbe::is_live(r.id)) live.push_back(r.id);
+  return live;
+}
+
+// Build a run_id in/not-in predicate for use in core_filters.
+std::string run_id_filter(bool in, const std::vector<int> &ids) {
+  std::string q = in ? "run_id in (" : "run_id not in (";
+  bool any = false;
+  for (auto id : ids) {
+    if (any) q += ',';
+    q += std::to_string(id);
+    any = true;
+  }
+  if (!any) return in ? "0" : "1";
+  q += ')';
+  return q;
+}
+
+MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database &db) {
+  MatchingQueryFilters filters;
 
   // Process --job
-  make_and_group(clo.job_ids, "cast(job_id as TEXT)", "", collect_ands);
+  make_and_group(clo.job_ids, "cast(job_id as TEXT)", "", filters.core_filters);
 
   // --label
-  make_and_group(clo.labels, "label", "", collect_ands);
+  make_and_group(clo.labels, "label", "", filters.core_filters);
 
   // --input
-  make_and_group(clo.input_files, "path", "", collect_input_ands);
+  make_and_group(clo.input_files, "path", "", filters.input_file_filters);
 
   // --output
-  make_and_group(clo.output_files, "path", "", collect_output_ands);
+  make_and_group(clo.output_files, "path", "", filters.output_file_filters);
 
-  // --tag
-  make_and_group(clo.tags, "tags", "<d>", collect_ands);
+  // --tag (uses the concatenated tags column with LIKE)
+  if (!clo.tags.empty()) {
+    make_and_group(clo.tags, "tags", "<d>", filters.core_filters);
+    filters.needs_tag_concat = true;  // Mark that we need the expensive GROUP BY
+  }
 
   // --last-exe
   if (clo.last_exe) {
-    collect_ands.push_back({"run_id == (select max(run_id) from jobs)"});
+    filters.core_filters.push_back(
+        {"run_id == (select max(run_id) from runs where end_time is not null)"});
   }
 
   // --last-use
   if (clo.last_use) {
-    collect_ands.push_back({"use_id == (select max(run_id) from jobs)"});
+    filters.core_filters.push_back(
+        {"job_id in (select job_id from run_jobs where run_id = "
+         "(select max(run_id) from runs where end_time is not null))"});
   }
 
   // --failed
   if (clo.failed) {
-    collect_ands.push_back({"(status <> 0 OR runner_status IS NOT NULL)"});
+    filters.core_filters.push_back({"(status <> 0 OR runner_status IS NOT NULL)"});
   }
 
-  // --canceled
-  if (clo.canceled) {
-    collect_ands.push_back({"endtime = 0"});
+  // Filters on unfinished jobs (stat_id is null).
+  bool is_in_flight = clo.in_flight || clo.ps;
+  if (clo.canceled || clo.active || clo.queued || is_in_flight) {
+    auto live_run_ids = get_live_run_ids(db);
+    // finish_job unconditinoally sets stat_id for jobs.
+    // endtime=0 is close but includes jobs that finished.
+    filters.core_filters.push_back({"stat_id is null"});
+
+    // --canceled: jobs from non-live runs (run crashed before job finished)
+    if (clo.canceled) {
+      filters.core_filters.push_back({run_id_filter(/*in=*/false, live_run_ids)});
+    }
+
+    // --active: forked jobs (starttime!=0) in a live run
+    if (clo.active) {
+      filters.core_filters.push_back({"starttime != 0"});
+      filters.core_filters.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+    }
+
+    // --queued: not-yet-forked jobs (starttime==0) in a live run
+    if (clo.queued) {
+      filters.core_filters.push_back({"starttime = 0"});
+      filters.core_filters.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+    }
+
+    // --in-flight (or --ps): all unfinished jobs (running or queued) in a live run
+    if (is_in_flight) {
+      filters.core_filters.push_back({run_id_filter(/*in=*/true, live_run_ids)});
+    }
   }
 
   // Hide introspection jobs by default unless --include-hidden is specified
   if (!clo.include_hidden) {
-    hide_internal_jobs(collect_ands);
+    hide_internal_jobs(filters.core_filters);
   }
 
-  auto matching_jobs = db.matching(collect_ands, collect_input_ands, collect_output_ands);
+  return filters;
+}
+
+void query_ps(const CommandLineOptions &clo, Database &db) {
+  auto filters = build_query_filters(clo, db);
+  const auto jobs = db.matching_open_runs(std::move(filters));
+
+  if (jobs.empty()) {
+    std::cout << "No jobs currently running." << std::endl;
+    return;
+  }
+
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
+
+  auto runs = db.get_runs();
+  std::unordered_map<int, std::string_view> run_cmdlines;
+  for (auto &r : runs)
+    if (!r.end_time) run_cmdlines[r.id] = r.cmdline;
+
+  int cur_run = -1;
+  std::cout << std::left;
+  for (const auto &j : jobs) {
+    if (j.run_id != cur_run) {
+      cur_run = j.run_id;
+      std::cout << "\nRun " << cur_run << ": " << run_cmdlines[cur_run] << std::endl;
+      std::cout << "  " << std::setw(8) << "JOB" << std::setw(12) << "ELAPSED"
+                << "LABEL" << std::endl;
+    }
+    if (j.starttime == 0) {
+      std::cout << "  " << std::setw(8) << j.job_id << std::setw(12) << "[queued]" << j.label
+                << std::endl;
+    } else {
+      int64_t elapsed_ns = now_ns - j.starttime;
+      std::string elapsed = "[" + format_duration(elapsed_ns) + "]";
+      std::cout << "  " << std::setw(8) << j.job_id << std::setw(12) << elapsed << j.label
+                << std::endl;
+    }
+  }
+}
+
+void query_jobs(const CommandLineOptions &clo, Database &db) {
+  auto filters = build_query_filters(clo, db);
+  auto matching_jobs = db.matching(std::move(filters));
 
   if (matching_jobs.empty()) {
     std::cerr << "No jobs matched query" << std::endl;
@@ -239,6 +376,8 @@ void inspect_database(const CommandLineOptions &clo, Database &db) {
   // rest of the queries which operate on the jobs table.
   if (clo.tagdag) {
     output_tagdag(db, clo.tagdag);
+  } else if (clo.ps) {
+    query_ps(clo, db);
   } else if (clo.history) {
     query_runs(db);
   } else {
@@ -281,6 +420,9 @@ void print_help(const char *argv0) {
     << "    --init        DIR  Create or replace a wake.db in the specified directory"     << std::endl
     << "    --list-outputs     List all job outputs"                                       << std::endl
     << "    --clean            Delete all job outputs"                                     << std::endl
+    << "    --prune            Remove DB entries for jobs whose files no longer exist"     << std::endl
+    << "                         in the workspace"                                         << std::endl
+    << "    --rm               Remove files from database (paths as arguments)"            << std::endl
     << "    --input    -i FILE Capture jobs which read FILE. (repeat for multiple files)"  << std::endl
     << "    --output   -o FILE Capture jobs which wrote FILE. (repeat for multiple files)" << std::endl
     << "    --label       GLOB Capture jobs where label matches GLOB"                      << std::endl
@@ -289,9 +431,13 @@ void print_help(const char *argv0) {
     << "    --last-used        Capture all jobs used by last build. Regardless of cache"   << std::endl
     << "    --last-executed    Capture all jobs executed by the last build. Skips cache"   << std::endl
     << "    --history          Report the cmndline history of all wake commands recorded"  << std::endl
+    << "    --ps               Show jobs currently running in active wake builds"          << std::endl
     << "    --failed   -f      Capture jobs which failed last build"                       << std::endl
     << "    --tag      KEY=VAL Capture jobs which are tagged, matching KEY and VAL globs"  << std::endl
-    << "    --canceled         Capture jobs which were canceled in the last build"         << std::endl
+    << "    --canceled         Capture jobs which were canceled (run ended before job finished)" << std::endl
+    << "    --active           Capture jobs currently running in active builds"             << std::endl
+    << "    --queued           Capture jobs queued but not yet launched in active builds"  << std::endl
+    << "    --in-flight        Capture jobs running or queued in active builds"            << std::endl
     << "    --timeline         Report timeline of captured jobs as HTML"                   << std::endl
     << "    --simple-timeline  Report simplified timeline of captured jobs as HTML"        << std::endl
     << "    --verbose  -v      Report metadata, stdout and stderr of captured jobs"        << std::endl
@@ -369,6 +515,46 @@ static void cleanup_stale_staging(const std::string &staging_dir) {
 
     std::filesystem::remove_all(entry.path(), ec);
   }
+}
+
+// Remove blobs from CAS that are dead according to DB.
+//
+// INVARIANT (load-bearing for CAS GC safety):
+//   A CAS blob is only written to disk AFTER its `files` row is committed, and
+//   any in-flight file not yet recorded in `filetree` is guarded by a `run_files`
+//   row for the current run. `finish_run()` clears this run's `run_files` entries
+//   only after all `finish_job`s have committed their `filetree` rows, so the
+//   set "reachable from files via filetree or run_files" is never empty for a
+//   live file in the window where another wake could race.
+//
+// From this it follows that: a hash present on disk but absent from `files`
+// is truly dead. Both `delete_orphan_files` (DB side) and this routine
+// (filesystem side) rely on that. Inverting the write order (blob-before-row)
+// or clearing run_files before finish_job completes would break both.
+static bool gc_dead_cas_blobs(cas::Cas &cas, Database &db) {
+  bool pass = true;
+  // Grab list of hashes in CAS.
+  // Since CAS can be added to while scanning, this may not be a perfect snapshot.  That's okay.
+  auto disk_hashes = cas.enumerate_blobs_strings();
+  // Ask DB to check the hashes for liveness, and under RW lock callback.
+  // If unlink() is too slow in the future, instead rename to the side and remove outside lock.
+  db.gc_if_dead(disk_hashes, [&cas, &pass](auto &&dead_hashes) {
+    for (auto &dh : dead_hashes) {
+      auto hash = cas::ContentHash::from_hex(dh);
+      if (!hash) {
+        std::cerr << "Error generating hash for dead hash string!" << std::endl;
+        exit(1);
+      }
+      // Ignore not found: our listing might contain duplicates, and other runs
+      // may have removed the blob by now.
+      if (auto err = cas.remove_blob(*hash); err && *err != cas::CASError::NotFound) {
+        std::cerr << "Failure removing blob for '" << dh << "': " << cas::cas_error_to_string(*err)
+                  << std::endl;
+        pass = false;
+      }
+    }
+  });
+  return pass;
 }
 
 int main(int argc, char **argv) {
@@ -455,7 +641,8 @@ int main(int argc, char **argv) {
   bool is_db_inspect_capture = !clo.job_ids.empty() || !clo.output_files.empty() ||
                                !clo.input_files.empty() || !clo.labels.empty() ||
                                !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
-                               clo.tagdag || clo.canceled || clo.history;
+                               clo.tagdag || clo.canceled || clo.active || clo.queued ||
+                               clo.in_flight || clo.history || clo.ps;
 
   // DescribePolicy::human() is the default and doesn't have a flag.
   // DescribePolicy::debug() is overloaded and can't be marked as a db flag
@@ -607,6 +794,10 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  // Initialize CAS context (needed for --rm and other operations)
+  const std::string cas_dir = ".build/cas";
+  CASContext cas_ctx(cas_dir);
+
   if (!is_db_inspection) {
     std::error_code ec;
     std::filesystem::create_directories(".build/staging", ec);
@@ -644,49 +835,66 @@ int main(int argc, char **argv) {
 
   // If the user asked us to clean the local build, do so.
   if (clo.clean) {
-    // Clean up the database of unwanted info. Jobs must
-    // be cleared before outputs are removed to avoid foreign key
-    // constraint issues.
-    auto paths = db.clear_jobs();
+    // First reap any dead runs so we don't block on crashed builds.
+    db.reap_dead_runs();
 
-    // Sort them so that child directories come before parent directories
-    std::sort(paths.begin(), paths.end(), [&](const std::string &a, const std::string &b) -> bool {
-      return a.size() > b.size();
+    // Track if file deletion had errors.
+    bool delete_error = false;
+
+    // Atomically check for active builds and clear if safe.
+    // File deletion happens inside the transaction to hold the write lock,
+    // preventing new builds from starting until cleanup completes.
+    bool cleaned = db.clear_jobs_if_safe([&](std::vector<std::string> paths) {
+      // Sort so child directories come before parent directories
+      std::sort(paths.begin(), paths.end(),
+                [](const std::string &a, const std::string &b) { return a.size() > b.size(); });
+
+      // Delete all the files
+      for (const auto &path : paths) {
+        // Don't delete the root directory
+        if (path == ".") continue;
+
+        // First we try to unlink the file
+        if (unlink(path.c_str()) == -1) {
+#if defined(__linux__)
+          bool is_dir = (errno == EISDIR);
+#else
+          bool is_dir = (errno == EPERM || errno == EACCES);
+#endif
+          // If it was actually a directory we remove it instead
+          if (is_dir) {
+            if (rmdir(path.c_str()) == -1 && errno != ENOTEMPTY) {
+              std::cerr << "error: rmdir(" << path << "): " << strerror(errno) << std::endl;
+              delete_error = true;
+            }
+            continue;
+          }
+
+          // If the entry doesn't exist then nothing to delete
+          if (errno == ENOENT) continue;
+
+          // If it wasn't a directory then we fail
+          std::cerr << "error: unlink(" << path << "): " << strerror(errno) << std::endl;
+          delete_error = true;
+        }
+      }
+
+      // Since the log is append only, we should clean it up from time to time.
+      // TODO: this is just "unlink_no_fail". Those functions should be moved to
+      // a more generic library
+      if (unlink("wake.log") < 0 && errno != ENOENT) {
+        wcl::log::error("unlink(wake.log): %s", strerror(errno)).urgent()();
+        delete_error = true;
+      }
+
+      // Clean up lock directory (only succeeds if empty, which is safe)
+      (void)rmdir(".wake/locks");
     });
 
-    // Delete all the files
-    for (const auto &path : paths) {
-      // Don't delete the root directory
-      // - Certain writes will create the parent dir "." which shouldn't be deleted
-      if (path == ".") {
-        continue;
-      }
-
-      // First we try to unlink the file
-      if (unlink(path.c_str()) == -1) {
-#if defined(__linux__)
-        bool is_dir = (errno == EISDIR);
-#else
-        bool is_dir = (errno == EPERM || errno == EACCES);
-#endif
-
-        // If it was actually a directory we remove it instead
-        if (is_dir) {
-          if (rmdir(path.c_str()) == -1) {
-            if (errno == ENOTEMPTY) continue;
-            std::cerr << "error: rmdir(" << path << "): " << strerror(errno) << std::endl;
-            return 1;
-          }
-          continue;
-        }
-
-        // If the entry doesn't exist then nothing to delete
-        if (errno == ENOENT) continue;
-
-        // If it wasn't a directory then we fail
-        std::cerr << "error: unlink(" << path << "): " << strerror(errno) << std::endl;
-        return 1;
-      }
+    if (!cleaned) {
+      std::cerr << "error: cannot clean while builds are in progress" << std::endl;
+      std::cerr << "hint: use 'wake --history' to see active runs" << std::endl;
+      return 1;
     }
 
     // Full vacuum, we likely just deleted most of the database.
@@ -695,15 +903,48 @@ int main(int argc, char **argv) {
     // Blocking checkpoint, truncate the log file.
     db.checkpoint(/*blocking=*/true);
 
-    // Since the log is append only, we should clean it up from time to time.
-    // TODO: this is just "unlink_no_fail". Those functions should be moved to
-    // a more generic library
-    if (unlink("wake.log") < 0 && errno != ENOENT) {
-      wcl::log::error("unlink(wake.log): %s", strerror(errno)).urgent()();
+    return delete_error ? 1 : 0;
+  }
+
+  if (clo.prune) {
+    db.reap_dead_runs();
+    auto result =
+        db.prune_to_workspace([](const std::string &path, const std::string &stored_type) {
+          struct stat st;
+          if (lstat(path.c_str(), &st) != 0) return false;
+          if (stored_type == "directory") return S_ISDIR(st.st_mode);
+          if (stored_type == "symlink") return S_ISLNK(st.st_mode);
+          return S_ISREG(st.st_mode);
+        });
+    if (!result) {
+      std::cerr << "error: cannot prune while builds are in progress" << std::endl;
+      std::cerr << "hint: use 'wake --history' to see active runs" << std::endl;
       return 1;
     }
-
+    std::cout << "Pruned " << *result << " job(s) with missing files." << std::endl;
+    CASContext cas_ctx(".build/cas");
+    if (cas_ctx.has_store()) {
+      if (!gc_dead_cas_blobs(*cas_ctx.get_store(), db))
+        std::cerr << "CAS GC encountered errors (prune result unaffected)" << std::endl;
+    }
     return 0;
+  }
+
+  if (clo.rm) {
+    std::string fail =
+        db.open(/*wait=*/false, /*memory=*/false, /*tty=*/isatty(0), /*readonly=*/false);
+    if (!fail.empty()) {
+      std::cerr << "error: " << fail << std::endl;
+      return EXIT_FAILURE;
+    }
+
+    // Collect all paths to remove.
+    std::vector<std::string> paths;
+    for (int i = 1; i < clo.argc; i++) {
+      paths.push_back(clo.argv[i]);
+    }
+
+    return remove_paths(db, cas_ctx, paths, wake_cwd, clo.recursive);
   }
 
   // seed the keyed hash function
@@ -945,14 +1186,16 @@ int main(int argc, char **argv) {
   status_set_bulk_fd(4, clo.fd4);
   status_set_bulk_fd(5, clo.fd5);
 
+  if (clo.check) {
+    std::cerr << "error: '--check' feature is not currently supported." << std::endl;
+    return 1;
+  }
+
   /* Primitives */
   JobTable jobtable(&db, memory_budget, cpu_budget, clo.debug, clo.verbose, clo.quiet, clo.check,
                     clo.batch);
   StringInfo info(clo.verbose, clo.debug, clo.quiet, VERSION_STR, wcl::make_canonical(wake_cwd),
                   cmdline);
-
-  const std::string cas_dir = ".build/cas";
-  CASContext cas_ctx(cas_dir);
 
   PrimMap pmap = prim_register_all(&info, &jobtable, &cas_ctx);
 
@@ -1099,6 +1342,11 @@ int main(int argc, char **argv) {
     }
   }
 
+  db.finish_run();
   db.clean();
+
+  if (!gc_dead_cas_blobs(*cas_ctx.get_store(), db))
+    std::cerr << "CAS GC encountered errors (run result unaffected)" << std::endl;
+
   return pass ? 0 : 1;
 }

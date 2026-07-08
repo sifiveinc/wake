@@ -19,12 +19,17 @@
 #define DATABASE_H
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include "cas/cas.h"
 #include "json/json5.h"
+#include "run_lock.h"
+#include "wcl/function_ref.h"
 
 struct FileReflection {
   std::string path;
@@ -32,13 +37,15 @@ struct FileReflection {
   std::string hash;
   long mode;
   long modified;  // mtime in nanoseconds
+  bool deleted;   // true if CAS blob has been removed
   FileReflection(std::string &&path_, std::string &&type_, std::string &&hash_, long mode_,
-                 long modified_)
+                 long modified_, bool deleted_ = false)
       : path(std::move(path_)),
         type(std::move(type_)),
         hash(std::move(hash_)),
         mode(mode_),
-        modified(modified_) {}
+        modified(modified_),
+        deleted(deleted_) {}
 };
 
 struct Usage {
@@ -72,11 +79,17 @@ struct DBTime {
 
 struct RunReflection {
   int id;
-  DBTime time;
+  DBTime start_time;
+  std::optional<int64_t> end_time;  // nullopt=running, >0=completed, -1=reaped
   std::string cmdline;
   RunReflection() = default;
-  RunReflection(int id_, int64_t time_, std::string cmdline_)
-      : id(id_), time(time_), cmdline(cmdline_) {}
+};
+
+struct OpenRunJobReflection {
+  int run_id;
+  long job_id;
+  std::string label;
+  int64_t starttime;  // 0 = queued (not yet forked), non-zero = wall-clock ns at fork
 };
 
 struct JobReflection {
@@ -119,6 +132,18 @@ struct FileDependency {
   JAST to_json() const;
 };
 
+// Encapsulates filter conditions for job matching queries.
+// Tracks both the filter vectors and metadata about what database features they require.
+struct MatchingQueryFilters {
+  // Filter vectors: outer vec = AND groups, inner vec = OR conditions within each group
+  std::vector<std::vector<std::string>> core_filters;
+  std::vector<std::vector<std::string>> input_file_filters;
+  std::vector<std::vector<std::string>> output_file_filters;
+
+  // Metadata: what features do the filters require?
+  bool needs_tag_concat = false;  // True if filters use the concatenated 'tags' column (e.g., LIKE)
+};
+
 struct Database {
   struct detail;
   std::unique_ptr<detail> imp;
@@ -132,7 +157,12 @@ struct Database {
   void entropy(uint64_t *key, int words);
 
   void prepare(const std::string &cmdline);  // prepare for job execution
+  void finish_run();                         // mark run as complete (sets end_time)
   void clean();                              // finished execution; sweep stale jobs
+
+  // Reap dead runs: probe lock files and mark crashed runs as reaped.
+  // Automatically excludes our own run_id if prepare() was called.
+  void reap_dead_runs();
 
   // Reclaim space on disk from deleted records.
   // If not incremental, will lock DB exclusively for duration.
@@ -161,6 +191,8 @@ struct Database {
       uint64_t signature,  // this must match to qualify for reuse
       const std::string &label, const std::string &stack, bool is_atty, const std::string &visible,
       long *job);  // key used for accesses below
+
+  void start_job(long job, int64_t starttime);  // record wall-clock start time eagerly
   void finish_job(long job,
                   const std::string &inputs,       // null separated
                   const std::string &outputs,      // null separated
@@ -187,24 +219,47 @@ struct Database {
   //    of the removed files
   std::vector<std::string> clear_jobs();
 
+  // Like clear_jobs(), but first checks for active builds atomically.
+  // Returns false if there are incomplete runs (active builds).
+  // The check, DB clear, and file deletion (via callback) all happen
+  // within the same transaction to prevent races with new builds.
+  bool clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string>)> delete_files);
+
+  // Remove DB records for jobs that reference any file failing exists().
+  // exists() receives the workspace path and stored type ("file"/"symlink"/"directory").
+  // Returns the number of jobs pruned, or empty if refused due to active builds.
+  std::optional<size_t> prune_to_workspace(
+      wcl::function_ref<bool(const std::string &path, const std::string &type)> exists);
+
+  struct RemovalManifest {
+    std::vector<std::string> files;          // Files which need to be unlinked from the workspace
+    std::vector<std::string> directories;    // Directories to rmdir (ordered shallowest-first)
+    std::vector<std::string> deleted_blobs;  // Hashes of CAS blobs *already* removed
+    std::vector<std::string> skipped_paths;  // Paths which should *not* be deleted
+  };
+
+  // Remove files from workspace and CAS within a single exclusive transaction.
+  // For each path, finds all jobs that output it, removes the CAS blobs, and marks them as deleted.
+  // Does *not* remove blobs which are still referenced by other files.
+  // If recursive is true, directories will recursively include all their children.
+  RemovalManifest remove_blobs(cas::Cas *cas, const std::unordered_set<std::string> &paths,
+                               bool recursive);
+
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
-                long mode, long modified);
+                long mode);
 
-  std::string get_hash(const std::string &file, long modified);
-  std::tuple<std::string, std::string, long> get_cached_path(const std::string &file,
-                                                             long modified);
-
-  // In core_filters, the outer vec is a set of filters to be AND'd together, inner vec is a set of
-  // queries to be OR'd together. This holds for input_file_filters and output_file_filters as well
-  // but is less useful as its restricted to the column 'path' in the files table.
-  std::vector<JobReflection> matching(const std::vector<std::vector<std::string>> &core_filters,
-                                      std::vector<std::vector<std::string>> input_file_filters,
-                                      std::vector<std::vector<std::string>> output_file_filters);
+  // Returns all jobs matching the provided filters.
+  std::vector<JobReflection> matching(MatchingQueryFilters filters);
 
   std::vector<JobEdge> get_edges();
   std::vector<JobTag> get_tags();
 
   std::vector<RunReflection> get_runs() const;
+
+  // Returns all unfinished jobs matching the provided filters.
+  // Ordered by run_id, starttime, job_id — queued (starttime==0) sort before running.
+  // Additional filtering needed to determine if runs are "actually" live.
+  std::vector<OpenRunJobReflection> matching_open_runs(MatchingQueryFilters filters);
 
   std::vector<FileDependency> get_file_dependencies() const;
 
@@ -216,17 +271,14 @@ struct Database {
   // bool=true if error present, false if NULL
   std::pair<bool, std::string> get_runner_status(long job_id);
 
-  // Build locking for non-inspection commands
-  bool try_acquire_build_lock(bool wait, bool tty);
-  void release_build_lock();
+  void gc_if_dead(const std::vector<std::string> &hashes,
+                  wcl::function_ref<void(std::vector<std::string>)> callback);
 
  private:
   void begin_ro_txn() const;
   void begin_rw_txn() const;
   void end_txn() const;
 
-  bool is_lock_valid(const char *lock_file);
-  bool build_lock_acquired = false;
   int checkpoint_interval;
 };
 

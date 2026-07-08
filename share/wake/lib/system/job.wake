@@ -30,7 +30,7 @@ export tuple JobKey =
     export cmd: String
     # A unique hash used to discern two nearly identical jobs with some environmental change
     export signature: Integer
-    # The list of files (separated by \0) that the job can see when running
+    # The list of files (path, hash, type, and mode; separated by \0) that the job can see when running
     export visible: String
     # Boolean integer representing if the job should be launched such that it appears to be
     # launched directly by a human (ie launched interactively)
@@ -148,6 +148,10 @@ def jobSignature cmd res fni fno keep =
 # Process staged outputs: partition into published/unpublished, prepare hashes, store in the DB,
 # ingest published items into CAS, and materialize all items to the workspace.
 # Returns the list of stored PreparedStagingItems on success.
+# INVARIANT: 1) DB told about files ("intent", guards for run duration), strictly before
+#            2) storing into CAS, which must be completed before
+#            3) registered as stored ("reality", tied to jobs that use them).
+#            This is critical for GC safety.
 def materializeJobOutputs (prefix: String) (outputs: StagedOutputs): Result (List PreparedStagingItem) Error =
     def needsWorkspaceMaterialization = outputs.getStagedOutputsNeedsWorkspaceMaterialization
 
@@ -155,22 +159,13 @@ def materializeJobOutputs (prefix: String) (outputs: StagedOutputs): Result (Lis
         def item = preparedItem.getPreparedStagingItemItem
 
         if needsWorkspaceMaterialization then
-            # TODO: Remove the non-CAS staging-materialization branch once WAKE_CAS is the default.
-            if useCasHashes then
-                materializePreparedStagingItemFromCas preparedItem
-            else
-                materializeStagedItemFromStaging item
+            materializePreparedStagingItemFromCas preparedItem
         else
             # cleanup the StagingFile as it's no longer needed.
             unlinkStagingSourceIfFile item
 
     def ingestAndMaterialize (preparedItem: PreparedStagingItem) =
-        require Pass _ =
-            # TODO: Remove the non-CAS no-ingest branch once WAKE_CAS is the default.
-            if useCasHashes then
-                ingestPreparedStagingItemIntoCas preparedItem
-            else
-                Pass Unit
+        require Pass _ = ingestPreparedStagingItemIntoCas preparedItem
 
         maybeMaterialize preparedItem
 
@@ -217,10 +212,9 @@ def finalizeJob job inputs outputs cleanable reality runnerError =
         | omap getPairFirst
         | getOrElse None
 
-    def preparedOutputPaths =
+    def preparedOutputStagingItems =
         workspaceOutputsReadyResult
         | getWhenFail Nil
-        | map getPreparedStagingItemPathName
 
     # Invoke post-finalization callback (e.g. RSC upload from workspace dest paths)
     # only after all materialization work has completed.
@@ -228,7 +222,7 @@ def finalizeJob job inputs outputs cleanable reality runnerError =
         require Pass _ = workspaceOutputsReadyResult
 
         match finalRunnerError
-            None -> Pass (outputs.getStagedOutputsPostFinalize Unit)
+            None -> Pass (outputs.getStagedOutputsPostFinalize preparedOutputStagingItems)
             Some _ -> Pass Unit
 
     # Clean up the empty staging root directory now that all staged files are consumed.
@@ -250,16 +244,43 @@ def finalizeJob job inputs outputs cleanable reality runnerError =
     def _ = unsafe_primJobSetRunnerStatusMessage job finalRunnerError
     def clResult = wait (\_ cleanupStagingRoot cleanable) pfResult
 
+    def pstr (preparedItem: PreparedStagingItem) =
+        def item = preparedItem.getPreparedStagingItemItem
+        def hash = preparedItem.getPreparedStagingItemHash
+
+        catWith
+        "\0"
+        (
+            getStagingItemDestPath item,
+            hash,
+            pathTypeToString (getStagingItemPathType item),
+            str (getStagingItemMode item),
+            str (getStagingItemMtimeNs item),
+        )
+
+    def preparedOutputStrings = map pstr preparedOutputStagingItems
+
     wait
-    (\_ primJobFinish job inputs.implode preparedOutputPaths.implode cleanable.implode reality)
+    (\_ primJobFinish job inputs.implode preparedOutputStrings.implode cleanable.implode reality)
     clResult
 
 def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo stdout stderr label isatty: Job =
     def hash = jobSignature cmd res finputs foutputs keep
 
+    def pstr p =
+        catWith
+        "\0"
+        (
+            p.getPathName,
+            p.getPathHash,
+            pathTypeToString p.getPathType,
+            str p.getPathMode,
+            str p.getPathMtimeNs,
+        )
+
     def visKey =
         vis
-        | map getPathName
+        | map pstr
         | implode
 
     def jobKey = JobKey dir stdin env.implode cmd.implode hash visKey isatty.booleanToInteger
@@ -287,26 +308,6 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
 
         job
 
-    def confirm abort last job =
-        # notOk cannot be deadcode eliminated thanks to printlnLevel having effects
-        def notOk pathInfo =
-            def name = pathInfo.getPathInfoName
-            def hash = pathInfo.getPathInfoHash
-
-            if hashcode name ==* hash then
-                Unit
-            # The panic will not be deadcode dropped, because it's an alternative return of the effect-ful notOk
-            else if abort then
-                panic "The hashcode of output file '{name}' has changed from {hash} (when wake last ran) to {hashcode name} (when inspected this time). Presumably it was hand edited. Please move this file out of the way. Aborting the build to prevent loss of your data."
-            else
-                printlnLevel
-                logError
-                "Wake was run with '-c' and the hashcode of output file '{name}' has changed, despite being produced from identical inputs. In the prior run, it was {hash} and now it is {hashcode name}. Hashes of dependent jobs using this file will not be checked."
-
-        def _ = waitJobMerged (\_ map notOk last) job
-
-        job
-
     def materializeCachedOutputs (outputs: List PathInfo): Result Unit Error =
         outputs
         | map materializeCachedItemFromCas
@@ -330,15 +331,12 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
         | map parseCachedPathInfo
 
     match cache
-        Pair (job, _) _ ->
-            if useCasHashes then
-                match (materializeCachedOutputs cachedOutputs)
-                    Pass _ -> confirm True cachedOutputs job
-                    Fail err ->
-                        panic "Failed to materialize outputs for {str job.getJobId} '{job.getJobDescription}': {err.getErrorCause}"
-            else
-                confirm True cachedOutputs job
-        Pair Nil _ -> confirm False cachedOutputs (build Unit)
+        Pair (job, _) _ -> match (materializeCachedOutputs cachedOutputs)
+            Pass _ -> job
+            Fail err ->
+                panic "Failed to materialize outputs for {str job.getJobId} '{job.getJobDescription}': {err.getErrorCause}"
+        # Cache miss, or -c mode (TODO: determine checking is needed, compare output paths!)
+        Pair Nil _ -> build Unit
 
 # Only run if the first four arguments differ
 target runOnce cmd env dir stdin vis isatty run \ res usage finputs foutputs keep echo stdout stderr label =

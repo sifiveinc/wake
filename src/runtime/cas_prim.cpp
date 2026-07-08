@@ -524,12 +524,58 @@ static PRIMFN(prim_cas_ingest_staged_item) {
   RETURN(claim_result(runtime.heap, true, claim_unit(runtime.heap)));
 }
 
+// prim "cas_blob_abs_path" hash -> Result String Error
+// Returns the absolute filesystem path to the CAS-managed blob for the given content hash.
+// Fails if the blob is not present in CAS. Result is a filesystem path that may be passed
+// directly to upload tools (e.g. RSC blob POST) without reading through the workspace.
+static PRIMTYPE(type_cas_blob_abs_path) {
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeString);
+  result[1].unify(Data::typeString);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(result);
+}
+
+static PRIMFN(prim_cas_blob_abs_path) {
+  CASContext* ctx = static_cast<CASContext*>(data);
+  EXPECT(1);
+  STRING(hash_str, 0);
+
+  cas::Cas* store = ctx->get_store();
+  if (!store) {
+    runtime.heap.reserve(reserve_result() + String::reserve(28));
+    auto err = String::claim(runtime.heap, "CAS store not initialized");
+    RETURN(claim_result(runtime.heap, false, err));
+  }
+
+  cas::ContentHash hash;
+  std::string parse_error;
+  if (!parse_hash_string(hash_str->c_str(), hash, parse_error)) {
+    runtime.heap.reserve(reserve_result() + String::reserve(parse_error.size()));
+    auto err = String::claim(runtime.heap, parse_error);
+    RETURN(claim_result(runtime.heap, false, err));
+  }
+
+  if (!store->has_blob(hash)) {
+    std::string msg = "Blob not in CAS: " + std::string(hash_str->c_str());
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    auto err = String::claim(runtime.heap, msg);
+    RETURN(claim_result(runtime.heap, false, err));
+  }
+
+  std::string path = store->blob_path(hash);
+  runtime.heap.reserve(reserve_result() + String::reserve(path.size()));
+  RETURN(claim_result(runtime.heap, true, String::claim(runtime.heap, path)));
+}
+
 // ============================================================================
 // Primitive Registration
 // ============================================================================
 
 void prim_register_cas(CASContext* ctx, PrimMap& pmap) {
   prim_register(pmap, "cas_dir", prim_cas_dir, type_cas_dir, PRIM_PURE, ctx);
+  prim_register(pmap, "cas_blob_abs_path", prim_cas_blob_abs_path, type_cas_blob_abs_path,
+                PRIM_PURE, ctx);
   prim_register(pmap, "cas_materialize_item", prim_cas_materialize_item, type_cas_materialize_item,
                 PRIM_IMPURE, ctx);
   prim_register(pmap, "materialize_staged_workspace_item", prim_materialize_staged_workspace_item,

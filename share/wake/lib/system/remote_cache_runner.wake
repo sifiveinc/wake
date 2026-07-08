@@ -57,11 +57,11 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         else output
 
         # Attach a post-finalization callback. After job.wake finalizes (CAS ingestion +
-        # workspace materialization), it invokes this to upload outputs from their permanent
-        # workspace locations. This is left as 'def _' so that wake won't block progess
+        # workspace materialization), it invokes this to upload outputs from their CAS
+        # blob paths. This is left as 'def _' so that wake won't block progess
         # on it but it will stil be joined on before wake exits.
-        def postFinalize _ =
-            def _ = postJob rscApi job wakeroot hashKey input output
+        def postFinalize preparedItems =
+            def _ = postJob rscApi job wakeroot hashKey input output preparedItems
 
             Unit
 
@@ -96,101 +96,44 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         def stdoutDownload = rscApiGetStringBlob stdoutBlob
         def stderrDownload = rscApiGetStringBlob stderrBlob
 
+        # Since RSC doesn't store mtimes, set the mtime as (0,0) so materialization
+        # can set the mtime at creation for files, symlinks, and directories.
+
         def doMakeDirectory (CacheSearchOutputDirectory path mode _hidden) =
-            # wake-format off
-            def cmd =
-                "mkdir",
-                "-m", mode.strOctal,
-                "-p", path,
+            def preparedItem =
+                PreparedStagingItem (StagingDirectory (StagingDirectoryOutput path mode 0 0)) ""
 
-            require True =
-                makeExecPlan cmd Nil
-                | setPlanLabel "rsc: mkdir output dir {path}"
-                | setPlanPersistence Once
-                | setPlanEcho logDebug
-                # As we are deliberately creating directories one step at at time to properly handle
-                # permissions on any ancestors, but can't have this job claiming ownership of the
-                # directory in case it's listed as one of the rehydrated job's outputs, the localRunner
-                # is required to be able to see those ancestor directories.
-                | runJobWith localRunner
-                | setJobInspectVisibilityHidden
-                | isJobOk
-            else failWithError "rsc: Failed to mkdir output dir: {path}"
+            materializePreparedStagingItemFromCas preparedItem
+            | addErrorContext "rsc: Failed to create directory {path}"
 
-            Pass Unit
-
-        # We need to create directories from shallowest to deepest, each directory along the
-        # chain may have a different permission set and by creating short dirs first we
-        # ensure they don't incorrectly inheret the permissions of a subdir. This required
-        # ordering significantly decreases parallism, however this is mitigated by the fact
-        # that most outputs are files, not dirs.
-        def dirLoop (dirs: List CacheSearchOutputDirectory) = match dirs
-            Nil -> Pass Nil
-            h, t ->
-                require Pass dir = doMakeDirectory h
-                require Pass rest = dirLoop t
-
-                Pass (dir, rest)
-
-        def lenOrder lhs rhs =
-            def lhsLen = lhs.getCacheSearchOutputDirectoryPath.strlen
-            def rhsLen = rhs.getCacheSearchOutputDirectoryPath.strlen
-
-            if lhsLen == rhsLen then
-                EQ
-            else if lhsLen < rhsLen then
-                LT
-            else
-                GT
-
-        def orderedDirs =
-            outputDirs
-            | sortBy lenOrder
-
-        # We don't actually care about the result here but we need to ensure that all
-        # directories are created before potentially downloading files into them.
-        require Pass _ = dirLoop orderedDirs
-        else failWithError "rsc: Failed to make output directory"
-
-        # The path is downloaded directly, as is, because it is relative to the workspace.
-        # Everything besides Command is stored in the server as workspace relative
+        # Files: download blob → ingest into CAS → materialize from CAS.
+        # rscApiGetFileBlob handles the CAS path end-to-end.
         def doDownload (CacheSearchOutputFile path mode blob) = rscApiGetFileBlob blob path mode
 
-        # Link must point to path. We do the reverse here of what is done for posting a job
-        def doMakeSymlink (CacheSearchOutputSymlink path link) =
-            require True =
-                makeExecPlan
-                (
-                    "ln",
-                    # create symbolic link
-                    "-s",
-                    # overwrite <link> on disk if a file already exists at that path.
-                    # Ideally, we could just fail but its very common to delete wake.db
-                    # without cleaning all the outputs. This causes problems since the link
-                    # would already exist on disk
-                    "-f",
-                    path,
-                    link,
-                )
-                Nil
-                | setPlanLabel "rsc: symlink {link} to {path}"
-                | setPlanPersistence Once
-                | setPlanEcho logDebug
-                # Since we don't have a Path to the directory containing the symlink, we need to
-                # use localRunner to have visibility into the full workspace.
-                | runJobWith localRunner
-                | setJobInspectVisibilityHidden
-                | isJobOk
-            else failWithError "rsc: Failed to link {link} to {path}"
+        # Symlinks: target is always inline. Ingest the target string into CAS under its
+        # hash, then materialize as a symlink. Reuses the same helpers used for local job
+        # outputs.
+        def doMakeSymlink (CacheSearchOutputSymlink symlinkTarget symlinkPath hash) =
+            def preparedItem =
+                PreparedStagingItem (StagingSymlink (StagingSymlinkOutput symlinkPath symlinkTarget 0 0)) hash
 
-            Pass Unit
+            require Pass _ =
+                ingestPreparedStagingItemIntoCas preparedItem
+                | addErrorContext "rsc: Failed to ingest symlink {symlinkPath} into CAS"
+
+            materializePreparedStagingItemFromCas preparedItem
+            | addErrorContext "rsc: Failed to materialize symlink {symlinkPath}"
 
         def outputFilesDownload =
             outputFiles
             | map doDownload
 
-        # Symlinks don't need to wait for files, the symlinks will just momentarily be invalid if created first
-        def outputSymlinksDownload =
+        def outputDirectoriesCreate =
+            outputDirs
+            | map doMakeDirectory
+
+        # Symlinks don't need to wait for files; momentarily dangling symlinks are fine.
+        def outputSymlinksCreate =
             outputSymlinks
             | map doMakeSymlink
 
@@ -222,7 +165,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
 
         def symlinkStagingItems =
             outputSymlinks
-            | map (\(CacheSearchOutputSymlink path link) StagingSymlink (StagingSymlinkOutput link path 0 0))
+            | map (\(CacheSearchOutputSymlink path link _) StagingSymlink (StagingSymlinkOutput link path 0 0))
 
         def publishedDirectoryStagingItems =
             publishedDirectories
@@ -257,7 +200,12 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             | addErrorContext "rsc: Failed to download a blob"
 
         require Pass _ =
-            outputSymlinksDownload
+            outputDirectoriesCreate
+            | findFail
+            | addErrorContext "rsc: Failed to create an output directory"
+
+        require Pass _ =
+            outputSymlinksCreate
             | findFail
             | addErrorContext "rsc: Failed to create a symlink"
 
@@ -389,7 +337,7 @@ def mkCacheAllowedRequest ((RunnerInput label cmd vis env dir stdin _res _prefix
     CacheAllowedRequest label cmd dir env hidden isAtty stdin vis jobStatus runtime cputime mem obytes
 
 # Posts a completed job to the remote cache
-def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: String) (input: RunnerInput) (output: RunnerOutput): Result Unit Error =
+def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: String) (input: RunnerInput) (output: RunnerOutput) (preparedItems: List PreparedStagingItem): Result Unit Error =
     def stagedOutputs = output.getRunnerOutputOutputs
     def StagedOutputs filteredOutputPaths _ stagingItems _ _ = stagedOutputs
 
@@ -410,70 +358,38 @@ def postJob (rscApi: RemoteCacheApi) (job: Job) (_wakeroot: String) (hidden: Str
         require True = subset scmp filteredOutputPaths stagedOutputPaths
         else failWithError "rsc: Missing staging metadata for published outputs"
 
-        def uploadStagingFile (StagingFileOutput destPath _stagingPath mode _ _) =
-            # Post-finalization: staging file has been consumed. Upload from workspace dest path.
-            def doUpload =
-                rscApi
-                | rscApiPostFileBlob destPath destPath
-
-            require Pass id = doUpload
-
-            CachePostRequestOutputFile destPath mode id
-            | Pass
-
-        def publishedFileUpload (item: StagingItem): Option (Result CachePostRequestOutputFile Error) =
+        def uploadPreparedFile ((PreparedStagingItem item hash): PreparedStagingItem): Option (Result CachePostRequestOutputFile Error) =
             match item
-                StagingFile file ->
-                    if isPublishedOutput file.getStagingFileOutputDestPath then
-                        Some (uploadStagingFile file)
+                StagingFile (StagingFileOutput destPath _stagingPath mode _ _) ->
+                    if isPublishedOutput destPath then
+                        rscApi
+                        | rscApiPostFileBlob destPath hash
+                        | rmap (\blobId CachePostRequestOutputFile destPath mode blobId)
+                        | Some
                     else
                         None
                 _ -> None
 
-        def publishedSymlinkUpload (item: StagingItem): Option (Result CachePostRequestOutputSymlink Error) =
+        def uploadPreparedSymlink ((PreparedStagingItem item hash): PreparedStagingItem): Option (Result CachePostRequestOutputSymlink Error) =
             match item
                 StagingSymlink (StagingSymlinkOutput destPath symlinkTarget _ _) ->
                     if isPublishedOutput destPath then
-                        Some (Pass (CachePostRequestOutputSymlink symlinkTarget destPath))
+                        Some (Pass (CachePostRequestOutputSymlink symlinkTarget destPath hash))
                     else
                         None
                 _ -> None
 
-        def publishedDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory =
-            match item
-                StagingDirectory (StagingDirectoryOutput destPath mode _ _) ->
-                    if isPublishedOutput destPath then
-                        Some (CachePostRequestOutputDirectory destPath mode False)
-                    else
-                        None
-                _ -> None
+        # Directories carry no meaningful hash, so iterate staging items directly.
+        # Both published and hidden directories are uploaded.
+        # (hidden=True marks them as ancillary — restored on rehydration but not listed as job outputs).
+        def uploadDirectory (item: StagingItem): Option CachePostRequestOutputDirectory = match item
+            StagingDirectory (StagingDirectoryOutput destPath mode _ _) ->
+                Some (CachePostRequestOutputDirectory destPath mode (! isPublishedOutput destPath))
+            _ -> None
 
-        def hiddenDirectoryUpload (item: StagingItem): Option CachePostRequestOutputDirectory =
-            match item
-                StagingDirectory (StagingDirectoryOutput destPath mode _ _) ->
-                    if isPublishedOutput destPath then
-                        None
-                    else
-                        Some (CachePostRequestOutputDirectory destPath mode True)
-                _ -> None
-
-        def fileUploads =
-            stagingItems
-            | mapPartial publishedFileUpload
-
-        def symlinksUpload =
-            stagingItems
-            | mapPartial publishedSymlinkUpload
-
-        def publishedDirectoriesUpload =
-            stagingItems
-            | mapPartial publishedDirectoryUpload
-
-        def hiddenDirectoriesUpload =
-            stagingItems
-            | mapPartial hiddenDirectoryUpload
-
-        def directoriesUpload = publishedDirectoriesUpload ++ hiddenDirectoriesUpload
+        def fileUploads = mapPartial uploadPreparedFile preparedItems
+        def symlinksUpload = mapPartial uploadPreparedSymlink preparedItems
+        def directoriesUpload = mapPartial uploadDirectory stagingItems
 
         Pass (Triple fileUploads directoriesUpload symlinksUpload)
 

@@ -192,6 +192,10 @@ Documentation for wake can be found in [share/doc/wake](share/doc/wake).
    introduction.
  - The [Quick Reference Guide](share/doc/wake/quickref.md) is handy overview
    of wake syntax in cheat-sheet form.
+ - [Workspace Virtualization and Multiple Wake Invocations](share/doc/wake/workspace-virtualization-and-multi-wake.md)
+   explains wake's content-addressable storage (CAS), how the workspace becomes
+   a projection of wake's state, running concurrent wake invocations, and
+   managing workspace disk usage.
  - The [Annotated Source Code](https://sifiveinc.github.io/wake/) of wake can
    be useful when trying to understand the standard library.
  - The sphinx-generated [reference manual](https://sifiveinc.github.io/wake/contents.html)
