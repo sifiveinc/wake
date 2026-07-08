@@ -192,7 +192,7 @@ Documentation for wake can be found in [share/doc/wake](share/doc/wake).
    introduction.
  - The [Quick Reference Guide](share/doc/wake/quickref.md) is handy overview
    of wake syntax in cheat-sheet form.
- - [Workspace Virtualization and Multiple Wake Invocations](docs/workspace-virtualization-and-multi-wake.md)
+ - [Workspace Virtualization and Multiple Wake Invocations](share/doc/wake/workspace-virtualization-and-multi-wake.md)
    explains wake's content-addressable storage (CAS), how the workspace becomes
    a projection of wake's state, running concurrent wake invocations, and
    managing workspace disk usage.
