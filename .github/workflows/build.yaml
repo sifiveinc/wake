@@ -231,24 +231,26 @@ jobs:
           uses: actions/download-artifact@v4
           with:
             name: index.html
+            path: site
 
         - name: Download html
           uses: actions/download-artifact@v4
           with:
             name: html
+            path: site
 
         - name: Make .nojekyll
-          run: touch .nojekyll
+          run: touch site/.nojekyll
+
+        - name: List files being uploaded
+          run: find site/
 
         - name: Upload
           uses: actions/upload-pages-artifact@v3
           with:
-            path: .
+            path: site
 
     deploy_docs:
-      # Only run the 'deploy_docs' job if this workflow was triggered by a push to master
-      if: github.event_name == 'push' && github.ref_type == 'branch' && github.ref_name == 'master'
-
       permissions:
         pages: write
         id-token: write
