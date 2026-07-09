@@ -45,6 +45,7 @@
 #include "status.h"
 #include "util/mkdir_parents.h"
 #include "wcl/iterator.h"
+#include "wcl/tracing.h"
 
 #define VISIBLE 0
 #define INPUT 1
@@ -79,6 +80,8 @@ struct Database::detail {
   sqlite3_stmt *delete_overlap;
   sqlite3_stmt *find_prior;
   sqlite3_stmt *delete_prior;
+  sqlite3_stmt *collect_stranded_outputs;
+  sqlite3_stmt *path_still_referenced;
   sqlite3_stmt *delete_jobs;
   sqlite3_stmt *delete_orphan_files;
   sqlite3_stmt *delete_dups;
@@ -141,6 +144,8 @@ struct Database::detail {
         delete_overlap(0),
         find_prior(0),
         delete_prior(0),
+        collect_stranded_outputs(0),
+        path_still_referenced(0),
         delete_jobs(0),
         delete_orphan_files(0),
         delete_dups(0),
@@ -436,6 +441,42 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "  and j2.job_id<>?2"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=j2.job_id) <= ?1"
       ")";
+  // Collect the output-file paths belonging to prior/overlapping jobs that delete_prior and
+  // delete_overlap are about to remove. Capturing them *before* the deletes (while the job
+  // linkage is intact) lets finish_job physically unlink any files that would otherwise be
+  // stranded: dropped from the DB without the underlying file being overwritten. Restricted to
+  // real output files (never <source>/<claim>) using the same guard as sql_get_output_files.
+  // ?1 = gc_watermark, ?2 = current job_id (matching sql_delete_prior / sql_delete_overlap).
+  const char *sql_collect_stranded_outputs =
+      "select distinct f.path, f.type"
+      " from filetree ft join files f on f.file_id=ft.file_id join jobs jd on jd.job_id=ft.job_id"
+      " where ft.access = 2"
+      " and substr(cast(jd.commandline as varchar), 1, 8) != '<source>'"
+      " and substr(cast(jd.commandline as varchar), 1, 7) != '<claim>'"
+      " and jd.job_id in ("
+      "   select j2.job_id from jobs j1, jobs j2"
+      "     where j1.job_id=?2 and j1.directory=j2.directory and j1.commandline=j2.commandline"
+      "     and j1.environment=j2.environment and j1.stdin=j2.stdin and j1.is_atty=j2.is_atty"
+      "     and j2.job_id<>?2"
+      "     and (select coalesce(max(run_id), 0) from run_jobs where job_id=j2.job_id) <= ?1"
+      "   union"
+      "   select t2.job_id from filetree t1, filetree t2, files f1, files f2"
+      "     where t1.job_id=?2 and t1.access=2"
+      "     and f1.file_id=t1.file_id"
+      "     and f2.path=f1.path"
+      "     and t2.file_id=f2.file_id and t2.access=2"
+      "     and t2.job_id<>?2"
+      "     and (select coalesce(max(run_id), 0) from run_jobs where job_id=t2.job_id) <= ?1"
+      " )";
+  // Is there still a live file record for this path referenced by the filetree (some job's
+  // input/output/visible) or protected by run_files? If not, the physical file at this path is
+  // stranded and safe to unlink. ?1 = path.
+  const char *sql_path_still_referenced =
+      "select 1 from files f"
+      " where f.path = ?1"
+      " and (exists (select 1 from filetree ft where ft.file_id=f.file_id)"
+      "      or exists (select 1 from run_files rf where rf.file_id=f.file_id))"
+      " limit 1";
   const char *sql_delete_jobs =
       "delete from jobs where keep=0"
       "  and not exists (select 1 from filetree where"
@@ -573,6 +614,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_delete_overlap, delete_overlap);
   PREPARE(sql_find_prior, find_prior);
   PREPARE(sql_delete_prior, delete_prior);
+  PREPARE(sql_collect_stranded_outputs, collect_stranded_outputs);
+  PREPARE(sql_path_still_referenced, path_still_referenced);
   PREPARE(sql_delete_jobs, delete_jobs);
   PREPARE(sql_delete_orphan_files, delete_orphan_files);
   PREPARE(sql_delete_dups, delete_dups);
@@ -646,6 +689,8 @@ void Database::close() {
   FINALIZE(delete_overlap);
   FINALIZE(find_prior);
   FINALIZE(delete_prior);
+  FINALIZE(collect_stranded_outputs);
+  FINALIZE(path_still_referenced);
   FINALIZE(delete_jobs);
   FINALIZE(delete_orphan_files);
   FINALIZE(delete_dups);
@@ -1438,6 +1483,22 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
     single_step(why, imp->insert_unhashed_file, imp->debugdb);
   }
 
+  // Collect the output-file paths of the prior/overlapping jobs that the deletes below are
+  // about to remove. We must gather these *before* the deletes run, while the job->filetree
+  // linkage still exists. Any of these whose file record is no longer referenced afterwards
+  // would otherwise be stranded on disk (dropped from the DB but never overwritten, since a
+  // non-deterministically-named re-execution writes to a different path). wake --clean only
+  // removes files it still has records for, so such files survive a clean. We unlink them here.
+  std::vector<std::pair<std::string, std::string>> stranded_candidates;
+  bind_integer(why, imp->collect_stranded_outputs, 1, imp->gc_watermark);
+  bind_integer(why, imp->collect_stranded_outputs, 2, job);
+  while (sqlite3_step(imp->collect_stranded_outputs) == SQLITE_ROW) {
+    auto path = rip_column(imp->collect_stranded_outputs, 0);
+    auto type = rip_column(imp->collect_stranded_outputs, 1);
+    stranded_candidates.emplace_back(std::move(path), std::move(type));
+  }
+  finish_stmt(why, imp->collect_stranded_outputs, imp->debugdb);
+
   // Eagerly delete duplicate jobs (same command signature) from completed runs
   bind_integer(why, imp->delete_prior, 1, imp->gc_watermark);
   bind_integer(why, imp->delete_prior, 2, job);
@@ -1447,6 +1508,17 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   bind_integer(why, imp->delete_overlap, 1, imp->gc_watermark);
   bind_integer(why, imp->delete_overlap, 2, job);
   single_step(why, imp->delete_overlap, imp->debugdb);
+
+  // Of the candidate paths, keep only those no longer referenced by any live file record
+  // (not an input/output/visible file of a surviving job, nor protected by run_files). A path
+  // that was overwritten in place by this job's own output stays referenced and is preserved.
+  std::vector<std::pair<std::string, std::string>> stranded_files;
+  for (auto &candidate : stranded_candidates) {
+    bind_string(why, imp->path_still_referenced, 1, candidate.first);
+    bool referenced = sqlite3_step(imp->path_still_referenced) == SQLITE_ROW;
+    finish_stmt(why, imp->path_still_referenced, imp->debugdb);
+    if (!referenced) stranded_files.emplace_back(std::move(candidate));
+  }
 
   // Detect if multiple jobs in this run output the same file (an error condition).
   // The run_jobs table tracks all jobs in the current run, allowing us to constrain
@@ -1475,6 +1547,31 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   end_txn();
 
   if (fail) exit(1);
+
+  // Physically remove any stranded files now that the DB transaction has committed. These are
+  // files whose records were just dropped and which no live record references, so the workspace
+  // would otherwise retain them untracked after wake --clean. Directories are removed only if
+  // now empty; ENOENT is benign. Reflink/copy CAS semantics mean unlinking a workspace output
+  // has no effect on the underlying CAS blob.
+  if (!stranded_files.empty()) {
+    // Unlink files first, deepest paths first, so parent directories can become empty.
+    std::sort(stranded_files.begin(), stranded_files.end(),
+              [](const auto &a, const auto &b) { return a.first.size() > b.first.size(); });
+    for (const auto &entry : stranded_files) {
+      const std::string &path = entry.first;
+      const std::string &type = entry.second;
+      if (path == "." || path.empty()) continue;
+      if (type == "directory") {
+        if (rmdir(path.c_str()) == -1 && errno != ENOENT && errno != ENOTEMPTY) {
+          wcl::log::warning("finish_job: rmdir(%s): %s", path.c_str(), strerror(errno))();
+        }
+      } else {
+        if (unlink(path.c_str()) == -1 && errno != ENOENT) {
+          wcl::log::warning("finish_job: unlink(%s): %s", path.c_str(), strerror(errno))();
+        }
+      }
+    }
+  }
 
   static int job_count = 0;
   if (++job_count % checkpoint_interval ==
