@@ -40,6 +40,12 @@ cd ..
 "${WAKE}" --rm .build/other 2>&1 || fail "should *not* reject '.build/other'"
 test -f .build/other && fail ".build/other still exists"
 
+# Test 7: Normalize trailing slashes (subdir/ should work like subdir)
+"${WAKE}" -q -x 'mkdir "test-dir"' 2>&1 || fail "could not create test-dir/"
+test -d test-dir || fail "test-dir/ not created"
+"${WAKE}" --rm -r test-dir/ 2>&1 || fail "should accept 'test-dir/' (trailing slash should be normalized)"
+rmdir test-dir 2>/dev/null && fail "test-dir/ should have been removed"
+
 echo "PASS: safety checks" >&2
 
 # Clean up

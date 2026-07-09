@@ -61,6 +61,11 @@ int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::strin
       workspace_path = std::filesystem::relative(workspace_path, workspace_root);
     }
 
+    // Strip trailing slashes to match the DB representation of directories.
+    if (!workspace_path.has_filename() && workspace_path.has_parent_path()) {
+      workspace_path = workspace_path.parent_path();
+    }
+
     // Reject dangerous paths
     if (workspace_path == ".") {
       std::cerr << "wake --rm: cannot remove the workspace root: '" << path << "'" << std::endl;
