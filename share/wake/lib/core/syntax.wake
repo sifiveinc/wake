@@ -37,6 +37,11 @@ export def (dollarFn: a => b) $ (argument: a): b =
 export def (f: b => c) ∘ (g: a => b): a => c =
     \x f (g x)
 
+# Function composition.
+# (compose f g) x = f (g x)
+export def compose (f: b => c) (g: a => b): a => c =
+    \x f (g x)
+
 # Allows flipping the parameters of a function.
 # icmp.flip 4 5 = GT
 # icmp.flip 5 4 = LT
