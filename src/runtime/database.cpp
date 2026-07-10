@@ -834,6 +834,53 @@ static std::string rip_column(sqlite3_stmt *stmt, int col) {
                      sqlite3_column_bytes(stmt, col));
 }
 
+// Collect the (path, type) pairs of output files that will be stranded when their records are
+// dropped: the files row exists but no surviving job (filetree) and no concurrent run (run_files)
+// references the file_id, and -- crucially -- no other row for the same path is still referenced.
+// The path-level guards preserve a path that was re-output in place with a new hash and prevent
+// unlinking a live, tracked file that merely shares a path with an orphaned old-hash row.
+// <source>/<claim> pseudo-jobs are never deleted at these callsites, so their paths stay
+// referenced in filetree and are excluded automatically. Only meaningful when a delete follows.
+static std::vector<std::pair<std::string, std::string>> collect_stranded_output_files(
+    const char *why, sqlite3_stmt *stmt, bool debug) {
+  std::vector<std::pair<std::string, std::string>> stranded;
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    auto path = rip_column(stmt, 0);
+    auto type = rip_column(stmt, 1);
+    stranded.emplace_back(std::move(path), std::move(type));
+  }
+  finish_stmt(why, stmt, debug);
+  return stranded;
+}
+
+// Physically remove stranded output files while still holding the write lock, before committing.
+// Deleting under the lock (as clear_jobs_if_safe does) closes the window in which a concurrent
+// wake could commit a new record for one of these paths between our commit and our unlink -- which
+// would otherwise let us delete a file another run just legitimately produced. Directories are
+// removed only if now empty; ENOENT/ENOTEMPTY are benign. Reflink/copy CAS semantics mean
+// unlinking a workspace output has no effect on the underlying CAS blob.
+static void unlink_stranded_output_files(
+    std::vector<std::pair<std::string, std::string>> &stranded, const char *context) {
+  if (stranded.empty()) return;
+  // Unlink files first, deepest paths first, so parent directories can become empty.
+  std::sort(stranded.begin(), stranded.end(),
+            [](const auto &a, const auto &b) { return a.first.size() > b.first.size(); });
+  for (const auto &entry : stranded) {
+    const std::string &path = entry.first;
+    const std::string &type = entry.second;
+    if (path == "." || path.empty()) continue;
+    if (type == "directory") {
+      if (rmdir(path.c_str()) == -1 && errno != ENOENT && errno != ENOTEMPTY) {
+        wcl::log::warning("%s: rmdir(%s): %s", context, path.c_str(), strerror(errno))();
+      }
+    } else {
+      if (unlink(path.c_str()) == -1 && errno != ENOENT) {
+        wcl::log::warning("%s: unlink(%s): %s", context, path.c_str(), strerror(errno))();
+      }
+    }
+  }
+}
+
 void Database::entropy(uint64_t *key, int words) {
   const char *why = "Could not restore entropy";
   int word;
@@ -976,7 +1023,20 @@ void Database::clean() {
 
   bind_integer(why, imp->delete_jobs, 1, imp->gc_watermark);
   single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
+
+  // delete_jobs above reaps keep=0 jobs (that produced no surviving output) and cascades their
+  // filetree rows, orphaning any files those jobs still referenced. delete_orphan_files then drops
+  // those files rows with a pure SQL delete and no unlink -- so a divergently-named output whose
+  // producing job was reaped by normal GC loses its record here while its physical file stays on
+  // disk, invisible to a later wake --clean. Collect the paths that are about to be stranded, then
+  // unlink them after the delete (deepest-first) while still under the write lock. The path-guarded
+  // SELECT preserves any path still referenced by a live record; delete_jobs never reaps
+  // <source>/<claim> jobs (their access=2 rows keep them), so sources cannot be collected here.
+  auto stranded_files =
+      collect_stranded_output_files(why, imp->collect_stranded_outputs, imp->debugdb);
   single_step("Could not clean orphan files", imp->delete_orphan_files, imp->debugdb);
+  unlink_stranded_output_files(stranded_files, "clean");
+
   single_step("Could not clean database dups", imp->delete_dups, imp->debugdb);
   single_step("Could not clean database stats", imp->delete_stats, imp->debugdb);
 
@@ -1477,12 +1537,8 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   // survive a clean. Skipped entirely when nothing was superseded -- the common case.
   std::vector<std::pair<std::string, std::string>> stranded_files;
   if (superseded > 0) {
-    while (sqlite3_step(imp->collect_stranded_outputs) == SQLITE_ROW) {
-      auto path = rip_column(imp->collect_stranded_outputs, 0);
-      auto type = rip_column(imp->collect_stranded_outputs, 1);
-      stranded_files.emplace_back(std::move(path), std::move(type));
-    }
-    finish_stmt(why, imp->collect_stranded_outputs, imp->debugdb);
+    stranded_files =
+        collect_stranded_output_files(why, imp->collect_stranded_outputs, imp->debugdb);
   }
 
   // Detect if multiple jobs in this run output the same file (an error condition).
@@ -1510,31 +1566,11 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   finish_stmt(why, imp->detect_overlap, imp->debugdb);
 
   // Physically remove any stranded files while still holding the write lock, before committing.
-  // Deleting under the lock (as clear_jobs_if_safe does) closes the window in which a concurrent
-  // wake could commit a new record for one of these paths between our commit and our unlink --
-  // which would otherwise let us delete a file another run just legitimately produced. These are
-  // files whose records were just dropped and which no live record references, so the workspace
-  // would otherwise retain them untracked after wake --clean. Directories are removed only if now
-  // empty; ENOENT is benign. Reflink/copy CAS semantics mean unlinking a workspace output has no
-  // effect on the underlying CAS blob. Skipped on overlap failure, since we abort below.
-  if (!fail && !stranded_files.empty()) {
-    // Unlink files first, deepest paths first, so parent directories can become empty.
-    std::sort(stranded_files.begin(), stranded_files.end(),
-              [](const auto &a, const auto &b) { return a.first.size() > b.first.size(); });
-    for (const auto &entry : stranded_files) {
-      const std::string &path = entry.first;
-      const std::string &type = entry.second;
-      if (path == "." || path.empty()) continue;
-      if (type == "directory") {
-        if (rmdir(path.c_str()) == -1 && errno != ENOENT && errno != ENOTEMPTY) {
-          wcl::log::warning("finish_job: rmdir(%s): %s", path.c_str(), strerror(errno))();
-        }
-      } else {
-        if (unlink(path.c_str()) == -1 && errno != ENOENT) {
-          wcl::log::warning("finish_job: unlink(%s): %s", path.c_str(), strerror(errno))();
-        }
-      }
-    }
+  // These are files whose records were just dropped and which no live record references, so the
+  // workspace would otherwise retain them untracked after wake --clean. Skipped on overlap
+  // failure, since we abort below.
+  if (!fail) {
+    unlink_stranded_output_files(stranded_files, "finish_job");
   }
 
   end_txn();
