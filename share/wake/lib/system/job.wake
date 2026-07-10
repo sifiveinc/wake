@@ -141,6 +141,14 @@ export def primHash5 a b c d e: Integer =
 def implode strings =
     cat (foldr (_, "\0", _) Nil strings)
 
+# Vector-native variant of `implode`: adds a null byte after each string then combines them.
+# Produces a byte-for-byte identical result to `implode` for the same sequence of elements,
+# including the trailing null byte (e.g. ["a", "b", "c"] => "a\0b\0c\0", [] => "").
+# Builds an intermediate List and concatenates with the `cat` primitive in one pass to
+# avoid O(n^2) repeated string concatenation.
+def vimplode strings =
+    cat (vfoldr (_, "\0", _) Nil strings)
+
 # Helper function that hashs the signature parts of a job
 def jobSignature cmd res fni fno keep =
     primHash5 cmd res fni fno keep
@@ -260,8 +268,7 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
     def visKey =
         vis
         | vmap getPathName
-        | vectorToList
-        | implode
+        | vimplode
 
     def jobKey = JobKey dir stdin env.implode cmd.implode hash visKey isatty.booleanToInteger
 
