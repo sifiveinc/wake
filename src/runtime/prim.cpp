@@ -127,17 +127,21 @@ static HeapHash deep_hash_imp(Heap &heap, HeapObject *obj) {
   Hash code;
   for (HeapObject **done = scratch; done != step.found; ++done) {
     HeapObject *head = *done;
+
+    // Tagged small-Integer pointers carry their value in the bits and have
+    // no heap object to dispatch on. Hash directly; nothing to traverse.
+    uintptr_t key = reinterpret_cast<uintptr_t>(static_cast<void *>(head));
+    auto out = explored.insert(std::make_pair(key, done - scratch));
+    code = code + out.first->second;
+    if (!out.second) continue;
+
+    if (is_small_int(head)) {
+      code = code + small_int_shallow_hash(small_int_value(head));
+      continue;
+    }
+
     assert(head->category() == VALUE);
     Value *value = static_cast<Value *>(head);
-
-    // Assign objects virtual addreses based on visitation order
-    uintptr_t key = reinterpret_cast<uintptr_t>(static_cast<void *>(value));
-    auto out = explored.insert(std::make_pair(key, done - scratch));
-
-    // Include hash of child's virtual address
-    code = code + out.first->second;
-    // Only visit object once
-    if (!out.second) continue;
 
     // Hash this object and enqueue its children for hashing
     step = value->explore(step);
