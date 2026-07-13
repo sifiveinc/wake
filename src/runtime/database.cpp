@@ -439,14 +439,12 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "  and j2.job_id<>?2"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=j2.job_id) <= ?1"
       ")";
-  // After delete_prior/delete_overlap supersede a prior job (below), collect any output-file
-  // paths that are now stranded: the files record was dropped but the physical file was never
-  // overwritten, because a non-deterministically-named re-execution wrote to a different path.
-  // A path is stranded when it still has a files row but no surviving job references it
-  // (filetree) and no concurrent run protects it (run_files). The path-level check -- not just
-  // file_id orphaning -- preserves a path this job re-output in place with a new hash. Sources
-  // and claims are never returned: their <source>/<claim> job is not deleted here, so their
-  // path stays referenced in the filetree. Only run when a delete actually occurred.
+  // Finds output files that are safe to delete from disk after their database rows are removed.
+  // A row qualifies when it is orphaned -- no surviving job references its file_id
+  // (filetree) and no concurrent run protects it (run_files) -- AND no *other* row for the same
+  // path is still referenced. The two path-level guards are what make the unlink safe: because a
+  // path can have several files rows, they preserve a path re-output in place under a new hash and
+  // stop us unlinking a live, tracked file that merely shares a path with an orphaned old-hash row.
   const char *sql_collect_stranded_outputs =
       "select distinct f.path, f.type from files f"
       " where f.file_id not in (select file_id from filetree)"
@@ -834,13 +832,6 @@ static std::string rip_column(sqlite3_stmt *stmt, int col) {
                      sqlite3_column_bytes(stmt, col));
 }
 
-// Collect the (path, type) pairs of output files that will be stranded when their records are
-// dropped: the files row exists but no surviving job (filetree) and no concurrent run (run_files)
-// references the file_id, and -- crucially -- no other row for the same path is still referenced.
-// The path-level guards preserve a path that was re-output in place with a new hash and prevent
-// unlinking a live, tracked file that merely shares a path with an orphaned old-hash row.
-// <source>/<claim> pseudo-jobs are never deleted at these callsites, so their paths stay
-// referenced in filetree and are excluded automatically. Only meaningful when a delete follows.
 static std::vector<std::pair<std::string, std::string>> collect_stranded_output_files(
     const char *why, sqlite3_stmt *stmt, bool debug) {
   std::vector<std::pair<std::string, std::string>> stranded;
@@ -853,14 +844,8 @@ static std::vector<std::pair<std::string, std::string>> collect_stranded_output_
   return stranded;
 }
 
-// Physically remove stranded output files while still holding the write lock, before committing.
-// Deleting under the lock (as clear_jobs_if_safe does) closes the window in which a concurrent
-// wake could commit a new record for one of these paths between our commit and our unlink -- which
-// would otherwise let us delete a file another run just legitimately produced. Directories are
-// removed only if now empty; ENOENT/ENOTEMPTY are benign. Reflink/copy CAS semantics mean
-// unlinking a workspace output has no effect on the underlying CAS blob.
-static void unlink_stranded_output_files(
-    std::vector<std::pair<std::string, std::string>> &stranded, const char *context) {
+static void unlink_stranded_output_files(std::vector<std::pair<std::string, std::string>> &stranded,
+                                         const char *context) {
   if (stranded.empty()) return;
   // Unlink files first, deepest paths first, so parent directories can become empty.
   std::sort(stranded.begin(), stranded.end(),
@@ -1024,14 +1009,10 @@ void Database::clean() {
   bind_integer(why, imp->delete_jobs, 1, imp->gc_watermark);
   single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
 
-  // delete_jobs above reaps keep=0 jobs (that produced no surviving output) and cascades their
-  // filetree rows, orphaning any files those jobs still referenced. delete_orphan_files then drops
-  // those files rows with a pure SQL delete and no unlink -- so a divergently-named output whose
-  // producing job was reaped by normal GC loses its record here while its physical file stays on
-  // disk, invisible to a later wake --clean. Collect the paths that are about to be stranded, then
-  // unlink them after the delete (deepest-first) while still under the write lock. The path-guarded
-  // SELECT preserves any path still referenced by a live record; delete_jobs never reaps
-  // <source>/<claim> jobs (their access=2 rows keep them), so sources cannot be collected here.
+  // delete_jobs above reaps keep=0 jobs (no surviving output), cascading their filetree rows and
+  // orphaning any files they referenced; delete_orphan_files then drops those rows with no unlink,
+  // so a divergently-named output whose producing job was GC-reaped strands here. Collect before
+  // the delete, unlink after.
   auto stranded_files =
       collect_stranded_output_files(why, imp->collect_stranded_outputs, imp->debugdb);
   single_step("Could not clean orphan files", imp->delete_orphan_files, imp->debugdb);
@@ -1565,10 +1546,7 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   }
   finish_stmt(why, imp->detect_overlap, imp->debugdb);
 
-  // Physically remove any stranded files while still holding the write lock, before committing.
-  // These are files whose records were just dropped and which no live record references, so the
-  // workspace would otherwise retain them untracked after wake --clean. Skipped on overlap
-  // failure, since we abort below.
+  // Unlink the files collected above (skipped on overlap failure, since we abort below).
   if (!fail) {
     unlink_stranded_output_files(stranded_files, "finish_job");
   }
