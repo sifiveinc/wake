@@ -673,12 +673,10 @@ export def rscApiGetStringBlob ((CacheSearchBlob blobId uri contentHash): CacheS
 
     Pass content
 
-# rscApiGetFileBlobToCas: Downloads a blob, verifies its hash, and ingests it into CAS WITHOUT
+# rscApiGetFileBlobToCas: Downloads a blob, verifies its hash, and ingests it into CAS without
 # writing anything back to the workspace path. Returns the PreparedStagingItem describing the
 # eventual workspace destination, so the caller can materialize it later (after all blobs for a
-# job have been verified). Splitting download+verify+ingest from workspace materialization lets
-# the rehydrate path verify every blob first and only touch the workspace once nothing can fail
-# verification -- eliminating the partial-materialization-then-rollback race.
+# job have been verified).
 #
 # ```
 #  rscApiGetFileBlobToCas (RemoteCacheBlob "asdf" "https://...") "foo/bar" 0644 = Pass (PreparedStagingItem ...)
