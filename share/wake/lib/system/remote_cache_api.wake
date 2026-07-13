@@ -673,12 +673,17 @@ export def rscApiGetStringBlob ((CacheSearchBlob blobId uri contentHash): CacheS
 
     Pass content
 
-# rscApiGetFileBlob: Downloads a blob to *path* with *mode* permisssions and return *path*
+# rscApiGetFileBlobToCas: Downloads a blob, verifies its hash, and ingests it into CAS WITHOUT
+# writing anything back to the workspace path. Returns the PreparedStagingItem describing the
+# eventual workspace destination, so the caller can materialize it later (after all blobs for a
+# job have been verified). Splitting download+verify+ingest from workspace materialization lets
+# the rehydrate path verify every blob first and only touch the workspace once nothing can fail
+# verification -- eliminating the partial-materialization-then-rollback race.
 #
 # ```
-#  rscApiGetFileBlob (RemoteCacheBlob "asdf" "https://...") "foo/bar" 0644 = Pass "foo/bar"
+#  rscApiGetFileBlobToCas (RemoteCacheBlob "asdf" "https://...") "foo/bar" 0644 = Pass (PreparedStagingItem ...)
 # ```
-export def rscApiGetFileBlob ((CacheSearchBlob blobId uri contentHash): CacheSearchBlob) (path: String) (mode: Integer): Result String Error =
+export def rscApiGetFileBlobToCas ((CacheSearchBlob blobId uri contentHash): CacheSearchBlob) (path: String) (mode: Integer): Result PreparedStagingItem Error =
     def resolveDbSchemeToFile scheme path =
         resolveDbScheme scheme path
         |> writeTempFile "rsc.output_file.blob.{blobId}"
@@ -706,9 +711,19 @@ export def rscApiGetFileBlob ((CacheSearchBlob blobId uri contentHash): CacheSea
         ingestPreparedStagingItemIntoCas preparedItem
         | addErrorContext "rsc: Failed to ingest blob {blobId} into CAS for {path}"
 
+    Pass preparedItem
+
+# rscApiGetFileBlob: Downloads a blob to *path* with *mode* permisssions and return *path*
+#
+# ```
+#  rscApiGetFileBlob (RemoteCacheBlob "asdf" "https://...") "foo/bar" 0644 = Pass "foo/bar"
+# ```
+export def rscApiGetFileBlob (blob: CacheSearchBlob) (path: String) (mode: Integer): Result String Error =
+    require Pass preparedItem = rscApiGetFileBlobToCas blob path mode
+
     require Pass _ =
         materializePreparedStagingItemFromCas preparedItem
-        | addErrorContext "rsc: Failed to materialize blob {blobId} to {path}"
+        | addErrorContext "rsc: Failed to materialize blob to {path}"
 
     Pass path
 

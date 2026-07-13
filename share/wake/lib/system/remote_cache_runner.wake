@@ -99,21 +99,30 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         # Since RSC doesn't store mtimes, set the mtime as (0,0) so materialization
         # can set the mtime at creation for files, symlinks, and directories.
 
-        def doMakeDirectory (CacheSearchOutputDirectory path mode _hidden) =
-            def preparedItem =
-                PreparedStagingItem (StagingDirectory (StagingDirectoryOutput path mode 0 0)) ""
+        # Rehydration is split into two phases so the workspace is never written unless EVERY blob
+        # for the job has been downloaded and verified. Phase 1 (below) downloads + verifies + ingests
+        # each blob into CAS *without touching the workspace*; phase 2 (further down) materializes from
+        # CAS to disk only after the phase-1 gate has confirmed nothing can fail verification. This is
+        # what makes rehydrate safe on a mixed/legacy shared cache: a blob that fails a
+        # BLAKE2b-vs-BLAKE3 hash check (notably the empty stdout/stderr blob) aborts in phase 1, before
+        # any workspace write, so there is nothing to strand and nothing to roll back. The caller then
+        # falls back to a local run from a pristine output directory.
 
-            materializePreparedStagingItemFromCas preparedItem
-            | addErrorContext "rsc: Failed to create directory {path}"
+        # Directories carry no blob; build their staging items directly for phase-2 materialization.
+        def makeDirectoryPreparedItem (CacheSearchOutputDirectory path mode _hidden) =
+            PreparedStagingItem (StagingDirectory (StagingDirectoryOutput path mode 0 0)) ""
 
-        # Files: download blob → ingest into CAS → materialize from CAS.
-        # rscApiGetFileBlob handles the CAS path end-to-end.
-        def doDownload (CacheSearchOutputFile path mode blob) = rscApiGetFileBlob blob path mode
+        def directoryPreparedItems =
+            outputDirs
+            | map makeDirectoryPreparedItem
 
-        # Symlinks: target is always inline. Ingest the target string into CAS under its
-        # hash, then materialize as a symlink. Reuses the same helpers used for local job
-        # outputs.
-        def doMakeSymlink (CacheSearchOutputSymlink symlinkTarget symlinkPath hash) =
+        # Files: download blob → verify hash → ingest into CAS (no workspace write). Returns the
+        # PreparedStagingItem to materialize in phase 2.
+        def doDownloadFileToCas (CacheSearchOutputFile path mode blob) = rscApiGetFileBlobToCas blob path mode
+
+        # Symlinks: target is always inline. Ingest the target string into CAS under its hash (no
+        # workspace write). Returns the PreparedStagingItem to materialize in phase 2.
+        def doIngestSymlink (CacheSearchOutputSymlink symlinkTarget symlinkPath hash) =
             def preparedItem =
                 PreparedStagingItem (StagingSymlink (StagingSymlinkOutput symlinkPath symlinkTarget 0 0)) hash
 
@@ -121,21 +130,15 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
                 ingestPreparedStagingItemIntoCas preparedItem
                 | addErrorContext "rsc: Failed to ingest symlink {symlinkPath} into CAS"
 
-            materializePreparedStagingItemFromCas preparedItem
-            | addErrorContext "rsc: Failed to materialize symlink {symlinkPath}"
+            Pass preparedItem
 
-        def outputFilesDownload =
+        def fileIngests =
             outputFiles
-            | map doDownload
+            | map doDownloadFileToCas
 
-        def outputDirectoriesCreate =
-            outputDirs
-            | map doMakeDirectory
-
-        # Symlinks don't need to wait for files; momentarily dangling symlinks are fine.
-        def outputSymlinksCreate =
+        def symlinkIngests =
             outputSymlinks
-            | map doMakeSymlink
+            | map doIngestSymlink
 
         def resolvedOutputs =
             outputFiles
@@ -184,6 +187,25 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         def predict = Usage status runtime cputime mem ibytes obytes
         def inputs = map getPathName (input.getRunnerInputVisible)
 
+        # ---------------------------------- Phase 1: verify-only gate --------------------------------
+        # Download + verify + ingest EVERY blob into CAS before writing anything to the workspace. Each
+        # `require ... | findFail` forces the whole batch to completion and short-circuits on the first
+        # failure. Because phase 1 performs no workspace writes (ingest stores into CAS only, per
+        # cas.wake), a failure here -- notably an empty stdout/stderr blob failing a BLAKE2b-vs-BLAKE3
+        # hash check on a mixed/legacy shared cache -- leaves the workspace untouched. There is nothing
+        # to strand and nothing to roll back; the caller falls back to a local run from a pristine
+        # output directory. This replaces the previous materialize-then-rollback approach, which raced
+        # against wake's concurrent, asynchronous workspace writes.
+        require Pass filePreparedItems =
+            fileIngests
+            | findFail
+            | addErrorContext "rsc: Failed to download a blob"
+
+        require Pass symlinkPreparedItems =
+            symlinkIngests
+            | findFail
+            | addErrorContext "rsc: Failed to ingest a symlink"
+
         require Pass stdout =
             stdoutDownload
             | addErrorContext "rsc: Failed to download stdout for '{label}'"
@@ -192,22 +214,30 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             stderrDownload
             | addErrorContext "rsc: Failed to download stderr for '{label}'"
 
-        # We don't actually care about the result here but we need to ensure that all
-        # downloads have completed before returning.
-        require Pass _ =
-            outputFilesDownload
-            | findFail
-            | addErrorContext "rsc: Failed to download a blob"
+        # ------------------------------ Phase 2: materialize to workspace ----------------------------
+        # Every blob verified and is present in CAS, so nothing below can fail a hash check. These are
+        # pure CAS -> workspace copies (reflink/copy); the only residual failure mode is a genuine IO
+        # error (e.g. disk full), which the local-run fallback would hit too. Directories first so
+        # parent paths exist, then files, then symlinks.
+        def materializeItem preparedItem =
+            materializePreparedStagingItemFromCas preparedItem
+            | addErrorContext "rsc: Failed to materialize {preparedItem.getPreparedStagingItemPathName}"
 
         require Pass _ =
-            outputDirectoriesCreate
+            directoryPreparedItems
+            | sortBy (\a \b strlen a.getPreparedStagingItemPathName <=> strlen b.getPreparedStagingItemPathName)
+            | map materializeItem
             | findFail
-            | addErrorContext "rsc: Failed to create an output directory"
 
         require Pass _ =
-            outputSymlinksCreate
+            filePreparedItems
+            | map materializeItem
             | findFail
-            | addErrorContext "rsc: Failed to create a symlink"
+
+        require Pass _ =
+            symlinkPreparedItems
+            | map materializeItem
+            | findFail
 
         def _ = primJobVirtual job stdout stderr predict
 
