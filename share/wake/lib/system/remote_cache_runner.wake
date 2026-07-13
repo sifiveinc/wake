@@ -107,7 +107,8 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             | map makeDirectoryPreparedItem
 
         # Files: download + verify + ingest into CAS. Returns the item to materialize.
-        def doDownloadFileToCas (CacheSearchOutputFile path mode blob) = rscApiGetFileBlobToCas blob path mode
+        def doDownloadFileToCas (CacheSearchOutputFile path mode blob) =
+            rscApiGetFileBlobToCas blob path mode
 
         # Symlinks: target is inline. Ingest into CAS. Returns the item to materialize.
         def doIngestSymlink (CacheSearchOutputSymlink symlinkTarget symlinkPath hash) =
