@@ -1,0 +1,30 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "socket_roundtrip.py"
+  ],
+  "environment": [
+    "USER=root",
+    "HOME=/root",
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  ],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "mount-ops": [
+    {
+      "type": "workspace",
+      "destination": "."
+    }
+  ],
+  "visible": [
+    {
+      "path": "socket_roundtrip.py",
+      "type": "file",
+      "hash": "0000000000000000000000000000000000000000000000000000000000000002",
+      "mode": 420,
+      "mtime": 0
+    }
+  ]
+}
