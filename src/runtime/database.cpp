@@ -459,8 +459,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "                  filetree.job_id=jobs.job_id and"
       "                  filetree.access=2)"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=jobs.job_id) <= ?1";
-  // Like sql_collect_stranded_outputs but without the path guards: this only drops DB rows, is never
-  // used to unlink from disk, so it needs no protection against clobbering a path a live row owns.
+  // Like sql_collect_stranded_outputs but without the path guards: this only drops DB rows, is
+  // never used to unlink from disk, so it needs no protection against clobbering a path a live row
+  // owns.
   const char *sql_delete_orphan_files =
       "delete from files"
       "  where file_id not in (select file_id from filetree)"
