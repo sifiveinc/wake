@@ -1888,7 +1888,10 @@ static int wakefuse_open(const char *path, struct fuse_file_info *fi) {
     // open() is not valid for directories
     if (sf->is_directory()) return -EISDIR;
 
-    // Special nodes (sockets/fifos) cannot be opened as regular files for I/O.
+    // Special nodes (sockets/fifos/devices) have their open()/I/O handled in-kernel via
+    // init_special_inode() once getattr reports the type bits, so this handler is normally never
+    // reached for them. Guard defensively: refuse rather than risk a blocking open freezing the
+    // single-threaded daemon.
     if (sf->is_special()) return -ENXIO;
 
     auto spath = sf->staging_path();
