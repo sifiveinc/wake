@@ -99,21 +99,19 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         # Since RSC doesn't store mtimes, set the mtime as (0,0) so materialization
         # can set the mtime at creation for files, symlinks, and directories.
 
-        def doMakeDirectory (CacheSearchOutputDirectory path mode _hidden) =
-            def preparedItem =
-                PreparedStagingItem (StagingDirectory (StagingDirectoryOutput path mode 0 0)) ""
+        def makeDirectoryPreparedItem (CacheSearchOutputDirectory path mode _hidden) =
+            PreparedStagingItem (StagingDirectory (StagingDirectoryOutput path mode 0 0)) ""
 
-            materializePreparedStagingItemFromCas preparedItem
-            | addErrorContext "rsc: Failed to create directory {path}"
+        def directoryPreparedItems =
+            outputDirs
+            | map makeDirectoryPreparedItem
 
-        # Files: download blob → ingest into CAS → materialize from CAS.
-        # rscApiGetFileBlob handles the CAS path end-to-end.
-        def doDownload (CacheSearchOutputFile path mode blob) = rscApiGetFileBlob blob path mode
+        # Files: download + verify + ingest into CAS. Returns the item to materialize.
+        def doDownloadFileToCas (CacheSearchOutputFile path mode blob) =
+            rscApiGetFileBlobToCas blob path mode
 
-        # Symlinks: target is always inline. Ingest the target string into CAS under its
-        # hash, then materialize as a symlink. Reuses the same helpers used for local job
-        # outputs.
-        def doMakeSymlink (CacheSearchOutputSymlink symlinkTarget symlinkPath hash) =
+        # Symlinks: target is inline. Ingest into CAS. Returns the item to materialize.
+        def doIngestSymlink (CacheSearchOutputSymlink symlinkTarget symlinkPath hash) =
             def preparedItem =
                 PreparedStagingItem (StagingSymlink (StagingSymlinkOutput symlinkPath symlinkTarget 0 0)) hash
 
@@ -121,21 +119,15 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
                 ingestPreparedStagingItemIntoCas preparedItem
                 | addErrorContext "rsc: Failed to ingest symlink {symlinkPath} into CAS"
 
-            materializePreparedStagingItemFromCas preparedItem
-            | addErrorContext "rsc: Failed to materialize symlink {symlinkPath}"
+            Pass preparedItem
 
-        def outputFilesDownload =
+        def fileIngests =
             outputFiles
-            | map doDownload
+            | map doDownloadFileToCas
 
-        def outputDirectoriesCreate =
-            outputDirs
-            | map doMakeDirectory
-
-        # Symlinks don't need to wait for files; momentarily dangling symlinks are fine.
-        def outputSymlinksCreate =
+        def symlinkIngests =
             outputSymlinks
-            | map doMakeSymlink
+            | map doIngestSymlink
 
         def resolvedOutputs =
             outputFiles
@@ -184,6 +176,18 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         def predict = Usage status runtime cputime mem ibytes obytes
         def inputs = map getPathName (input.getRunnerInputVisible)
 
+        # First download + verify + ingest every blob into CAS before writing
+        # anything to the workspace.
+        require Pass filePreparedItems =
+            fileIngests
+            | findFail
+            | addErrorContext "rsc: Failed to download a blob"
+
+        require Pass symlinkPreparedItems =
+            symlinkIngests
+            | findFail
+            | addErrorContext "rsc: Failed to ingest a symlink"
+
         require Pass stdout =
             stdoutDownload
             | addErrorContext "rsc: Failed to download stdout for '{label}'"
@@ -192,22 +196,26 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             stderrDownload
             | addErrorContext "rsc: Failed to download stderr for '{label}'"
 
-        # We don't actually care about the result here but we need to ensure that all
-        # downloads have completed before returning.
-        require Pass _ =
-            outputFilesDownload
-            | findFail
-            | addErrorContext "rsc: Failed to download a blob"
+        # Everything is now verified, and in the CAS. We can now materialize.
+        def materializeItem preparedItem =
+            materializePreparedStagingItemFromCas preparedItem
+            | addErrorContext "rsc: Failed to materialize {preparedItem.getPreparedStagingItemPathName}"
 
         require Pass _ =
-            outputDirectoriesCreate
+            directoryPreparedItems
+            | sortBy (\a \b strlen a.getPreparedStagingItemPathName <=> strlen b.getPreparedStagingItemPathName)
+            | map materializeItem
             | findFail
-            | addErrorContext "rsc: Failed to create an output directory"
 
         require Pass _ =
-            outputSymlinksCreate
+            filePreparedItems
+            | map materializeItem
             | findFail
-            | addErrorContext "rsc: Failed to create a symlink"
+
+        require Pass _ =
+            symlinkPreparedItems
+            | map materializeItem
+            | findFail
 
         def _ = primJobVirtual job stdout stderr predict
 
