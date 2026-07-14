@@ -1,0 +1,182 @@
+package fuse_test_suite
+
+from wake import _
+
+# FUSE test-suite entrypoints.
+# These are separate from Wake's normal runTest/unit-test flow and are intended
+# for external filesystem test suites such as xfstests and pjdfstest.
+
+# Run xfstests directly from its checkout.
+export def runXfstests (cmdline: List String): Result Unit Error =
+    require Pass (Pair xfstestsRoot checkArgs) =
+        match cmdline
+            Nil ->
+                Fail (makeError "Usage: runXfstests <xfstests-root> [check-args...]\nExample: runXfstests /scratch/aquazi/xfstests-dev generic/013")
+            root, rest ->
+                Pass (Pair root rest)
+
+    # Normalize to absolute path
+    def xfstestsRootAbs =
+        if matches `/.*` xfstestsRoot then
+            simplify xfstestsRoot
+        else
+            in workspace xfstestsRoot
+
+    require Pass configPath = source "{@here}/xfstests/local.config"
+    def configAbs = in workspace (configPath.getPathName)
+
+    # Copy config to xfstests directory as local.config
+    def copyConfig =
+        makeExecPlan ("cp", configAbs, "local.config", Nil) (configPath, Nil)
+        | setPlanDirectory xfstestsRootAbs
+        | setPlanShare False
+        | runJobWith localRunner
+
+    require Pass _ = copyConfig.getJobStdout
+
+    def cmd = "./check", checkArgs
+
+    require Exited 0 =
+        makeExecPlan cmd (configPath, Nil)
+        | editPlanEnvironment (editEnvironment "DEBUG_FUSE_WAKE" (\_ getenv "DEBUG_FUSE_WAKE"))
+        | editPlanEnvironment (addEnvironmentPath "/usr/sbin")
+        | editPlanEnvironment (addEnvironmentPath "/sbin")
+        | setPlanDirectory xfstestsRootAbs
+        | setPlanStdout logWarning
+        | setPlanStderr logWarning
+        | setPlanIsAtty True
+        | setPlanShare False
+        | runJobWith localRunner
+        | getJobStatus
+    else failWithError "xfstests ./check failed"
+
+    Pass Unit
+
+export def runXfstestsSmoke (cmdline: List String): Result Unit Error =
+    require Pass (Pair xfstestsRoot extraArgs) =
+        match cmdline
+            Nil ->
+                Fail (makeError "Usage: runXfstestsSmoke <xfstests-root> [extra-check-args...]")
+            root, rest ->
+                Pass (Pair root rest)
+
+    runXfstests ((
+        xfstestsRoot,
+        "generic/001",
+        "generic/002",
+        "generic/005",
+        "generic/006",
+        "generic/007",
+        "generic/011",
+        "generic/013",
+        "generic/014",
+        "generic/028",
+        "generic/035",
+        Nil
+    ) ++ extraArgs)
+
+# Run pjdfstest, a POSIX filesystem syscall test suite, against a single
+# mounted Wake FUSE instance.
+export def runPjdfstest (cmdline: List String): Result Unit Error =
+    require Pass (Pair pjdfstestRoot proveArgs) =
+        match cmdline
+            Nil ->
+                Fail (makeError "Usage: runPjdfstest <pjdfstest-root> [prove-args...]\nExample: runPjdfstest /scratch/aquazi/pjdfstest tests/rename")
+            root, rest ->
+                Pass (Pair root rest)
+
+    # Normalize to absolute path
+    def pjdfstestRootAbs =
+        if matches `/.*` pjdfstestRoot then
+            simplify pjdfstestRoot
+        else
+            in workspace pjdfstestRoot
+
+    require Pass pjdfstestScript = source "{@here}/run-pjdfstest.sh"
+    def pjdfstestScriptAbs = in workspace (pjdfstestScript.getPathName)
+
+    def cmd =
+        "bash",
+        pjdfstestScriptAbs,
+        "/tmp/pjdfstest-mnt",
+        "/tmp/pjdfstest-backing",
+        pjdfstestRootAbs,
+        proveArgs
+
+    require Exited 0 =
+        makeExecPlan cmd (pjdfstestScript, Nil)
+        | editPlanEnvironment (editEnvironment "DEBUG_FUSE_WAKE" (\_ getenv "DEBUG_FUSE_WAKE"))
+        | editPlanEnvironment (addEnvironmentPath "/usr/sbin")
+        | editPlanEnvironment (addEnvironmentPath "/sbin")
+        | setPlanDirectory workspace
+        | setPlanStdout logWarning
+        | setPlanStderr logWarning
+        | setPlanIsAtty True
+        | setPlanShare False
+        | runJobWith localRunner
+        | getJobStatus
+    else failWithError "pjdfstest failed"
+
+    Pass Unit
+
+export def runPjdfstestSmoke (cmdline: List String): Result Unit Error =
+    require Pass (Pair pjdfstestRoot extraArgs) =
+        match cmdline
+            Nil ->
+                Fail (makeError "Usage: runPjdfstestSmoke <pjdfstest-root> [extra-prove-args...]")
+            root, rest ->
+                Pass (Pair root rest)
+
+    runPjdfstest ((
+        pjdfstestRoot,
+        "tests/chmod/05.t",
+        "tests/chmod/12.t",
+        "tests/chown/05.t",
+        "tests/ftruncate/00.t",
+        "tests/link/06.t",
+        "tests/link/07.t",
+        "tests/mkdir/06.t",
+        "tests/mkfifo/06.t",
+        "tests/open/00.t",
+        "tests/open/06.t",
+        "tests/open/07.t",
+        "tests/rename/05.t",
+        "tests/rmdir/00.t",
+        "tests/rmdir/08.t",
+        "tests/symlink/00.t",
+        "tests/symlink/06.t",
+        "tests/truncate/00.t",
+        "tests/truncate/06.t",
+        "tests/unlink/06.t",
+        "tests/utimensat/01.t",
+        "tests/utimensat/06.t",
+        Nil
+    ) ++ extraArgs)
+
+# Run the pjdfstest groups that map most directly to the FUSE operations Wake
+# currently implements.
+export def runPjdfstestFull (cmdline: List String): Result Unit Error =
+    require Pass (Pair pjdfstestRoot extraArgs) =
+        match cmdline
+            Nil ->
+                Fail (makeError "Usage: runPjdfstestFull <pjdfstest-root> [extra-prove-args...]")
+            root, rest ->
+                Pass (Pair root rest)
+
+    runPjdfstest ((
+        pjdfstestRoot,
+        "tests/chmod",
+        "tests/chown",
+        "tests/ftruncate",
+        "tests/link",
+        "tests/mkdir",
+        "tests/mkfifo",
+        "tests/open",
+        "tests/rename",
+        "tests/rmdir",
+        "tests/symlink",
+        "tests/truncate",
+        "tests/unlink",
+        "tests/utimensat",
+        Nil
+    ) ++ extraArgs)
