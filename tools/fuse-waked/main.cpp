@@ -91,10 +91,9 @@ struct StagedDirectoryData {
   struct timespec mtime;
 };
 
-// Ephemeral special node (unix socket, fifo, or character/block device) created via mknod. These
-// are NOT content-addressable: they have no CAS blob, are never emitted as staging_files or job
-// outputs, and exist only as a real on-disk node at a per-invocation-unique real_path so
-// concurrent jobs creating the same relative path don't collide on the shared backing store.
+// Special node (unix socket, fifo, or character/block device) created via mknod. These exist
+// only as a real on-disk node at a per-invocation-unique real_path, are not content-addressable,
+// and therefore have no backing CAS blob and are never materialized into the workspace.
 struct StagedSpecialData {
   std::string real_path;
   mode_t mode;
@@ -181,6 +180,17 @@ struct StagedItem {
   }
 };
 
+// Unlink the real on-disk object backing a staged item, if any. Files/hardlinks are backed by a
+// staging file (staging_path); special nodes (sockets/fifos/devices) by a real node (real_path);
+// symlinks/directories have no on-disk backing until CAS ingestion, so this is a no-op for them.
+static void unlink_backing(const StagedItem &sf) {
+  if (auto sp = sf.staging_path()) {
+    unlink(sp->data());
+  } else if (auto *s = std::get_if<StagedSpecialData>(&sf.data)) {
+    unlink(s->real_path.c_str());
+  }
+}
+
 // Encapsulates the nested map of staged files with helper methods
 // Structure: job_id -> (path -> StagedItem)
 // Also tracks fd -> StagedItem* for open file handles
@@ -209,7 +219,7 @@ class StagedFilesStore {
     return job_it->second.erase(path) > 0;
   }
 
-  // Erase all staged items for a job. Ephemeral special nodes (sockets/fifos) have a real
+  // Erase all staged items for a job. Special nodes (sockets/fifos) have a real
   // backing node that must be unlinked so a job that exits without an explicit unlink() does
   // not leak it into the staging directory.
   void erase_job(const std::string &job_id) {
@@ -265,6 +275,14 @@ static StagedFilesStore g_staged_files;
 
 // Counter for unique staging file names
 static uint64_t g_staging_counter = 0;
+
+// Allocate a fresh, collision-free path in the CAS staging directory for a new backing object
+// (a staging file for a regular/hardlinked file, or a real node for a special node). The pid
+// disambiguates concurrent wake daemons sharing the same staging dir; the counter is unique within
+// this daemon.
+static std::string create_unique_staging_path() {
+  return g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
+}
 
 // Path to CAS blobs directory for hash-based reads
 static std::string g_cas_blobs_dir;
@@ -474,7 +492,7 @@ void Job::dump(const std::string &job_id) {
     if (lastslash != std::string::npos) start = lastslash + 1;
     if (x.compare(start, prefix.length(), prefix) == 0) continue;
 
-    // Ephemeral special nodes (sockets/fifos) are not content-addressable and must not be
+    // special nodes (sockets/fifos) are not content-addressable and must not be
     // reported as job outputs.
     if (StagedItem *sf = g_staged_files.find(job_id, x)) {
       if (sf->is_special()) continue;
@@ -496,7 +514,7 @@ void Job::dump(const std::string &job_id) {
       if (lastslash != std::string::npos) start = lastslash + 1;
       if (sf.dest_path.compare(start, prefix.length(), prefix) == 0) continue;
 
-      // Ephemeral special nodes (sockets/fifos) are not content-addressable and must never be
+      // special nodes (sockets/fifos) are not content-addressable and must never be
       // ingested into CAS; exclude them from staging_files.
       if (sf.is_special()) continue;
 
@@ -837,7 +855,7 @@ static int wakefuse_access(const char *path, int mask) {
   if (StagedItem *sf_ptr = g_staged_files.find(key.first, key.second)) {
     const StagedItem &sf = *sf_ptr;
 
-    // Ephemeral special nodes (sockets/fifos) live as real backing nodes; delegate to the real
+    // special nodes (sockets/fifos) live as real backing nodes; delegate to the real
     // node so bind/connect and stat see consistent accessibility.
     if (sf.is_special()) {
       if (auto *s = std::get_if<StagedSpecialData>(&sf.data)) {
@@ -1083,8 +1101,7 @@ static int wakefuse_mknod(const char *path, mode_t mode, dev_t rdev) {
   if (S_ISREG(mode)) {
     // Stage a regular file (like create(), but without keeping an open fd). wakebox will hash and
     // store it in CAS after the job completes.
-    std::string staging_path =
-        g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
+    std::string staging_path = create_unique_staging_path();
     mode_t perm_bits = mode & 07777;
     int fd = open(staging_path.c_str(), O_CREAT | O_EXCL | O_WRONLY, perm_bits);
     if (fd == -1) return -errno;
@@ -1118,8 +1135,7 @@ static int wakefuse_mknod(const char *path, mode_t mode, dev_t rdev) {
   // it is not content-addressable, so create a real node at a per-invocation-unique backing path
   // (so concurrent jobs binding the same relative path don't collide on the shared backing store),
   // track it per-job, and exclude it from CAS/staging_files/outputs.
-  std::string real_path =
-      g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
+  std::string real_path = create_unique_staging_path();
   int res;
   if (S_ISFIFO(mode)) {
 #ifdef __APPLE__
@@ -1190,17 +1206,14 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
   if (it->second.is_visible(key.second)) return -EEXIST;
 
   // Write to staging directory; wakebox will hash and store in CAS after the job completes.
-  // Check if this path was already staged by this job - if so, delete the old staging file.
+  // Check if this path was already staged by this job - if so, delete its backing object (staging
+  // file for a file, real node for a special) so it isn't orphaned when we overwrite the entry.
   if (StagedItem *existing = g_staged_files.find(key.first, key.second)) {
-    if (auto existing_staging_path = existing->staging_path()) {
-      unlink(existing_staging_path->data());
-      g_staged_files.erase(key.first, key.second);
-    }
+    unlink_backing(*existing);
+    g_staged_files.erase(key.first, key.second);
   }
 
-  // Include PID to avoid collisions between concurrent wake processes
-  std::string staging_path =
-      g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
+  std::string staging_path = create_unique_staging_path();
   mode_t perm_bits = mode & 07777;
   int fd = open(staging_path.c_str(), O_CREAT | O_RDWR | O_TRUNC, perm_bits);
   if (fd == -1) return -errno;
@@ -1287,14 +1300,9 @@ static int wakefuse_unlink(const char *path) {
 
   // Handle staged file removal
   if (StagedItem *sf = g_staged_files.find(key.first, key.second)) {
-    // Only unlink staging file if it exists (files and hardlinks have staging_path)
-    if (auto spath = sf->staging_path()) {
-      unlink(spath->data());
-    }
-    // Special nodes (sockets/fifos) have a real backing node instead of a staging_path.
-    if (auto *s = std::get_if<StagedSpecialData>(&sf->data)) {
-      unlink(s->real_path.c_str());
-    }
+    // Remove the backing object (staging file for files/hardlinks, real node for special nodes;
+    // symlinks/directories have none).
+    unlink_backing(*sf);
     g_staged_files.erase(key.first, key.second);
     it->second.staged_paths.erase(key.second);
     it->second.files_wrote.erase(key.second);
@@ -1522,11 +1530,10 @@ static int wakefuse_rename(const char *from, const char *to) {
     StagedItem sf = *from_sf;
     sf.dest_path = keyt.second;
     g_staged_files.erase(keyf.first, keyf.second);
-    // Check if destination already has a staged file - if so, delete its staging file
+    // Destination already staged - delete its backing object (staging file for a file, real node
+    // for a special) so it isn't orphaned when the insert below overwrites the entry.
     if (StagedItem *existing_to = g_staged_files.find(keyt.first, keyt.second)) {
-      if (auto existing_staging_path = existing_to->staging_path()) {
-        unlink(existing_staging_path->data());
-      }
+      unlink_backing(*existing_to);
     }
     g_staged_files.insert(keyt.first, keyt.second, sf);
 
@@ -1619,8 +1626,7 @@ static int wakefuse_link(const char *from, const char *to) {
     const StagedFileData *src_sf = std::get_if<StagedFileData>(&src.data);
     assert(src_sf && "must be staged file");
 
-    std::string new_staging_path =
-        g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
+    std::string new_staging_path = create_unique_staging_path();
     int res = link(src_staging_path->data(), new_staging_path.c_str());
     if (res < 0) return -errno;
 
@@ -1664,6 +1670,11 @@ static int wakefuse_chmod(const char *path, mode_t mode) {
   // Update mode in staged file if present
   if (StagedItem *sf = g_staged_files.find(key.first, key.second)) {
     sf->set_mode(mode);
+    // Special nodes (sockets/fifos/devices) have a real backing node; keep its actual
+    // permissions in sync so access()/bind()/connect() agree with what getattr reports.
+    if (auto *s = std::get_if<StagedSpecialData>(&sf->data)) {
+      if (chmod(s->real_path.c_str(), mode & 07777) == -1) return -errno;
+    }
     return 0;
   }
   // TODO: Remove workspace writes once backwards compatibility is no longer needed
@@ -1811,6 +1822,11 @@ static int wakefuse_utimens(const char *path, const struct timespec ts[2]) {
     if (auto spath = sf->staging_path()) {
       // File/hardlink: apply to backing (staing) file directly
       int res = utimensat(AT_FDCWD, spath->data(), ts, 0);
+      if (res == -1) return -errno;
+    } else if (auto *s = std::get_if<StagedSpecialData>(&sf->data)) {
+      // Special node (socket/fifo/device): apply to its real backing node, since getattr
+      // reports mtime from that real node rather than from any in-memory metadata.
+      int res = utimensat(AT_FDCWD, s->real_path.c_str(), ts, 0);
       if (res == -1) return -errno;
     } else {
       // Symlink/directory: no backing file, track in metadata
