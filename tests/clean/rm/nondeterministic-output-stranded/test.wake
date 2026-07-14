@@ -1,0 +1,25 @@
+package test
+
+from wake import _
+
+# A job whose output filename changes every execution (derived from a nanosecond
+# timestamp) written into a captured output directory. Its input is a file whose
+# content is derived from $MARKER, so changing MARKER between the two runs forces
+# the job to re-execute with a divergently-named output instead of being reused.
+#
+# When the job re-executes, wake drops the prior execution's output-file records
+# (delete_prior). Because the new execution's file has a different name, the old
+# file is never overwritten. Prior to the fix, wake left the old file on disk with
+# no database record, so `wake --clean` could not remove it. The fix unlinks such
+# stranded files when their records are dropped.
+export def go Unit =
+    def marker = getenv "MARKER" | getOrElse "default"
+    require Pass in = write "input.txt" marker
+
+    makeExecPlan
+    ("dash", "-c", "mkdir -p outdir; echo hi > outdir/f.$(date +%s%N).txt; cat input.txt", Nil)
+    (in, Nil)
+    | setPlanLabel "nondeterministic-output"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutputs
