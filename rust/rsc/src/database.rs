@@ -686,17 +686,17 @@ pub async fn delete_unreferenced_blobs<T: ConnectionTrait>(
         r#"
             WITH
             eligible_blob_ids as (
-                SELECT DISTINCT id FROM blob
-                WHERE updated_at <= $1
-                EXCEPT (
-                    SELECT blob_id FROM output_file
-                    UNION ALL SELECT stdout_blob_id FROM job
-                    UNION ALL SELECT stderr_blob_id FROM job
-                )
+                SELECT b.id FROM blob b
+                WHERE b.updated_at <= $1
+                    AND NOT EXISTS (SELECT 1 FROM output_file o WHERE o.blob_id = b.id)
+                    AND NOT EXISTS (SELECT 1 FROM job j WHERE j.stdout_blob_id = b.id)
+                    AND NOT EXISTS (SELECT 1 FROM job j WHERE j.stderr_blob_id = b.id)
+                ORDER BY b.updated_at
                 LIMIT $2
             )
             DELETE from blob b
-            WHERE b.id IN (SELECT id FROM eligible_blob_ids)
+            USING eligible_blob_ids e
+            WHERE b.id = e.id
             RETURNING b.store_id, b.key
             "#,
         [ttl.into(), chunk.into()],
