@@ -416,3 +416,112 @@ export def makeBinaryRequest (request: HttpRequest): Result Path Error =
     else failWithError "Job resolved with the incorrect number of outputs. This should not be possible."
 
     Pass path
+
+# A single transfer within a batched binary download: a source url and the destination path to
+# write its bytes to.
+export tuple BatchDownloadSpec =
+    # The url to download from
+    export Url: String
+    # The local path the downloaded bytes should be written to
+    export Output: String
+
+# The default maximum number of concurrent transfers curl performs within a single batch job.
+# This is the real concurrency knob: it bounds process/connection churn independent of how many
+# transfers are in the batch.
+export def downloadParallelMax: Integer =
+    8
+
+# The default maximum number of transfers to place in a single batch curl job. This bounds the
+# curl config file size and per-job output count, mirroring the upload side's blobUploadBatchSize.
+export def downloadBatchSize: Integer =
+    256
+
+# makeBinaryRequests: Downloads many urls to their destination paths in a single curl process using
+# `curl --parallel`. Returns all destination paths on success, or a single Fail for the whole batch.
+#
+# This is the batched analogue of makeBinaryRequest. Instead of one curl process per transfer it
+# writes a curl `--config` file listing one url/output stanza per input and runs a single curl job
+# with `--parallel --parallel-max <downloadParallelMax>`, reusing connections within the batch and
+# bounding concurrency explicitly.
+#
+# Failure is all-or-nothing: `--fail` makes curl exit non-zero on any HTTP error, so any failed
+# transfer fails the whole batch. Callers that need per-blob isolation should not use this.
+#
+# WARNING: This function will likely break the sandbox and make your build unreliable
+export def makeBinaryRequests (specs: List BatchDownloadSpec): Result (List Path) Error =
+    require False = specs.empty
+    else Pass Nil
+
+    def wakePid: Integer = prim "pid"
+    def httpDir = ".build/wake-{str wakePid}/stdlib/http"
+
+    require Pass httpDirPath = mkdir httpDir
+
+    def destinations =
+        specs
+        | map getBatchDownloadSpecOutput
+
+    # Build the curl config file. Each stanza is a url/output pair. Quoting each value avoids
+    # command-line length limits and shell-escaping headaches, mirroring the long-body path above.
+    def configBody =
+        specs
+        | map (\(BatchDownloadSpec url output) "url = \"{url}\"\noutput = \"{output}\"")
+        | catWith "\n"
+
+    require Pass configPath = writeTempFile "curl.batch.config" configBody
+
+    # Force-remove then touch each destination before downloading so that a failed transfer still
+    # yields a file (wake-hash can't hash a non-existent file). Mirrors makeBinaryRequest's cleanup semantics.
+    def cleanupScript =
+        destinations
+        | map (\d "rm -f \"{d}\"\ntouch \"{d}\"")
+        | catWith "\n"
+
+    def cleanupJob =
+        makeShellPlan cleanupScript (httpDirPath, Nil)
+        | setPlanLabel "http: batch cleanup ({str specs.len} files)"
+        | setPlanStdout logNever
+        | setPlanStderr logNever
+        | setPlanPersistence Once
+        | setPlanFnOutputs (\_ Nil)
+        | setPlanUsage (Usage 0 0.0 0.002 0 0 0)
+        | setPlanEcho logDebug
+        | runJobWith localRunner
+        | setJobTag "http.cleanup" "batch"
+        | setJobInspectVisibilityHidden
+
+    require True = cleanupJob.isJobOk
+    else failWithError "Unable to remove binary files before redownloading them"
+
+    def cmd =
+        "curl",
+        "--parallel",
+        "--parallel-max",
+        str downloadParallelMax,
+        # Exit non-zero on any HTTP error so the batch fails all-or-nothing.
+        "--fail",
+        "--config",
+        configPath.getPathName,
+        Nil
+
+    def job =
+        makeExecPlan cmd (configPath, Nil)
+        | setPlanLabel "http: batch GET ({str specs.len} files)"
+        | setPlanStdout logNever
+        # Curl dumps download stats to stderr
+        | setPlanStderr logInfo
+        | setPlanPersistence Once
+        | setPlanFnOutputs (\_ destinations)
+        # Reflect the real concurrency of the batch so wake doesn't also run many of these jobs at
+        # once and re-create the fan-out storm at a coarser granularity.
+        | setPlanUsage (Usage 0 0.0 (dint (min specs.len downloadParallelMax) *. 0.1) 0 0 0)
+        | setPlanEcho logDebug
+        | runJobWith workspaceRunner
+        | setJobTag "http.method" "GET"
+        | setJobTag "http.batch" (str specs.len)
+        | setJobInspectVisibilityHidden
+
+    require True = job.isJobOk
+    else failWithError "Failed attempting to batch download {str specs.len} binary files"
+
+    job.getJobOutputs
