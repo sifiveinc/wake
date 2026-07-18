@@ -694,16 +694,30 @@ def resolveBlobsToPaths (blobs: List CacheSearchBlob): Result (List (Pair String
         networkParsed
         | map getPairFirst
 
-    # Batched download of the network blobs. Each blob gets a unique destination keyed by its id.
+    # Batched download of the network blobs.
     def wakePid: Integer = prim "pid"
     def httpDir = ".build/wake-{str wakePid}/stdlib/http"
 
-    def destForBlob (blob: CacheSearchBlob): String =
-        "{httpDir}/rsc.blob.{blob.getCacheSearchBlobId}"
-
     def downloadChunk (chunk: List CacheSearchBlob): Result (List (Pair String Path)) Error =
-        def specs =
+        # Sort the chunk deterministically by blob id so that two batches with the same blob set
+        # produce byte-identical curl jobs (which wake then dedups to a single job / single writer).
+        def sortedChunk =
             chunk
+            | sortBy (\a \b scmp a.getCacheSearchBlobId b.getCacheSearchBlobId)
+
+        # Key output filenames by the batch's blob-id set so distinct batches sharing a blob write
+        # to different paths (no concurrent-write race) while identical batches dedup to one writer.
+        def batchKey =
+            sortedChunk
+            | map getCacheSearchBlobId
+            | catWith "\n"
+            | hashString
+
+        def destForBlob (blob: CacheSearchBlob): String =
+            "{httpDir}/rsc.blob.{batchKey}.{blob.getCacheSearchBlobId}"
+
+        def specs =
+            sortedChunk
             | map (\b BatchDownloadSpec b.getCacheSearchBlobUri (destForBlob b))
 
         require Pass paths = makeBinaryRequests specs
@@ -714,7 +728,7 @@ def resolveBlobsToPaths (blobs: List CacheSearchBlob): Result (List (Pair String
             | map (\p p.getPathName :-> p)
             | listToMap scmp
 
-        chunk
+        sortedChunk
         | map (\b match (mlookup (destForBlob b) pathByName)
             Some p -> Pass (Pair b.getCacheSearchBlobId p)
             None ->
