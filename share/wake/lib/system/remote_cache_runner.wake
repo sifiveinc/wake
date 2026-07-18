@@ -183,10 +183,12 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             | findFail
             | addErrorContext "rsc: Failed to ingest a symlink"
 
-        require Pass (stdout, stderr, Nil) =
+        require Pass stdStrings =
             stdStringsDownload
             | addErrorContext "rsc: Failed to download stdout/stderr for '{label}'"
-        else failWithError "rsc: Failed to download stdout/stderr for '{label}'"
+
+        require (stdout, stderr, Nil) = stdStrings
+        else failWithError "rsc: expected exactly stdout+stderr for '{label}'"
 
         # Everything is now verified, and in the CAS. We can now materialize.
         def materializeItem preparedItem =
