@@ -510,29 +510,6 @@ export def makeBinaryRequests (specs: List BatchDownloadSpec): Result (List Path
 
     require Pass configPath = writeTempFile "curl.batch.config" configBody
 
-    # Force-remove then touch each destination before downloading so that a failed transfer still
-    # yields a file (wake-hash can't hash a non-existent file). Mirrors makeBinaryRequest's cleanup semantics.
-    def cleanupScript =
-        destinations
-        | map (\d "rm -f \"{d}\"\ntouch \"{d}\"")
-        | catWith "\n"
-
-    def cleanupJob =
-        makeShellPlan cleanupScript (httpDirPath, Nil)
-        | setPlanLabel "http: batch cleanup ({str specs.len} files)"
-        | setPlanStdout logNever
-        | setPlanStderr logNever
-        | setPlanPersistence Once
-        | setPlanFnOutputs (\_ Nil)
-        | setPlanUsage (Usage 0 0.0 0.002 0 0 0)
-        | setPlanEcho logDebug
-        | runJobWith localRunner
-        | setJobTag "http.cleanup" "batch"
-        | setJobInspectVisibilityHidden
-
-    require True = cleanupJob.isJobOk
-    else failWithError "Unable to remove binary files before redownloading them"
-
     # Only pass --parallel on curl that supports it (>= 7.66.0). On older curl (el8's 7.61.1) the
     # batch runs sequentially, which is still one process + one wake job + connection reuse.
     def parallelFlags =
@@ -541,21 +518,34 @@ export def makeBinaryRequests (specs: List BatchDownloadSpec): Result (List Path
         else
             Nil
 
-    def cmd =
-        "curl",
-        (
-            parallelFlags ++
-            (
-                # Exit non-zero on any HTTP error so the batch fails all-or-nothing.
-                "--fail",
-                "--config",
-                configPath.getPathName,
-                Nil
-            )
-        )
+    # All destinations quoted for a single-pass shell arg list.
+    def quotedDests =
+        destinations
+        | map (\d "\"{d}\"")
+        | catWith " "
+
+    # The curl invocation. `--create-dirs` makes any missing parent directories so we don't need a
+    # separate mkdir fan-out; `--fail` exits non-zero on any HTTP error (all-or-nothing batch).
+    def curlLine =
+        def flags = parallelFlags ++ ("--create-dirs", "--fail", Nil)
+
+        "curl {catWith " " flags} --config \"{configPath.getPathName}\""
+
+    # Do the cleanup in the same job as curl. One `rm -f` clears any write-protected leftovers,
+    # curl downloads, then one `touch` ensures every declared output exists even if its transfer
+    # failed (wake-hash can't hash a missing file). curl's exit status is preserved so the job
+    # still fails as a whole when any transfer fails.
+    def batchScript =
+        """
+        rm -f %{quotedDests}
+        %{curlLine}
+        curl_status=$?
+        touch %{quotedDests}
+        exit $curl_status
+        """
 
     def job =
-        makeExecPlan cmd (configPath, Nil)
+        makeShellPlan batchScript (configPath, httpDirPath, Nil)
         | setPlanLabel "http: batch GET ({str specs.len} files)"
         | setPlanStdout logNever
         # Curl dumps download stats to stderr
