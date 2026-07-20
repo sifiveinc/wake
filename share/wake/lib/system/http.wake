@@ -429,7 +429,7 @@ export def downloadUsageCpu: Double =
     0.25
 
 # The maximum number of concurrent transfers curl performs within a single batch job, used ONLY as
-# the `--parallel-max` value on curl >= 7.66.0 (feature-detected). Older curl (e.g. el8's 7.61.1)
+# the `--parallel-max` value on curl >= 7.66.0 (feature-detected). Older curl versions
 # runs the batch sequentially and ignores this.
 export def downloadParallelMax: Integer =
     8
@@ -482,7 +482,7 @@ export target curlSupportsParallel Unit: Boolean =
 # writes a curl `--config` file listing one url/output stanza per input and runs a single curl job
 # that transfers them **sequentially** over a reused connection. On curl >= 7.66.0 (feature-detected)
 # it additionally passes `--parallel --parallel-max <downloadParallelMax>` for within-batch
-# concurrency; older curl (el8's 7.61.1) runs sequentially since `--parallel` is unsupported there.
+# concurrency; older curl runs sequentially since `--parallel` is unsupported there.
 #
 # Failure is all-or-nothing: `--fail` makes curl exit non-zero on any HTTP error, so any failed
 # transfer fails the whole batch. Callers that need per-blob isolation should not use this.
@@ -502,7 +502,7 @@ export def makeBinaryRequests (specs: List BatchDownloadSpec): Result (List Path
         | map getBatchDownloadSpecOutput
 
     # Build the curl config file. Each stanza is a url/output pair. Quoting each value avoids
-    # command-line length limits and shell-escaping headaches, mirroring the long-body path above.
+    # command-line length limits and shell-escaping issues, mirroring the long-body path above.
     def configBody =
         specs
         | map (\(BatchDownloadSpec url output) "url = \"{url}\"\noutput = \"{output}\"")
@@ -510,8 +510,7 @@ export def makeBinaryRequests (specs: List BatchDownloadSpec): Result (List Path
 
     require Pass configPath = writeTempFile "curl.batch.config" configBody
 
-    # Only pass --parallel on curl that supports it (>= 7.66.0). On older curl (el8's 7.61.1) the
-    # batch runs sequentially, which is still one process + one wake job + connection reuse.
+    # Only pass --parallel on curl that supports it.
     def parallelFlags =
         if curlSupportsParallel Unit then
             "--parallel", "--parallel-max", str downloadParallelMax, Nil
@@ -524,8 +523,6 @@ export def makeBinaryRequests (specs: List BatchDownloadSpec): Result (List Path
         | map (\d "\"{d}\"")
         | catWith " "
 
-    # The curl invocation. `--create-dirs` makes any missing parent directories so we don't need a
-    # separate mkdir fan-out; `--fail` exits non-zero on any HTTP error (all-or-nothing batch).
     def curlLine =
         def flags = parallelFlags ++ ("--create-dirs", "--fail", Nil)
 
@@ -552,8 +549,6 @@ export def makeBinaryRequests (specs: List BatchDownloadSpec): Result (List Path
         | setPlanStderr logInfo
         | setPlanPersistence Once
         | setPlanFnOutputs (\_ destinations)
-        # Flat per-batch CPU claim (NOT scaled by batch size): a sequential batch is only ever one
-        # concurrent transfer, so this bounds concurrent batch processes to ~cores / downloadUsageCpu.
         | setPlanUsage (Usage 0 0.0 downloadUsageCpu 0 0 0)
         | setPlanEcho logDebug
         | runJobWith workspaceRunner

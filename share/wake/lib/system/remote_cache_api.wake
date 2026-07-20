@@ -644,9 +644,8 @@ def chunkList (n: Integer) (xs: List a): List (List a) =
     head, chunkList n tail
 
 # resolveBlobsToPaths: Resolves many blobs to local file paths holding their bytes. db-scheme blobs
-# are decoded inline (no network); file/http(s) blobs are downloaded via few batched curl jobs
-# (chunked by downloadBatchSize, bounded concurrency via downloadParallelMax). Blobs are deduped by
-# id so shared content is only fetched once. Returns an assoc list of (blobId -> Path).
+# are decoded inline (no network); file/http(s) blobs are downloaded via few batched curl jobs. Blobs
+# are deduped by id so shared content is only fetched once. Returns an assoc list of (blobId -> Path).
 def resolveBlobsToPaths (blobs: List CacheSearchBlob): Result (List (Pair String Path)) Error =
     # Dedupe by blob id: identical ids resolve to identical bytes, so fetch each once.
     def uniqueBlobs =
@@ -656,7 +655,8 @@ def resolveBlobsToPaths (blobs: List CacheSearchBlob): Result (List (Pair String
     # Parse + validate each blob's URI exactly once, pairing the blob with its (scheme, path).
     # Fails loudly on an unsupported scheme or malformed URI, mirroring the old resolveUriResponse.
     def parseBlob (blob: CacheSearchBlob): Result (Pair CacheSearchBlob (Pair String String)) Error =
-        require (scheme, path, Nil) = extract `([a-zA-Z][a-zA-Z0-9+.-]*)://(.*)` blob.getCacheSearchBlobUri
+        require (scheme, path, Nil) =
+            extract `([a-zA-Z][a-zA-Z0-9+.-]*)://(.*)` blob.getCacheSearchBlobUri
         else failWithError "rsc: uri has unexpected format: '{blob.getCacheSearchBlobUri}'"
 
         match scheme
@@ -729,10 +729,11 @@ def resolveBlobsToPaths (blobs: List CacheSearchBlob): Result (List (Pair String
             | listToMap scmp
 
         sortedChunk
-        | map (\b match (mlookup (destForBlob b) pathByName)
-            Some p -> Pass (Pair b.getCacheSearchBlobId p)
-            None ->
-                failWithError "rsc: batched download did not produce output for blob {b.getCacheSearchBlobId}"
+        | map (
+            \b match (mlookup (destForBlob b) pathByName)
+                Some p -> Pass (Pair b.getCacheSearchBlobId p)
+                None ->
+                    failWithError "rsc: batched download did not produce output for blob {b.getCacheSearchBlobId}"
         )
         | findFail
 
@@ -745,8 +746,7 @@ def resolveBlobsToPaths (blobs: List CacheSearchBlob): Result (List (Pair String
 
     Pass (dbResolved ++ networkResolved)
 
-# rscApiGetStringBlobs: Batched analogue of rscApiGetStringBlob. Downloads many blobs (partitioning
-# db-scheme blobs onto the inline path and network blobs into few batched curl jobs), verifies each
+# rscApiGetStringBlobs: Batched analogue of rscApiGetStringBlob. Downloads many blobs, verifies each
 # blob's content hash, and returns the contents in the same order as the input.
 export def rscApiGetStringBlobs (blobs: List CacheSearchBlob): Result (List String) Error =
     require Pass resolved = resolveBlobsToPaths blobs
@@ -784,10 +784,9 @@ export def rscApiGetStringBlob (blob: CacheSearchBlob): Result String Error =
 
     Pass content
 
-# rscApiGetBlobsToCas: Batched analogue of rscApiGetFileBlobToCas. Downloads many file blobs
-# (db-scheme inline, network blobs via few batched curl jobs), verifies each blob's hash, and
-# ingests each into CAS. Returns the PreparedStagingItems (in input order) so the caller can
-# materialize them later, after every blob for a job has been verified.
+# rscApiGetBlobsToCas: Batched analogue of rscApiGetFileBlobToCas. Downloads many file blobs,
+# verifies each blob's hash, and ingests each into CAS. Returns the PreparedStagingItems
+# (in input order) so the caller can materialize them later, after every blob for a job has been verified.
 export def rscApiGetBlobsToCas (entries: List (Pair CacheSearchBlob (Pair String Integer))): Result (List PreparedStagingItem) Error =
     def blobs =
         entries
