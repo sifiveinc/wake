@@ -486,7 +486,11 @@ def curlConfigQuote (value: String): String =
         "\n" -> "\\n"
         "\r" -> "\\r"
         # \v (vertical tab, U+000B): no wake string escape for it, match by code point.
-        _ -> if c ==* integerToUnicode 11 then "\\v" else c
+        _ ->
+            if c ==* integerToUnicode 11 then
+                "\\v"
+            else
+                c
 
     def escaped =
         value
