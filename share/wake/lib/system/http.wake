@@ -429,7 +429,7 @@ export def downloadUsageCpu: Double =
     0.25
 
 # The maximum number of concurrent transfers curl performs within a single batch job, used ONLY as
-# the `--parallel-max` value on curl >= 7.66.0 (feature-detected). Older curl versions
+# the `--parallel-max` value on curl >= 7.66.0. Older curl versions
 # runs the batch sequentially and ignores this.
 export def downloadParallelMax: Integer =
     8
@@ -439,7 +439,7 @@ export def downloadParallelMax: Integer =
 export def downloadBatchSize: Integer =
     256
 
-# Feature-detects whether the curl on this image supports `--parallel` (added in curl 7.66.0).
+# Checks whether the curl on this image supports `--parallel` (added in curl 7.66.0).
 export target curlSupportsParallel Unit: Boolean =
     def job =
         makeExecPlan ("curl", "--version", Nil) Nil
@@ -448,13 +448,10 @@ export target curlSupportsParallel Unit: Boolean =
         | setPlanStderr logNever
         | setPlanPersistence ReRun
         | setPlanFnOutputs (\_ Nil)
-        | setPlanUsage (Usage 0 0.0 0.002 0 0 0)
+        | setPlanUsage (Usage 0 0.0 0.01 0 0 0)
         | setPlanEcho logDebug
         | runJobWith localRunner
         | setJobInspectVisibilityHidden
-
-    require True = job.isJobOk
-    else False
 
     require Pass stdout = job.getJobStdout
     else False
@@ -474,6 +471,30 @@ export target curlSupportsParallel Unit: Boolean =
 
     # --parallel requires curl >= 7.66.0
     major > 7 || (major == 7 && minor >= 66)
+
+# curlConfigQuote: quote a value for use in a curl `--config` file, returning a double-quoted
+# string with the escape sequences curl recognizes there. Per the curl manual, within double
+# quotes only `\\`, `\"`, `\t`, `\n`, `\r` and `\v` are understood, so we escape backslash and
+# double-quote (to survive the quoting) and the C0 whitespace bytes curl would otherwise mangle;
+# any other byte is emitted verbatim. This keeps urls/outputs containing spaces, quotes, or
+# backslashes intact.
+def curlConfigQuote (value: String): String =
+    def escapeCodePoint (c: String): String = match c
+        "\\" -> "\\\\"
+        "\"" -> "\\\""
+        "\t" -> "\\t"
+        "\n" -> "\\n"
+        "\r" -> "\\r"
+        # \v (vertical tab, U+000B): no wake string escape for it, match by code point.
+        _ -> if c ==* integerToUnicode 11 then "\\v" else c
+
+    def escaped =
+        value
+        | explode
+        | map escapeCodePoint
+        | cat
+
+    "\"{escaped}\""
 
 # makeBinaryRequests: Downloads many urls to their destination paths in a single curl process,
 # returning all destination paths on success or a single Fail for the whole batch.
@@ -501,11 +522,12 @@ export def makeBinaryRequests (specs: List BatchDownloadSpec): Result (List Path
         specs
         | map getBatchDownloadSpecOutput
 
-    # Build the curl config file. Each stanza is a url/output pair. Quoting each value avoids
-    # command-line length limits and shell-escaping issues, mirroring the long-body path above.
+    # Build the curl config file: one url/output stanza per transfer, avoiding arg-length limits.
+    # curlConfigQuote quotes each value per curl's config-file grammar so paths/urls with spaces or
+    # special characters aren't truncated or misparsed.
     def configBody =
         specs
-        | map (\(BatchDownloadSpec url output) "url = \"{url}\"\noutput = \"{output}\"")
+        | map (\(BatchDownloadSpec url output) "url = {curlConfigQuote url}\noutput = {curlConfigQuote output}")
         | catWith "\n"
 
     require Pass configPath = writeTempFile "curl.batch.config" configBody
@@ -517,24 +539,23 @@ export def makeBinaryRequests (specs: List BatchDownloadSpec): Result (List Path
         else
             Nil
 
-    # All destinations quoted for a single-pass shell arg list.
+    # All destinations shell-escaped for a single-pass shell arg list.
     def quotedDests =
         destinations
-        | map (\d "\"{d}\"")
+        | map shellEscape
         | catWith " "
 
     def curlLine =
         def flags = parallelFlags ++ ("--create-dirs", "--fail", Nil)
 
-        "curl {catWith " " flags} --config \"{configPath.getPathName}\""
+        "curl {catWith " " flags} --config {shellEscape configPath.getPathName}"
 
-    # Do the cleanup in the same job as curl. One `rm -f` clears any write-protected leftovers,
-    # curl downloads, then one `touch` ensures every declared output exists even if its transfer
-    # failed (wake-hash can't hash a missing file). curl's exit status is preserved so the job
-    # still fails as a whole when any transfer fails.
+    # curl downloads all transfers, then one `touch` ensures every declared output exists even if
+    # its transfer failed (wake-hash can't hash a missing declared output). `exit $curl_status`
+    # preserves curl's status so the job — and thus the whole batch — still fails on any transfer
+    # error.
     def batchScript =
         """
-        rm -f %{quotedDests}
         %{curlLine}
         curl_status=$?
         touch %{quotedDests}
@@ -556,7 +577,5 @@ export def makeBinaryRequests (specs: List BatchDownloadSpec): Result (List Path
         | setJobTag "http.batch" (str specs.len)
         | setJobInspectVisibilityHidden
 
-    require True = job.isJobOk
-    else failWithError "Failed attempting to batch download {str specs.len} binary files"
-
     job.getJobOutputs
+    | addErrorContext "Failed attempting to batch download {str specs.len} binary files"

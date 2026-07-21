@@ -105,7 +105,9 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             outputDirs
             | map makeDirectoryPreparedItem
 
-        # Files: download + verify + ingest into CAS in a single (few) batched curl job.
+        # Files: every blob is downloaded, verified, and ingested into CAS in a single (few) batched
+        # curl job. This does NOT skip blobs already in the local CAS — every file is (re)downloaded.
+        # TODO: partition on CAS presence and only curl the misses.
         def fileDownloadEntries =
             outputFiles
             | map (\(CacheSearchOutputFile path mode blob) Pair blob (Pair path mode))

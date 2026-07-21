@@ -673,9 +673,9 @@ def resolveBlobsToPaths (blobs: List CacheSearchBlob): Result (List (Pair String
         | findFail
 
     # db-scheme blobs stay on the inline path; file/http(s) blobs are curled.
-    def Pair networkParsed dbParsed =
+    def Pair dbParsed networkParsed =
         parsedBlobs
-        | splitBy (\(Pair _ (Pair scheme _)) scheme !=* "db")
+        | splitBy (\(Pair _ (Pair scheme _)) scheme ==* "db")
 
     # Resolve db-scheme blobs inline to temp files (no curl), reusing the already-parsed scheme/path.
     def resolveDbBlob ((Pair blob (Pair scheme path)): Pair CacheSearchBlob (Pair String String)): Result (Pair String Path) Error =
