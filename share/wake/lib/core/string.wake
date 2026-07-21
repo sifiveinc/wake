@@ -49,13 +49,13 @@ export def catWith (separator: String) (strings: List String): String =
     | tail
     | cat
 
-# shellEscape: quote a String so it is safe to embed as a single argument in a shell command.
+# shellQuote: quote a String so it is safe to embed as a single argument in a shell command.
 #
-#   shellEscape "foo"        = "foo"
-#   shellEscape "foo bar"    = "'foo bar'"
-#   shellEscape "it's"       = "'it'\\''s'"
-#   shellEscape ""           = "''"
-export def shellEscape (string: String): String =
+#   shellQuote "foo"        = "foo"
+#   shellQuote "foo bar"    = "'foo bar'"
+#   shellQuote "it's"       = "'it'\\''s'"
+#   shellQuote ""           = "''"
+export def shellQuote (string: String): String =
     def p s = prim "shell_str"
 
     p string

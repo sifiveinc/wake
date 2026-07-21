@@ -546,13 +546,13 @@ export def makeBinaryRequests (specs: List BatchDownloadSpec): Result (List Path
     # All destinations shell-escaped for a single-pass shell arg list.
     def quotedDests =
         destinations
-        | map shellEscape
+        | map shellQuote
         | catWith " "
 
     def curlLine =
         def flags = parallelFlags ++ ("--create-dirs", "--fail", Nil)
 
-        "curl {catWith " " flags} --config {shellEscape configPath.getPathName}"
+        "curl {catWith " " flags} --config {shellQuote configPath.getPathName}"
 
     # curl downloads all transfers, then one `touch` ensures every declared output exists even if
     # its transfer failed (wake-hash can't hash a missing declared output). `exit $curl_status`
