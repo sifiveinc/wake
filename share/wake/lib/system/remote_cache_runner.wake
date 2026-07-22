@@ -92,9 +92,8 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             obytes
         ) = details
 
-        # Start these downloads now since they aren't written to disk
-        def stdoutDownload = rscApiGetStringBlob stdoutBlob
-        def stderrDownload = rscApiGetStringBlob stderrBlob
+        # Batch stdout+stderr into a single (few) curl job rather than one process each.
+        def stdStringsDownload = rscApiGetStringBlobs (stdoutBlob, stderrBlob, Nil)
 
         # Since RSC doesn't store mtimes, set the mtime as (0,0) so materialization
         # can set the mtime at creation for files, symlinks, and directories.
@@ -106,9 +105,12 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             outputDirs
             | map makeDirectoryPreparedItem
 
-        # Files: download + verify + ingest into CAS. Returns the item to materialize.
-        def doDownloadFileToCas (CacheSearchOutputFile path mode blob) =
-            rscApiGetFileBlobToCas blob path mode
+        # Files: every blob is downloaded, verified, and ingested into CAS in a single (few) batched
+        # curl job. This does NOT skip blobs already in the local CAS — every file is (re)downloaded.
+        # TODO: partition on CAS presence and only curl the misses.
+        def fileDownloadEntries =
+            outputFiles
+            | map (\(CacheSearchOutputFile path mode blob) Pair blob (Pair path mode))
 
         # Symlinks: target is inline. Ingest into CAS. Returns the item to materialize.
         def doIngestSymlink (CacheSearchOutputSymlink symlinkTarget symlinkPath hash) =
@@ -120,10 +122,6 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
                 | addErrorContext "rsc: Failed to ingest symlink {symlinkPath} into CAS"
 
             Pass preparedItem
-
-        def fileIngests =
-            outputFiles
-            | map doDownloadFileToCas
 
         def symlinkIngests =
             outputSymlinks
@@ -179,8 +177,7 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
         # First download + verify + ingest every blob into CAS before writing
         # anything to the workspace.
         require Pass filePreparedItems =
-            fileIngests
-            | findFail
+            rscApiGetBlobsToCas fileDownloadEntries
             | addErrorContext "rsc: Failed to download a blob"
 
         require Pass symlinkPreparedItems =
@@ -188,13 +185,12 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
             | findFail
             | addErrorContext "rsc: Failed to ingest a symlink"
 
-        require Pass stdout =
-            stdoutDownload
-            | addErrorContext "rsc: Failed to download stdout for '{label}'"
+        require Pass stdStrings =
+            stdStringsDownload
+            | addErrorContext "rsc: Failed to download stdout/stderr for '{label}'"
 
-        require Pass stderr =
-            stderrDownload
-            | addErrorContext "rsc: Failed to download stderr for '{label}'"
+        require (stdout, stderr, Nil) = stdStrings
+        else failWithError "rsc: expected exactly stdout+stderr for '{label}'"
 
         # Everything is now verified, and in the CAS. We can now materialize.
         def materializeItem preparedItem =
