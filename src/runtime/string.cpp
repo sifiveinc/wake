@@ -854,7 +854,8 @@ void prim_register_string(PrimMap &pmap, StringInfo *info) {
   prim_register(pmap, "bin2str", prim_bin2str, type_code2str, PRIM_PURE);
   prim_register(pmap, "str2code", prim_str2code, type_str2code, PRIM_PURE);
   prim_register(pmap, "str2bin", prim_str2bin, type_str2code, PRIM_PURE);
-  prim_register(pmap, "uname", prim_uname, type_uname, PRIM_PURE);
+  prim_register(pmap, "uname", prim_uname, type_uname,
+                PRIM_PURE | PRIM_PARTIAL);  // aborts if uname() fails
   prim_register(pmap, "shell_str", prim_shell_str, type_shell_str, PRIM_PURE);
   prim_register(pmap, "filter_term_codes", prim_filter_term_codes, type_filter_term_codes,
                 PRIM_PURE);

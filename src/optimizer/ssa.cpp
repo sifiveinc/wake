@@ -213,6 +213,9 @@ std::unique_ptr<Term> Term::optimize(std::unique_ptr<Term> term, Runtime &runtim
   term = Term::pass_purity(std::move(term), PRIM_ORDERED, SSA_ORDERED);
   term = Term::pass_usage(std::move(term));
   term = Term::pass_sweep(std::move(term));
+  // Hoist lambda-invariant pure terms out of their functions so CSE (next) can dedup
+  // identical invariants from different lambdas, and they run once instead of per-call.
+  term = Term::pass_lvl(std::move(term));
   term = Term::pass_cse(std::move(term), runtime);
   term = Term::pass_usage(std::move(term));
   term = Term::pass_inline(std::move(term), 50, runtime);

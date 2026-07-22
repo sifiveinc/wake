@@ -1,0 +1,22 @@
+package lvltest
+
+from wake import _
+
+# This is the core safety property of LVL.
+#
+# A lambda body runs only when the lambda is invoked, which may be zero times (e.g. `map f Nil`).
+# Hoisting a PARTIAL operation (one that can abort) out of such a lambda would run it
+# unconditionally in the parent scope, turning a never-taken abort into a real one.  So:
+#
+#   partialMarker -- pure but PARTIAL (integer divide, aborts on /0) -> MUST stay in the lambda
+#   hoistedMarker -- pure + TOTAL, argument-independent              -> MUST be hoisted (control)
+#
+# The control proves the test would notice a regression in the other direction too.  The test
+# asserts hoistedMarker lands at a strictly shallower indentation than partialMarker.
+def body x =
+    def partialMarker = 900000001 / 900000002
+    def hoistedMarker = 900000004 + 900000005
+    x + partialMarker + hoistedMarker
+
+export def dontHoist (list: List Integer): List Integer =
+    map body list
