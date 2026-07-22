@@ -106,20 +106,24 @@ def doFormat (fmt: JSONFormat) (lhs: JValue): List String =
             JBoolean False -> "false", rhs
             JNull -> "null", rhs
             JArray list ->
-                def helper value acc = ",{tabbeder}", rec acc deeper value
+                def helper acc value = ",{tabbeder}", rec acc deeper value
 
-                if list.empty then
-                    '[]', rhs
-                else
-                    "[{tabbeder}", foldr helper ("{tabbed}]", rhs) list | tail
+                # For 0- or 1-element lists the fold direction is irrelevant, so skip
+                # the reverse entirely — this keeps deep, narrow structures (single-element
+                # arrays nested many levels) cheap.
+                match list
+                    Nil -> '[]', rhs
+                    single, Nil -> "[{tabbeder}", rec ("{tabbed}]", rhs) deeper single
+                    _ -> "[{tabbeder}", foldl helper ("{tabbed}]", rhs) list.reverse | tail
             JObject list ->
-                def helper (Pair key value) acc =
+                def helper acc (Pair key value) =
                     ",{tabbeder}", '"', jsonEscape key, ("\":{space}", rec acc deeper value)
 
-                if list.empty then
-                    '{}', rhs
-                else
-                    "\{{tabbeder}", foldr helper ("{tabbed}\}", rhs) list | tail
+                match list
+                    Nil -> '{}', rhs
+                    (Pair key value), Nil ->
+                        "\{{tabbeder}", '"', jsonEscape key, ("\":{space}", rec ("{tabbed}\}", rhs) deeper value)
+                    _ -> "\{{tabbeder}", foldl helper ("{tabbed}\}", rhs) list.reverse | tail
 
     rec Nil (if indent > 0 then Some "" else None) lhs
 
