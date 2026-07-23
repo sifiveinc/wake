@@ -29,6 +29,7 @@
 #include <unordered_map>
 
 #include "cas_prim.h"
+#include "job.h"
 #include "optimizer/ssa.h"
 #include "stage_prim.h"
 #include "status.h"
@@ -213,6 +214,9 @@ PrimMap prim_register_all(StringInfo *info, JobTable *jobtable, CASContext *cas_
 
   if (cas_ctx) {
     prim_register_cas(cas_ctx, pmap);
+
+    Database *db = jobtable->get_db();
+    prim_register_database(db, cas_ctx, pmap);
   }
   return pmap;
 }
