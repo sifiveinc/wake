@@ -105,6 +105,9 @@ export def materializeCachedItemFromCas (pathInfo: PathInfo): Result Unit Error 
 # Note that this will break any `Path` objects that point to the removed files, and so should
 # *only* be used when those paths are known to be dropping out of scope, and will not be recreated
 # in the same build (e.g. rehydrated from a `target`).
+#
+# Additionally, this will not remove any files which are currently in use by *other* active runs
+# in a multi-wake context, to avoid breaking `Path` objects in those runs.
 export def unsafe_removeFiles (recursive: Boolean) (paths: List String): Result Unit Error =
     def primRmGenerated = (\_ \_ prim "rm_generated")
 

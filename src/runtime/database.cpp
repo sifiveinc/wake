@@ -2272,7 +2272,7 @@ Database::RemovalManifest Database::remove_blobs(
   std::vector<std::string> blobs_to_delete;
   const char *why_hashes = "Could not get blob hashes for paths";
   for (size_t batch_start = 0; batch_start < result.files.size(); batch_start += max_params) {
-    size_t batch_size = std::min(max_params, result.files.size() - batch_start);
+    size_t batch_size = std::min(max_params - 1, result.files.size() - batch_start);
 
     std::string hashes_input_placeholders = "(?)";
     for (size_t i = 1; i < batch_size; ++i) {
@@ -2293,13 +2293,15 @@ Database::RemovalManifest Database::remove_blobs(
         "   and f2.path not in paths_to_remove"
         "   and f2.deleted = 0"
         " )"
-        // For multi-wake safety, also exclude hashes currently in use by active runs.
+        // For multi-wake safety, also exclude hashes currently in use by active runs
+        // (except for the current run, to allow prim usage with Paths that are going out of scope).
         " and not exists ("
         "   select 1 from run_files rf"
         "   join runs r on rf.run_id = r.run_id"
         "   join files f2 on rf.file_id = f2.file_id"
         "   where f2.hash = f1.hash"
         "   and r.end_time is null"
+        "   and r.run_id != ?"
         " )";
 
     sqlite3_stmt *hashes_stmt = nullptr;
@@ -2312,6 +2314,8 @@ Database::RemovalManifest Database::remove_blobs(
     for (size_t i = 0; i < batch_size; ++i) {
       bind_string(why_hashes, hashes_stmt, i + 1, result.files[batch_start + i]);
     }
+    // Bind the current run_id to exclude it from the multi-wake safety check.
+    bind_integer(why_hashes, hashes_stmt, batch_size + 1, imp->run_id);
 
     while (sqlite3_step(hashes_stmt) == SQLITE_ROW) {
       std::string hash = rip_column(hashes_stmt, 0);
