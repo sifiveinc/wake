@@ -40,10 +40,17 @@
 #include <unordered_set>
 #include <vector>
 
+#include "cas_context.h"
+#include "prim.h"
 #include "run_lock.h"
 #include "schema.h"
 #include "status.h"
+#include "types/data.h"
+#include "types/datatype.h"
+#include "types/sums.h"
+#include "types/type.h"
 #include "util/mkdir_parents.h"
+#include "value.h"
 #include "wcl/iterator.h"
 #include "wcl/tracing.h"
 
@@ -2387,6 +2394,78 @@ Database::RemovalManifest Database::remove_blobs(
   return result;
 }
 
+// prim "rm_generated" : Bool -> List String -> Result Unit String
+// Remove generated files from workspace, excluding source files.
+static PRIMTYPE(type_rm_generated) {
+  TypeVar list_string;
+  Data::typeList.clone(list_string);
+  list_string[0].unify(Data::typeString);
+
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeUnit);
+  result[1].unify(Data::typeString);
+
+  return args.size() == 2 && args[0]->unify(Data::typeBoolean) && args[1]->unify(list_string) &&
+         out->unify(result);
+}
+
+static PRIMFN(prim_rm_generated) {
+  auto *ctx = static_cast<std::pair<Database *, CASContext *> *>(data);
+  EXPECT(2);
+  RECORD(bool_rec, 0);
+  RECORD(path_list, 1);
+
+  // Extract recursive flag
+  bool recursive = (bool_rec->cons == &Boolean->members[0]);  // True = members[0], False = members[1]
+
+  // Extract the list of paths
+  std::unordered_set<std::string> paths;
+  for (Record *node = path_list; node->cons == &List->members[1];
+       node = static_cast<Record *>(node->at(1)->coerce<HeapObject>())) {
+    HeapObject *head = node->at(0)->coerce<HeapObject>();
+    REQUIRE(typeid(*head) == typeid(String));
+    paths.insert(static_cast<String *>(head)->as_str());
+  }
+
+  // Build exclusion set from the source files; it makes little sense to remove them within wakelang.
+  std::unordered_set<std::string> exclude_paths;
+  if (runtime.sources) {
+    for (size_t i = 0; i < runtime.sources->size(); ++i) {
+      String *s = runtime.sources->at(i)->coerce<String>();
+      if (s) {
+        exclude_paths.insert(s->as_str());
+      }
+    }
+  }
+
+  // Remove files from database and CAS within a single transaction.
+  cas::Cas *cas = ctx->second ? ctx->second->get_store() : nullptr;
+  Database::RemovalManifest manifest = ctx->first->remove_blobs(cas, paths, exclude_paths, recursive);
+
+  // Unlink files and directories (in reverse order, deepest first) from the workspace.
+  for (const auto &file : manifest.files) {
+    if (unlink(file.c_str()) != 0 && errno != ENOENT) {
+      std::string error_msg = "Failed to remove file '" + file + "': " + strerror(errno);
+      runtime.heap.reserve(reserve_result() + String::reserve(error_msg.size()));
+      RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, error_msg)));
+    }
+  }
+  for (auto it = manifest.directories.rbegin(); it != manifest.directories.rend(); ++it) {
+    if (rmdir(it->c_str()) != 0 && errno != ENOENT) {
+      std::string error_msg = "Failed to remove directory '" + *it + "': " + strerror(errno);
+      runtime.heap.reserve(reserve_result() + String::reserve(error_msg.size()));
+      RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, error_msg)));
+    }
+  }
+
+  // Return success
+  runtime.heap.reserve(reserve_result() + reserve_unit());
+  Value *result = claim_result(runtime.heap, true, claim_unit(runtime.heap));
+
+  RETURN(result);
+}
+
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,
                                                                   sqlite3_stmt *query) {
   const char *why = "Could not get file dependencies";
@@ -2766,4 +2845,9 @@ void Database::gc_if_dead(const std::vector<std::string> &hashes,
     if (!dead.empty()) callback(std::move(dead));
     end_txn();
   }
+}
+
+void prim_register_database(Database *db, CASContext *cas_ctx, PrimMap &pmap) {
+  static std::pair<Database *, CASContext *> rm_ctx(db, cas_ctx);
+  prim_register(pmap, "rm_generated", prim_rm_generated, type_rm_generated, PRIM_IMPURE, &rm_ctx);
 }

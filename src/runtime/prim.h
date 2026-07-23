@@ -124,6 +124,8 @@ Work *claim_hash(Heap &h, Value *value, Continuation *continuation);
 void dont_report_future_targets();
 
 struct JobTable;
+struct Database;
+class CASContext;
 
 struct StringInfo {
   bool verbose;
@@ -149,6 +151,7 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap);
 void prim_register_sources(PrimMap &pmap);
 void prim_register_time(PrimMap &pmap);
 void prim_register_wakebox(PrimMap &pmap);
+void prim_register_database(Database *db, CASContext *cas_ctx, PrimMap &pmap);
 
 PrimMap prim_register_all(StringInfo *info, JobTable *jobtable, CASContext *cas_ctx);
 

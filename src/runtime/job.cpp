@@ -615,6 +615,8 @@ static struct timespec mytimerdouble(struct timespec a) {
   return a;
 }
 
+Database *JobTable::get_db() const { return imp->db; }
+
 JobTable::~JobTable() {
   // Disable the status refresh signal
   struct itimerval timer;
