@@ -241,9 +241,10 @@ struct Database {
   // Remove files from workspace and CAS within a single exclusive transaction.
   // For each path, finds all jobs that output it, removes the CAS blobs, and marks them as deleted.
   // Does *not* remove blobs which are still referenced by other files.
+  // Paths in exclude_paths will not be removed (use empty set for no exclusions).
   // If recursive is true, directories will recursively include all their children.
   RemovalManifest remove_blobs(cas::Cas *cas, const std::unordered_set<std::string> &paths,
-                               bool recursive);
+                               const std::unordered_set<std::string> &exclude_paths, bool recursive);
 
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode);

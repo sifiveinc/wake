@@ -2125,9 +2125,10 @@ std::vector<std::string> Database::get_outputs() const {
   return out;
 }
 
-Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
-                                                 const std::unordered_set<std::string> &paths,
-                                                 bool recursive) {
+
+Database::RemovalManifest Database::remove_blobs(
+    cas::Cas *cas, const std::unordered_set<std::string> &paths,
+    const std::unordered_set<std::string> &exclude_paths, bool recursive) {
   RemovalManifest result;
 
   if (paths.empty()) {
@@ -2171,7 +2172,10 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
     while (sqlite3_step(paths_stmt) == SQLITE_ROW) {
       std::string path = rip_column(paths_stmt, 0);
       std::string type = rip_column(paths_stmt, 1);
-      if (type == "directory") {
+
+      if (exclude_paths.count(path)) {
+        result.skipped_paths.emplace_back(path);
+      } else if (type == "directory") {
         if (recursive) {
           result.directories.emplace_back(path);
         } else {
@@ -2230,7 +2234,14 @@ Database::RemovalManifest Database::remove_blobs(cas::Cas *cas,
       while (sqlite3_step(dir_stmt) == SQLITE_ROW) {
         std::string child_path = rip_column(dir_stmt, 0);
         std::string child_type = rip_column(dir_stmt, 1);
-        if (child_type == "directory") {
+
+        // Note: This currently only checks exact path matches, not ancestor directories:
+        // if "foo/bar" is excluded, "foo/bar/baz.txt" will *not* be automatically excluded.
+        // This is acceptable for now since the only current use case (excluding source files
+        // given in runtime.sources) only populates exclude_paths with files, not directories.
+        if (exclude_paths.count(child_path)) {
+          result.skipped_paths.emplace_back(child_path);
+        } else if (child_type == "directory") {
           // The prefix match (LIKE 'dir/%') naturally handles arbitrary nesting depth;
           // e.g., 'a/' matches both 'a/b.txt' and 'a/subdir/c.txt'.
           result.directories.emplace_back(child_path);
