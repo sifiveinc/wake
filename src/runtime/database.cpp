@@ -2150,8 +2150,9 @@ Database::RemovalManifest Database::remove_blobs(
   // middle of deleting.
   begin_rw_txn();
 
-  // First stage: Get all requested paths that exist in the database.  Note that we'll need to
-  // unlink all requested files from the workspace, regardless of whether they share CAS blobs.
+  // First stage: Get all requested paths that exist in the database.  A path is skipped (like an
+  // excluded source) rather than removed if it's claimed via run_files by another active run --
+  // e.g. a file some other concurrent wake process wrote and is still relying on being present.
   const char *why_paths = "Could not get paths to remove";
   auto paths_iter = paths.begin();
   for (size_t batch_start = 0; batch_start < paths.size(); batch_start += max_params) {
@@ -2162,8 +2163,19 @@ Database::RemovalManifest Database::remove_blobs(
       input_placeholders += ", ?";
     }
 
-    std::string paths_query = "select distinct path, type from files where path in (" +
-                              input_placeholders + ") and deleted = 0";
+    // For multi-wake safety, a file is also excluded from removal if it is itself claimed via
+    // run_files by another active run (except for the current run, to allow prim usage with
+    // Paths that are going out of scope).
+    std::string paths_query =
+        "select distinct f.path, f.type, exists ("
+        "   select 1 from run_files rf"
+        "   join runs r on rf.run_id = r.run_id"
+        "   where rf.file_id = f.file_id"
+        "   and r.end_time is null"
+        "   and r.run_id != ?"
+        " ) as active_elsewhere"
+        " from files f where f.path in (" +
+        input_placeholders + ") and f.deleted = 0";
     sqlite3_stmt *paths_stmt = nullptr;
     int ret = sqlite3_prepare_v2(imp->db, paths_query.c_str(), -1, &paths_stmt, 0);
     if (ret != SQLITE_OK) {
@@ -2171,16 +2183,18 @@ Database::RemovalManifest Database::remove_blobs(
       end_txn();
       return {};
     }
+    bind_integer(why_paths, paths_stmt, 1, imp->run_id);
     for (size_t i = 1; i <= batch_size; ++i) {
-      bind_string(why_paths, paths_stmt, i, *paths_iter);
+      bind_string(why_paths, paths_stmt, i + 1, *paths_iter);
       ++paths_iter;
     }
 
     while (sqlite3_step(paths_stmt) == SQLITE_ROW) {
       std::string path = rip_column(paths_stmt, 0);
       std::string type = rip_column(paths_stmt, 1);
+      bool active_elsewhere = sqlite3_column_int64(paths_stmt, 2) != 0;
 
-      if (exclude_paths.count(path)) {
+      if (exclude_paths.count(path) || active_elsewhere) {
         result.skipped_paths.emplace_back(path);
       } else if (type == "directory") {
         if (recursive) {
@@ -2214,9 +2228,16 @@ Database::RemovalManifest Database::remove_blobs(
       }
 
       // Build a query to find all descendants of the directories.
-      std::string dir_children_prefix_test = "(path like ? || '/%')";
+      std::string dir_children_prefix_test = "(f.path like ? || '/%')";
       std::string dir_children_query =
-          "select distinct path, type from files where deleted = 0 and (" +
+          "select distinct f.path, f.type, exists ("
+          "   select 1 from run_files rf"
+          "   join runs r on rf.run_id = r.run_id"
+          "   where rf.file_id = f.file_id"
+          "   and r.end_time is null"
+          "   and r.run_id != ?"
+          " ) as active_elsewhere"
+          " from files f where f.deleted = 0 and (" +
           dir_children_prefix_test;
       for (size_t i = 1; i < batch_size; ++i) {
         dir_children_query += " or " + dir_children_prefix_test;
@@ -2225,7 +2246,7 @@ Database::RemovalManifest Database::remove_blobs(
       // relationships are predictable.  Thus, the length is used for a faster sort --
       // a child necessarily has a longer path than its parent, no matter where it might
       // fall alphabetically among "cousins".
-      dir_children_query += ") order by length(path)";
+      dir_children_query += ") order by length(f.path)";
 
       sqlite3_stmt *dir_stmt = nullptr;
       int ret = sqlite3_prepare_v2(imp->db, dir_children_query.c_str(), -1, &dir_stmt, 0);
@@ -2234,19 +2255,21 @@ Database::RemovalManifest Database::remove_blobs(
         end_txn();
         return {};
       }
+      bind_integer(why_dirs, dir_stmt, 1, imp->run_id);
       for (size_t i = 0; i < batch_size; ++i) {
-        bind_string(why_dirs, dir_stmt, i + 1, result.directories[batch_start + i]);
+        bind_string(why_dirs, dir_stmt, i + 2, result.directories[batch_start + i]);
       }
 
       while (sqlite3_step(dir_stmt) == SQLITE_ROW) {
         std::string child_path = rip_column(dir_stmt, 0);
         std::string child_type = rip_column(dir_stmt, 1);
+        bool active_elsewhere = sqlite3_column_int64(dir_stmt, 2) != 0;
 
         // Note: This currently only checks exact path matches, not ancestor directories:
         // if "foo/bar" is excluded, "foo/bar/baz.txt" will *not* be automatically excluded.
         // This is acceptable for now since the only current use case (excluding source files
         // given in runtime.sources) only populates exclude_paths with files, not directories.
-        if (exclude_paths.count(child_path)) {
+        if (exclude_paths.count(child_path) || active_elsewhere) {
           result.skipped_paths.emplace_back(child_path);
         } else if (child_type == "directory") {
           // The prefix match (LIKE 'dir/%') naturally handles arbitrary nesting depth;
