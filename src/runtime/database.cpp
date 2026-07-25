@@ -2132,7 +2132,6 @@ std::vector<std::string> Database::get_outputs() const {
   return out;
 }
 
-
 Database::RemovalManifest Database::remove_blobs(
     cas::Cas *cas, const std::unordered_set<std::string> &paths,
     const std::unordered_set<std::string> &exclude_paths, bool recursive) {
@@ -2443,8 +2442,8 @@ static PRIMFN(prim_rm_generated) {
   RECORD(bool_rec, 0);
   RECORD(path_list, 1);
 
-  // Extract recursive flag
-  bool recursive = (bool_rec->cons == &Boolean->members[0]);  // True = members[0], False = members[1]
+  // Extract recursive flag (True = members[0], False = members[1])
+  bool recursive = bool_rec->cons == &Boolean->members[0];
 
   // Extract the list of paths
   std::unordered_set<std::string> paths;
@@ -2455,7 +2454,7 @@ static PRIMFN(prim_rm_generated) {
     paths.insert(static_cast<String *>(head)->as_str());
   }
 
-  // Build exclusion set from the source files; it makes little sense to remove them within wakelang.
+  // Build exclusion set from source files; it makes little sense to remove them within wakelang.
   std::unordered_set<std::string> exclude_paths;
   if (runtime.sources) {
     for (size_t i = 0; i < runtime.sources->size(); ++i) {
@@ -2468,7 +2467,8 @@ static PRIMFN(prim_rm_generated) {
 
   // Remove files from database and CAS within a single transaction.
   cas::Cas *cas = ctx->second ? ctx->second->get_store() : nullptr;
-  Database::RemovalManifest manifest = ctx->first->remove_blobs(cas, paths, exclude_paths, recursive);
+  Database::RemovalManifest manifest =
+      ctx->first->remove_blobs(cas, paths, exclude_paths, recursive);
 
   // Unlink files and directories (in reverse order, deepest first) from the workspace.
   for (const auto &file : manifest.files) {

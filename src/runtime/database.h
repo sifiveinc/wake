@@ -244,7 +244,8 @@ struct Database {
   // Paths in exclude_paths will not be removed (use empty set for no exclusions).
   // If recursive is true, directories will recursively include all their children.
   RemovalManifest remove_blobs(cas::Cas *cas, const std::unordered_set<std::string> &paths,
-                               const std::unordered_set<std::string> &exclude_paths, bool recursive);
+                               const std::unordered_set<std::string> &exclude_paths,
+                               bool recursive);
 
   void add_hash(const std::string &file, const std::string &type, const std::string &hash,
                 long mode);
