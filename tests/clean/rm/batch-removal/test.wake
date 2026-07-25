@@ -1,0 +1,19 @@
+# Test: unsafe_removeFiles correctly handles large batches of paths that
+# exceed SQLite's parameter limit, by internally splitting work into chunks.
+
+from wake import _
+
+export def initTestFiles args: Result Unit Error =
+    require Some arg0 = head args
+    else failWithError "makeBatchFiles requires at least one argument (the number of files to create)"
+
+    require Some count = int arg0
+    else failWithError "makeBatchFiles requires an integer argument (the number of files to create)"
+
+    def makeFile i =
+        write "batched/file-{str i}.txt" "#{str i}"
+
+    seq count
+    | map makeFile
+    | findFail
+    | rmap (\_ Unit)

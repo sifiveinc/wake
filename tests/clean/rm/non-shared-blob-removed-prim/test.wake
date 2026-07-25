@@ -1,0 +1,21 @@
+# Test: rm_generated basic behaviour (files, directories, idempotency)
+
+from wake import _
+
+# Create the file and directory tree that will be removed by the shell driver.
+# Existence is verified by the shell driver.
+export def initTest _: Result Unit Error =
+    require Pass _ = write "file.txt" "basic contents"
+    require Pass _ = write "dir/child1.txt" "one"
+    require Pass _ = write "dir/sub/child2.txt" "two"
+
+    Pass Unit
+
+# Remove the file (non-recursively) and the directory tree (recursively). Called
+# twice by the shell driver: once to perform the actual removal, and once more
+# afterward to confirm removing already-removed paths is a no-op success.
+export def runTest _: Result Unit Error =
+    require Pass _ = unsafe_removeFiles False ("file.txt", Nil)
+    require Pass _ = unsafe_removeFiles True ("dir", Nil)
+
+    Pass Unit
