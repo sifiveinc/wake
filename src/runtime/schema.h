@@ -1,7 +1,7 @@
 #ifndef WAKE_SCHEMA_H
 #define WAKE_SCHEMA_H
 
-#define SCHEMA_VERSION "16"
+#define SCHEMA_VERSION "17"
 
 // Per-connection settings to always apply.  Do this first!
 inline const char *getCommonPragmaSQL() {
@@ -114,6 +114,11 @@ inline const char *getWakeSchemaSQLTxn() {
          "  file_id integer not null references files(file_id) on delete cascade,"
          "  primary key(file_id, run_id));"
          "create index if not exists run_files_by_run on run_files(run_id, file_id);"
+         "create table if not exists live_jobs("
+         "  job_id integer primary key references jobs(job_id) on delete cascade,"
+         "  run_id integer not null references runs(run_id) on delete cascade,"
+         "  pid    integer not null);"
+         "create index if not exists live_jobs_by_run on live_jobs(run_id, job_id);"
          // clang-format off
          "insert or ignore into schema(version) values(" SCHEMA_VERSION ");"
          "pragma user_version=" SCHEMA_VERSION ";"

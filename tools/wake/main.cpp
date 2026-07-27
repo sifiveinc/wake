@@ -46,6 +46,7 @@
 #include <set>
 #include <sstream>
 
+#include "attach.h"
 #include "clean.h"
 #include "cli_options.h"
 #include "describe.h"
@@ -432,6 +433,7 @@ void print_help(const char *argv0) {
     << "    --last-executed    Capture all jobs executed by the last build. Skips cache"   << std::endl
     << "    --history          Report the cmndline history of all wake commands recorded"  << std::endl
     << "    --ps               Show jobs currently running in active wake builds"          << std::endl
+    << "    --attach           With --job JOB, attach a shell to its live sandbox (Linux only)"      << std::endl
     << "    --failed   -f      Capture jobs which failed last build"                       << std::endl
     << "    --tag      KEY=VAL Capture jobs which are tagged, matching KEY and VAL globs"  << std::endl
     << "    --canceled         Capture jobs which were canceled (run ended before job finished)" << std::endl
@@ -957,6 +959,21 @@ int main(int argc, char **argv) {
   }
 
   if (is_db_inspection) {
+    if (clo.attach) {
+#if defined(__linux__)
+      long job_id;
+      try {
+        job_id = std::stol(clo.job_ids[0][0]);
+      } catch (const std::exception &) {
+        std::cerr << "wake --attach: invalid job id '" << clo.job_ids[0][0] << "'" << std::endl;
+        return 1;
+      }
+      return attach_job(db, job_id);
+#else
+      std::cerr << "wake --attach: only supported on Linux." << std::endl;
+      return 1;
+#endif
+    }
     inspect_database(clo, db);
     return 0;
   }

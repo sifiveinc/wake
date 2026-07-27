@@ -42,6 +42,7 @@ struct CommandLineOptions {
   bool last_exe;
   bool history;
   bool ps;
+  bool attach;
   bool active;
   bool lsp;
   bool failed;
@@ -148,6 +149,7 @@ struct CommandLineOptions {
       {0, "last-executed", GOPT_ARGUMENT_FORBIDDEN},
       {0, "history", GOPT_ARGUMENT_FORBIDDEN},
       {0, "ps", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "attach", GOPT_ARGUMENT_FORBIDDEN},
       {0, "active", GOPT_ARGUMENT_FORBIDDEN},
       {0, "queued", GOPT_ARGUMENT_FORBIDDEN},
       {0, "in-flight", GOPT_ARGUMENT_FORBIDDEN},
@@ -217,6 +219,7 @@ struct CommandLineOptions {
     last_exe = arg(options, "last-executed")->count;
     history = arg(options, "history")->count;
     ps = arg(options, "ps")->count;
+    attach = arg(options, "attach")->count;
     active = arg(options, "active")->count;
     queued = arg(options, "queued")->count;
     in_flight = arg(options, "in-flight")->count;
@@ -341,6 +344,14 @@ struct CommandLineOptions {
   std::optional<std::string> validate() {
     if (quiet && verbose) {
       return std::optional<std::string>{"Cannot specify both -v and -q!"};
+    }
+
+    if (attach) {
+      size_t num_ids = 0;
+      for (const auto &group : job_ids) num_ids += group.size();
+      if (num_ids != 1) {
+        return std::optional<std::string>{"--attach requires exactly one --job <id>!"};
+      }
     }
 
     if (profile && !debug) {

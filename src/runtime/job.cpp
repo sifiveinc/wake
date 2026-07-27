@@ -906,7 +906,7 @@ static void launch(JobTable *jobtable) {
     entry->job->state |= STATE_FORKED;
     int64_t starttime_ns =
         (int64_t)entry->job->start.tv_sec * 1000000000LL + entry->job->start.tv_nsec;
-    jobtable->imp->db->start_job(entry->job->job, starttime_ns);
+    jobtable->imp->db->start_job(entry->job->job, starttime_ns, pid);
     close(stdout_stream[1]);
     close(stderr_stream[1]);
     close(runner_out_stream[1]);

@@ -534,6 +534,21 @@ static std::vector<Migration> get_migrations() {
          return false;
        },
        "Hash algorithm changed from BLAKE2b to BLAKE3; requires a fresh database."},
+
+      // Version 16 -> 17: Add live_jobs table tracking the host pid of running jobs,
+      // used by `wake --attach`. No backfill needed: only populated by active runs.
+      {16, 17,
+       [](sqlite3* db) -> bool {
+         if (!exec_sql(db,
+                       "CREATE TABLE IF NOT EXISTS live_jobs("
+                       "  job_id integer primary key references jobs(job_id) on delete cascade,"
+                       "  run_id integer not null references runs(run_id) on delete cascade,"
+                       "  pid    integer not null);"))
+           return false;
+         return exec_sql(
+             db, "CREATE INDEX IF NOT EXISTS live_jobs_by_run ON live_jobs(run_id, job_id);");
+       },
+       "Add live_jobs table tracking host pid of running jobs for wake --attach"},
   };
 }
 

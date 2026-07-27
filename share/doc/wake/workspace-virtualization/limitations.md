@@ -22,3 +22,18 @@ _Part of [Workspace Virtualization and Multiple Wake Invocations](../workspace-v
   account for deduplicated reflinks, so they may report inflated usage (e.g.
   roughly 2x) for content shared between the workspace and the CAS. We are
   investigating how to address this.
+
+- **Inspecting a running job's in-progress outputs.** A job's outputs aren't
+  materialized into the workspace at their real paths until it *completes*.
+  `wake --job JOB --attach` gives a live, read-only shell inside a still-running
+  job's own FUSE sandbox, so its in-progress outputs are visible at their real
+  workspace-relative paths (writes fail with a read-only-filesystem error).
+  Any user may attach to any job, not just their own -- the read-only guarantee
+  and cross-user access both come from a narrow privileged helper
+  (`lib/wake/wake-attach-helper`) that drops all privilege before handing you a
+  shell. Package installs (`.deb`/`.rpm`) grant it the required file
+  capabilities automatically; if you installed from source (`make install`),
+  run `setcap 'cap_sys_admin,cap_sys_ptrace,cap_setpcap+ep' lib/wake/wake-attach-helper`
+  yourself, or `--attach` will fail. Currently this only works on Linux and
+  only for jobs run under the FUSE runner; it gives a filesystem view only, not
+  process interaction (`ps`, signals) inside the sandbox.

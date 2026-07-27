@@ -111,6 +111,10 @@ struct Database::detail {
   sqlite3_stmt *clear_run_files;
   sqlite3_stmt *set_starttime;
   sqlite3_stmt *get_dead_hashes;
+  sqlite3_stmt *insert_live_job;
+  sqlite3_stmt *clear_live_job;
+  sqlite3_stmt *clear_live_jobs_by_run;
+  sqlite3_stmt *get_live_job;
 
   long run_id;
   long gc_watermark;
@@ -174,6 +178,10 @@ struct Database::detail {
         clear_run_files(0),
         set_starttime(0),
         get_dead_hashes(0),
+        insert_live_job(0),
+        clear_live_job(0),
+        clear_live_jobs_by_run(0),
+        get_live_job(0),
         run_id(0),
         gc_watermark(0) {}
 };
@@ -559,6 +567,14 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "select d.hash from disk_batch d where d.hash is not null and not exists ("
       "  select 1 from files where hash=d.hash and deleted=0"
       ")";
+  const char *sql_insert_live_job =
+      "insert or replace into live_jobs(job_id, run_id, pid) values(?, ?, ?)";
+  const char *sql_clear_live_job = "delete from live_jobs where job_id = ?";
+  const char *sql_clear_live_jobs_by_run = "delete from live_jobs where run_id = ?";
+  const char *sql_get_live_job =
+      "select lj.pid, j.directory from live_jobs lj"
+      " join jobs j on lj.job_id = j.job_id"
+      " where lj.job_id = ?";
 
 #define PREPARE(sql, member)                                                                     \
   ret = sqlite3_prepare_v2(imp->db, sql, -1, &imp->member, 0);                                   \
@@ -624,6 +640,10 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_clear_run_files, clear_run_files);
   PREPARE(sql_set_starttime, set_starttime);
   PREPARE(sql_get_dead_hashes, get_dead_hashes);
+  PREPARE(sql_insert_live_job, insert_live_job);
+  PREPARE(sql_clear_live_job, clear_live_job);
+  PREPARE(sql_clear_live_jobs_by_run, clear_live_jobs_by_run);
+  PREPARE(sql_get_live_job, get_live_job);
 
   return "";
 }
@@ -698,6 +718,10 @@ void Database::close() {
   FINALIZE(clear_run_files);
   FINALIZE(set_starttime);
   FINALIZE(get_dead_hashes);
+  FINALIZE(insert_live_job);
+  FINALIZE(clear_live_job);
+  FINALIZE(clear_live_jobs_by_run);
+  FINALIZE(get_live_job);
 
   imp->run_lock.reset();
 
@@ -947,6 +971,9 @@ void Database::finish_run() {
   single_step(why, imp->set_run_end_time, imp->debugdb);
   bind_integer(why, imp->clear_run_files, 1, imp->run_id);
   single_step("Could not clear run_files for finished run", imp->clear_run_files, imp->debugdb);
+  bind_integer(why, imp->clear_live_jobs_by_run, 1, imp->run_id);
+  single_step("Could not clear live_jobs for finished run", imp->clear_live_jobs_by_run,
+              imp->debugdb);
   end_txn();
 
   // Remove our own lock file - we're done with this run
@@ -994,6 +1021,9 @@ void Database::reap_dead_runs() {
       single_step(why, imp->set_run_end_time, imp->debugdb);
       bind_integer(why, imp->clear_run_files, 1, dead_run);
       single_step("Could not clear run_files for dead run", imp->clear_run_files, imp->debugdb);
+      bind_integer(why, imp->clear_live_jobs_by_run, 1, dead_run);
+      single_step("Could not clear live_jobs for dead run", imp->clear_live_jobs_by_run,
+                  imp->debugdb);
     }
     end_txn();
   }
@@ -1436,6 +1466,9 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
 
   const char *why = "Could not save job inputs and outputs";
   begin_rw_txn();
+
+  bind_integer(why, imp->clear_live_job, 1, job);
+  single_step(why, imp->clear_live_job, imp->debugdb);
 
   bind_integer(why, imp->add_stats, 1, hashcode);
   bind_integer(why, imp->add_stats, 2, reality.status);
@@ -2707,6 +2740,34 @@ void Database::start_job(long job, int64_t starttime) {
   bind_integer(why, imp->set_starttime, 2, job);
   single_step(why, imp->set_starttime, imp->debugdb);
   end_txn();
+}
+
+void Database::start_job(long job, int64_t starttime, pid_t pid) {
+  const char *why = "Could not record job start time";
+  begin_rw_txn();
+  bind_integer(why, imp->set_starttime, 1, starttime);
+  bind_integer(why, imp->set_starttime, 2, job);
+  single_step(why, imp->set_starttime, imp->debugdb);
+  why = "Could not record live job pid";
+  bind_integer(why, imp->insert_live_job, 1, job);
+  bind_integer(why, imp->insert_live_job, 2, imp->run_id);
+  bind_integer(why, imp->insert_live_job, 3, pid);
+  single_step(why, imp->insert_live_job, imp->debugdb);
+  end_txn();
+}
+
+std::optional<LiveJobInfo> Database::get_live_job(long job_id) const {
+  const char *why = "Could not query live job";
+  begin_ro_txn();
+  bind_integer(why, imp->get_live_job, 1, job_id);
+  std::optional<LiveJobInfo> out;
+  if (sqlite3_step(imp->get_live_job) == SQLITE_ROW) {
+    out = LiveJobInfo{static_cast<pid_t>(sqlite3_column_int64(imp->get_live_job, 0)),
+                       rip_column(imp->get_live_job, 1)};
+  }
+  finish_stmt(why, imp->get_live_job, imp->debugdb);
+  end_txn();
+  return out;
 }
 
 std::vector<std::pair<std::string, int>> Database::get_interleaved_output(long job_id) const {
