@@ -2471,26 +2471,28 @@ static PRIMFN(prim_rm_generated) {
       ctx->first->remove_blobs(cas, paths, exclude_paths, recursive);
 
   // Unlink files and directories (in reverse order, deepest first) from the workspace.
+  // Attempt every removal even after a failure, and report only the first error found.
+  std::string error_msg;
   for (const auto &file : manifest.files) {
-    if (unlink(file.c_str()) != 0 && errno != ENOENT) {
-      std::string error_msg = "Failed to remove file '" + file + "': " + strerror(errno);
-      runtime.heap.reserve(reserve_result() + String::reserve(error_msg.size()));
-      RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, error_msg)));
+    if (unlink(file.c_str()) != 0 && errno != ENOENT && error_msg.empty()) {
+      error_msg = "Failed to remove file '" + file + "': " + strerror(errno);
     }
   }
   for (auto it = manifest.directories.rbegin(); it != manifest.directories.rend(); ++it) {
-    if (rmdir(it->c_str()) != 0 && errno != ENOENT) {
-      std::string error_msg = "Failed to remove directory '" + *it + "': " + strerror(errno);
-      runtime.heap.reserve(reserve_result() + String::reserve(error_msg.size()));
-      RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, error_msg)));
+    if (rmdir(it->c_str()) != 0 && errno != ENOENT && error_msg.empty()) {
+      error_msg = "Failed to remove directory '" + *it + "': " + strerror(errno);
     }
   }
 
-  // Return success
-  runtime.heap.reserve(reserve_result() + reserve_unit());
-  Value *result = claim_result(runtime.heap, true, claim_unit(runtime.heap));
-
-  RETURN(result);
+  if (error_msg.empty()) {
+    // Return success
+    runtime.heap.reserve(reserve_result() + reserve_unit());
+    RETURN(claim_result(runtime.heap, true, claim_unit(runtime.heap)));
+  } else {
+    // Return failure
+    runtime.heap.reserve(reserve_result() + String::reserve(error_msg.size()));
+    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, error_msg)));
+  }
 }
 
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,
