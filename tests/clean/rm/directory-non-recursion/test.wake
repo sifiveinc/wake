@@ -1,0 +1,17 @@
+# Test: unsafe_removeFiles skips non-recursive directories
+
+from wake import _
+
+# Create a nested directory tree under a dedicated prefix. Existence is
+# verified by the shell driver.
+export def initTest _: Result Unit Error =
+    require Pass _ = write "dir/file1.txt" "one"
+    require Pass _ = write "dir/child/file2.txt" "two"
+
+    Pass Unit
+
+# Non-recursive removal request on a non-empty directory should be a no-op and
+# still succeed. The shell driver checks that the directory and its children
+# survive the call.
+export def runTest _: Result Unit Error =
+    unsafe_removeFiles False ("dir", Nil)

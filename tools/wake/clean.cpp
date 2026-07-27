@@ -85,8 +85,11 @@ int remove_paths(Database &db, CASContext &cas_ctx, const std::vector<std::strin
     normalized_paths.insert(workspace_path.string());
   }
 
+  // Don't exclude paths from removal, since there's no way yet to specify them on the command line.
+  std::unordered_set<std::string> exclude_paths;
+
   // Remove files from database and CAS within a single transaction.
-  auto result = db.remove_blobs(cas, normalized_paths, recursive);
+  auto result = db.remove_blobs(cas, normalized_paths, exclude_paths, recursive);
 
   // Delete the returned workspace files outside of that transaction.
   for (const auto &path : result.files) {
