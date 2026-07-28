@@ -8,7 +8,7 @@ This document describes two closely related capabilities in wake:
 
 Both are built on the same foundation: wake stores everything jobs produce in a
 content-addressed store and treats your workspace as a *projection* of that
-state, rather than as the source of truth. This shift is what
+state, rather than as the source of truth. This shift is what makes
 concurrent builds possible, naturally deduplicates storage, and lays the
 groundwork for richer workspace management.
 
