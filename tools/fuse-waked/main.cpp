@@ -898,7 +898,11 @@ static int wakefuse_access(const char *path, int mask) {
     if (visible_it != it->second.visible_entries.end()) {
       const std::string &type = visible_it->second.type;
       if (type == "directory") {
-        if (mask & W_OK) return -EACCES;
+        // Match access() to getattr()'s mode bits; real writes are still gated by
+        // is_writeable() in unlink/rename/etc.
+        mode_t mode = visible_mode_or(visible_it->second, 0755);
+        if ((mask & W_OK) && !(mode & (S_IWUSR | S_IWGRP | S_IWOTH))) return -EACCES;
+        if ((mask & X_OK) && !(mode & (S_IXUSR | S_IXGRP | S_IXOTH))) return -EACCES;
         return 0;
       }
       if (type == "symlink") {
