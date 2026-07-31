@@ -1,0 +1,23 @@
+{
+  "command": [
+    "/bin/sh",
+    "-c",
+    "set -e\ninstall -m 0200 /dev/null restrictive.txt\nprintf 'chmod-test' > restrictive.txt\nchmod 0644 restrictive.txt\ncat restrictive.txt\ninstall -m 0200 /dev/null stays_write_only.txt\nprintf 'still-here' > stays_write_only.txt\n"
+  ],
+  "environment": [
+    "USER=root",
+    "HOME=/root",
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  ],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "mount-ops": [
+    {
+      "type": "workspace",
+      "destination": "."
+    }
+  ],
+  "visible": []
+}

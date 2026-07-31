@@ -1,0 +1,17 @@
+# A job that chmods its own output write-only must still produce a usable output.
+#
+# The fuse daemon keeps the on-disk staging file's permissions in sync with chmod
+# (wakefuse_chmod), but wake-hash and CAS ingestion both open that staging file for
+# reading afterwards. Without a S_IRUSR floor, mode 0200 makes it unopenable, and the
+# build fails with "wake-hash: read(...): Permission denied" / "No outputs available"
+# after the job itself has already succeeded.
+#
+# The mode the job asked for must still be what lands in the workspace, so the
+# floor must not be observable outside the staging directory.
+
+export def test Unit =
+    makeExecPlan ("sh", "-c", "echo contents > output.txt; chmod 0200 output.txt", Nil) Nil
+    | setPlanLabel "produce write-only output"
+    | setPlanFnOutputs (\_ "output.txt", Nil)
+    | runJobWith fuseRunner
+    | getJobOutput

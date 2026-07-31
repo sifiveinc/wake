@@ -1106,7 +1106,10 @@ static int wakefuse_mknod(const char *path, mode_t mode, dev_t rdev) {
     // Stage a regular file (like create(), but without keeping an open fd). wakebox will hash and
     // store it in CAS after the job completes.
     std::string staging_path = create_unique_staging_path();
-    mode_t perm_bits = mode & 07777;
+    // Keep the staging file owner-readable regardless of the requested mode: the hashing and
+    // CAS steps after the job open it directly. The tracked mode below is what getattr reports
+    // and what lands in the workspace, so the extra bit isn't visible to the job.
+    mode_t perm_bits = (mode & 07777) | S_IRUSR;
     int fd = open(staging_path.c_str(), O_CREAT | O_EXCL | O_WRONLY, perm_bits);
     if (fd == -1) return -errno;
     (void)close(fd);
@@ -1218,7 +1221,10 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
   }
 
   std::string staging_path = create_unique_staging_path();
-  mode_t perm_bits = mode & 07777;
+  // Keep the staging file owner-readable regardless of the requested mode: the hashing and CAS
+  // steps after the job open it directly. The tracked mode below is what getattr reports and
+  // what lands in the workspace, so the extra bit isn't visible to the job.
+  mode_t perm_bits = (mode & 07777) | S_IRUSR;
   int fd = open(staging_path.c_str(), O_CREAT | O_RDWR | O_TRUNC, perm_bits);
   if (fd == -1) return -errno;
 
@@ -1673,12 +1679,18 @@ static int wakefuse_chmod(const char *path, mode_t mode) {
 
   // Update mode in staged file if present
   if (StagedItem *sf = g_staged_files.find(key.first, key.second)) {
-    sf->set_mode(mode);
-    // Special nodes (sockets/fifos/devices) have a real backing node; keep its actual
-    // permissions in sync so access()/bind()/connect() agree with what getattr reports.
-    if (auto *s = std::get_if<StagedSpecialData>(&sf->data)) {
+    // Apply the mode to the backing file too, not just our metadata: access(R_OK) and the
+    // hashing/CAS steps after the job read that file directly. Keep it owner-readable so a
+    // job that chmods its own output write-only doesn't make it unreadable to them; getattr
+    // still reports the mode set below, so the extra bit isn't visible to the job.
+    if (auto spath = sf->staging_path()) {
+      if (chmod(spath->data(), (mode & 07777) | S_IRUSR) == -1) return -errno;
+    } else if (auto *s = std::get_if<StagedSpecialData>(&sf->data)) {
+      // Special nodes (sockets/fifos/devices) have a real backing node; keep its actual
+      // permissions in sync so access()/bind()/connect() agree with what getattr reports.
       if (chmod(s->real_path.c_str(), mode & 07777) == -1) return -errno;
     }
+    sf->set_mode(mode);  // after chmod, so a failure can't leave mode and disk diverged
     return 0;
   }
   // TODO: Remove workspace writes once backwards compatibility is no longer needed
