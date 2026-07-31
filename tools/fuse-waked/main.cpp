@@ -1106,7 +1106,10 @@ static int wakefuse_mknod(const char *path, mode_t mode, dev_t rdev) {
     // Stage a regular file (like create(), but without keeping an open fd). wakebox will hash and
     // store it in CAS after the job completes.
     std::string staging_path = create_unique_staging_path();
-    mode_t perm_bits = mode & 07777;
+    // Keep the staging file owner-readable regardless of the requested mode: the hashing and
+    // CAS steps after the job open it directly. The tracked mode below is what getattr reports
+    // and what lands in the workspace, so the extra bit isn't visible to the job.
+    mode_t perm_bits = (mode & 07777) | S_IRUSR;
     int fd = open(staging_path.c_str(), O_CREAT | O_EXCL | O_WRONLY, perm_bits);
     if (fd == -1) return -errno;
     (void)close(fd);
@@ -1218,7 +1221,10 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
   }
 
   std::string staging_path = create_unique_staging_path();
-  mode_t perm_bits = mode & 07777;
+  // Keep the staging file owner-readable regardless of the requested mode: the hashing and CAS
+  // steps after the job open it directly. The tracked mode below is what getattr reports and
+  // what lands in the workspace, so the extra bit isn't visible to the job.
+  mode_t perm_bits = (mode & 07777) | S_IRUSR;
   int fd = open(staging_path.c_str(), O_CREAT | O_RDWR | O_TRUNC, perm_bits);
   if (fd == -1) return -errno;
 
