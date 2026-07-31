@@ -2,6 +2,12 @@ wake (@VERSION@-1) unstable; urgency=medium
 
   * Auto-generated release package.
 
+  -- Nathan Graybeal <nathan.graybeal@sifive.com>  Fri, 31 Jul 2026 12:26:00 -0800
+
+wake (50.0.2-1 unstable; urgency=medium
+
+  * Auto-generated release package.
+
   -- Abrar Quazi <abrar.quazi@sifive.com>  Thu, 30 Jul 2026 13:15:00 -0800
 
 wake (50.0.1-1 unstable; urgency=medium
