@@ -11,6 +11,9 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
+# output.txt should be removed since its mode 0200
+trap 'rm -f output.txt' EXIT
+
 rm -rf .build .fuse wake.db* wake.log output.txt
 
 "${WAKE}" -q --no-tty -x 'test Unit'
