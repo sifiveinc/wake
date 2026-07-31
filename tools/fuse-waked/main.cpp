@@ -1673,21 +1673,18 @@ static int wakefuse_chmod(const char *path, mode_t mode) {
 
   // Update mode in staged file if present
   if (StagedItem *sf = g_staged_files.find(key.first, key.second)) {
-    sf->set_mode(mode);
-    // Keep the on-disk backing object's permissions in sync with the tracked mode. The on-disk
-    // staging file was created with the create() mode and is read directly (bypassing this daemon)
-    // by access(R_OK) and by anything that copies staged outputs back out (e.g. rsync in salloc
-    // jobs). Without this, a job that creates a file with a restrictive mode (e.g. 0200) and later
-    // chmod's it open leaves the staging file unreadable on disk, even though getattr/dump report
-    // the chmod'd mode. Mirrors wakefuse_utimens, which already applies to the staging file.
+    // Apply the mode to the backing file too, not just our metadata: access(R_OK) and the
+    // hashing/CAS steps after the job read that file directly. Keep it owner-readable so a
+    // job that chmods its own output write-only doesn't make it unreadable to them; getattr
+    // still reports the mode set below, so the extra bit isn't visible to the job.
     if (auto spath = sf->staging_path()) {
-      // File/hardlink: apply to backing (staging) file directly.
-      if (chmod(spath->data(), mode & 07777) == -1) return -errno;
+      if (chmod(spath->data(), (mode & 07777) | S_IRUSR) == -1) return -errno;
     } else if (auto *s = std::get_if<StagedSpecialData>(&sf->data)) {
       // Special nodes (sockets/fifos/devices) have a real backing node; keep its actual
       // permissions in sync so access()/bind()/connect() agree with what getattr reports.
       if (chmod(s->real_path.c_str(), mode & 07777) == -1) return -errno;
     }
+    sf->set_mode(mode);  // after chmod, so a failure can't leave mode and disk diverged
     return 0;
   }
   // TODO: Remove workspace writes once backwards compatibility is no longer needed
