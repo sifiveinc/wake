@@ -1674,9 +1674,18 @@ static int wakefuse_chmod(const char *path, mode_t mode) {
   // Update mode in staged file if present
   if (StagedItem *sf = g_staged_files.find(key.first, key.second)) {
     sf->set_mode(mode);
-    // Special nodes (sockets/fifos/devices) have a real backing node; keep its actual
-    // permissions in sync so access()/bind()/connect() agree with what getattr reports.
-    if (auto *s = std::get_if<StagedSpecialData>(&sf->data)) {
+    // Keep the on-disk backing object's permissions in sync with the tracked mode. The on-disk
+    // staging file was created with the create() mode and is read directly (bypassing this daemon)
+    // by access(R_OK) and by anything that copies staged outputs back out (e.g. rsync in salloc
+    // jobs). Without this, a job that creates a file with a restrictive mode (e.g. 0200) and later
+    // chmod's it open leaves the staging file unreadable on disk, even though getattr/dump report
+    // the chmod'd mode. Mirrors wakefuse_utimens, which already applies to the staging file.
+    if (auto spath = sf->staging_path()) {
+      // File/hardlink: apply to backing (staging) file directly.
+      if (chmod(spath->data(), mode & 07777) == -1) return -errno;
+    } else if (auto *s = std::get_if<StagedSpecialData>(&sf->data)) {
+      // Special nodes (sockets/fifos/devices) have a real backing node; keep its actual
+      // permissions in sync so access()/bind()/connect() agree with what getattr reports.
       if (chmod(s->real_path.c_str(), mode & 07777) == -1) return -errno;
     }
     return 0;
