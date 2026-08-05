@@ -389,11 +389,17 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_insert_log =
       "insert into log(job_id, descriptor, seconds, output)"
       " values(?, ?, ?, ?)";
+  // The `where deleted=1` on the upsert's update branch (and on sql_reset_deleted below) is load-
+  // bearing, not just a no-op guard: it makes sqlite3_changes() report 0 whenever the row was
+  // already live at this exact (path, hash, type, mode), which callers use to skip the far more
+  // expensive mark_stale_path_files scan in that (common, steady-state) case -- see add_hash/
+  // reuse_job. Any other row's staleness was already correctly resolved the last time this row's
+  // deleted flag went to 0, so skipping is safe, not just faster.
   const char *sql_insert_file =
       "insert into files(hash, type, mode, path, deleted) values (?, ?, ?, ?, 0)"
-      " on conflict(hash, type, mode, path) do update set deleted=0";
+      " on conflict(hash, type, mode, path) do update set deleted=0 where deleted=1";
   const char *sql_reset_deleted =
-      "update files set deleted=0 where path=? and hash=? and type=? and mode=?";
+      "update files set deleted=0 where path=? and hash=? and type=? and mode=? and deleted=1";
   const char *sql_claim_file =
       "insert or ignore into run_files(run_id, file_id)"
       " values(?, (select file_id from files where path=? and hash=? and type=? and mode=?))";
@@ -1264,14 +1270,20 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     bind_string(why, imp->reset_deleted, 3, file.type);
     bind_integer(why, imp->reset_deleted, 4, file.mode);
     single_step(why, imp->reset_deleted, imp->debugdb);
+  bool file_row_changed = sqlite3_changes(imp->db) != 0;
 
     // Reusing this job re-materializes file.path from CAS, so any other files row for that
     // path (e.g. from a job that superseded this one and was itself since reaped) is now stale.
-    bind_string(why, imp->mark_stale_path_files, 1, file.path);
-    bind_string(why, imp->mark_stale_path_files, 2, file.hash);
-    bind_string(why, imp->mark_stale_path_files, 3, file.type);
-    bind_integer(why, imp->mark_stale_path_files, 4, file.mode);
-    single_step(why, imp->mark_stale_path_files, imp->debugdb);
+    // Skip the scan entirely when this row was already live (deleted=0): siblings were already
+    // resolved the last time this exact row went live, so most cache-hit re-runs of an
+    // already-stable path can avoid the scan altogether. See sql_reset_deleted.
+    if (file_row_changed) {
+      bind_string(why, imp->mark_stale_path_files, 1, file.path);
+      bind_string(why, imp->mark_stale_path_files, 2, file.hash);
+      bind_string(why, imp->mark_stale_path_files, 3, file.type);
+      bind_integer(why, imp->mark_stale_path_files, 4, file.mode);
+      single_step(why, imp->mark_stale_path_files, imp->debugdb);
+    }
   }
 
   end_txn();
@@ -1702,6 +1714,7 @@ void Database::add_hash(const std::string &file, const std::string &type, const 
   bind_integer(why, imp->insert_file, 3, mode);
   bind_string(why, imp->insert_file, 4, file);
   single_step(why, imp->insert_file, imp->debugdb);
+  bool file_row_changed = sqlite3_changes(imp->db) != 0;
 
   bind_integer(why, imp->claim_file, 1, imp->run_id);
   bind_string(why, imp->claim_file, 2, file);
@@ -1710,11 +1723,15 @@ void Database::add_hash(const std::string &file, const std::string &type, const 
   bind_integer(why, imp->claim_file, 5, mode);
   single_step(why, imp->claim_file, imp->debugdb);
 
-  bind_string(why, imp->mark_stale_path_files, 1, file);
-  bind_string(why, imp->mark_stale_path_files, 2, hash);
-  bind_string(why, imp->mark_stale_path_files, 3, type);
-  bind_integer(why, imp->mark_stale_path_files, 4, mode);
-  single_step(why, imp->mark_stale_path_files, imp->debugdb);
+  // Skip the scan when this exact (path, hash, type, mode) was already the live row -- any
+  // sibling was already marked stale the last time this row went live. See sql_insert_file.
+  if (file_row_changed) {
+    bind_string(why, imp->mark_stale_path_files, 1, file);
+    bind_string(why, imp->mark_stale_path_files, 2, hash);
+    bind_string(why, imp->mark_stale_path_files, 3, type);
+    bind_integer(why, imp->mark_stale_path_files, 4, mode);
+    single_step(why, imp->mark_stale_path_files, imp->debugdb);
+  }
 
   end_txn();
 }
