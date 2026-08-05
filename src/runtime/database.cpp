@@ -88,6 +88,7 @@ struct Database::detail {
   sqlite3_stmt *find_prior;
   sqlite3_stmt *delete_prior;
   sqlite3_stmt *delete_jobs;
+  sqlite3_stmt *delete_stale_files;
   sqlite3_stmt *delete_dups;
   sqlite3_stmt *delete_stats;
   sqlite3_stmt *revtop_order;
@@ -150,6 +151,7 @@ struct Database::detail {
         find_prior(0),
         delete_prior(0),
         delete_jobs(0),
+        delete_stale_files(0),
         delete_dups(0),
         delete_stats(0),
         revtop_order(0),
@@ -462,6 +464,13 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "                  filetree.job_id=jobs.job_id and"
       "                  filetree.access=2)"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=jobs.job_id) <= ?1";
+  // A deleted=1 row never owns the physical file at its path -- some other (live) row does, or
+  // nothing does -- so it's pure bookkeeping cruft once no filetree entry still references it.
+  // Safe to drop outright (no unlink needed); the filetree join guards the FK from files(file_id).
+  const char *sql_delete_stale_files =
+      "delete from files"
+      " where deleted = 1"
+      " and not exists (select 1 from filetree where filetree.file_id = files.file_id)";
   const char *sql_delete_dups =
       "delete from stats where stat_id in"
       " (select stat_id from (select hashcode, count(*) as num, max(stat_id) as keep from stats "
@@ -599,6 +608,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_find_prior, find_prior);
   PREPARE(sql_delete_prior, delete_prior);
   PREPARE(sql_delete_jobs, delete_jobs);
+  PREPARE(sql_delete_stale_files, delete_stale_files);
   PREPARE(sql_delete_dups, delete_dups);
   PREPARE(sql_delete_stats, delete_stats);
   PREPARE(sql_revtop_order, revtop_order);
@@ -672,6 +682,7 @@ void Database::close() {
   FINALIZE(find_prior);
   FINALIZE(delete_prior);
   FINALIZE(delete_jobs);
+  FINALIZE(delete_stale_files);
   FINALIZE(delete_dups);
   FINALIZE(delete_stats);
   FINALIZE(revtop_order);
@@ -982,6 +993,7 @@ void Database::clean() {
 
   single_step("Could not clean database dups", imp->delete_dups, imp->debugdb);
   single_step("Could not clean database stats", imp->delete_stats, imp->debugdb);
+  single_step("Could not clean stale file entries", imp->delete_stale_files, imp->debugdb);
 
   end_txn();
 
@@ -1540,6 +1552,8 @@ std::vector<std::string> Database::clear_jobs() {
   // Now clear everything.
   single_step(why, imp->remove_all_jobs, imp->debugdb);
   single_step(why, imp->remove_output_files, imp->debugdb);
+  // remove_all_jobs just emptied filetree, so every deleted=1 row is now unreferenced.
+  single_step(why, imp->delete_stale_files, imp->debugdb);
 
   end_txn();
 
@@ -1571,6 +1585,8 @@ bool Database::clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string
 
   single_step(why, imp->remove_all_jobs, imp->debugdb);
   single_step(why, imp->remove_output_files, imp->debugdb);
+  // remove_all_jobs just emptied filetree, so every deleted=1 row is now unreferenced.
+  single_step(why, imp->delete_stale_files, imp->debugdb);
 
   // Delete files while still holding write lock. This prevents new
   // builds from starting until cleanup is complete.
