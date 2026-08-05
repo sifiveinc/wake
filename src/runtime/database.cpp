@@ -1278,7 +1278,7 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     bind_string(why, imp->reset_deleted, 3, file.type);
     bind_integer(why, imp->reset_deleted, 4, file.mode);
     single_step(why, imp->reset_deleted, imp->debugdb);
-  bool file_row_changed = sqlite3_changes(imp->db) != 0;
+    bool file_row_changed = sqlite3_changes(imp->db) != 0;
 
     // Reusing this job re-materializes file.path from CAS, so any other files row for that
     // path (e.g. from a job that superseded this one and was itself since reaped) is now stale.
