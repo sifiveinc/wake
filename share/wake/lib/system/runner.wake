@@ -240,9 +240,11 @@ def stageWorkspaceOutputsImpl (inPlace: Boolean) (stageFromDir: String) (allOutp
 
         def cleanableOutputs =
             if inPlace then
-                (baseCleanableOutputs ++ stagedOutputPaths) | distinctBy scmp
+                (baseCleanableOutputs ++ stagedOutputPaths)
+                | distinctBy scmp
             else
-                (baseCleanableOutputs ++ stagedOutputPaths ++ (stagingRoot, Nil)) | distinctBy scmp
+                (baseCleanableOutputs ++ stagedOutputPaths ++ (stagingRoot, Nil))
+                | distinctBy scmp
 
         def stagingRootOpt = if inPlace then None else Some stagingRoot
 
@@ -439,17 +441,18 @@ export def stagingDirNsRunner: Runner =
             def err = match stagingDirResult
                 Fail e -> e
                 Pass _ -> unreachable "require Pass else guarantees Fail here"
+
             def _ = markJobSetupFailure job err
 
             RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some err)
 
-        def cleanup _ =
-            match (casRemoveStagingDir stagingDir)
-                Pass _ -> Unit
-                Fail err ->
-                    def _ = printlnLevel logWarning "Failed to remove staging dir {stagingDir}: {err.getErrorCause}"
+        def cleanup _ = match (casRemoveStagingDir stagingDir)
+            Pass _ -> Unit
+            Fail err ->
+                def _ =
+                    printlnLevel logWarning "Failed to remove staging dir {stagingDir}: {err.getErrorCause}"
 
-                    Unit
+                Unit
 
         def stageResult = stageVisibleInputs stagingDir input.getRunnerInputVisible
 
@@ -458,6 +461,7 @@ export def stagingDirNsRunner: Runner =
             def err = match stageResult
                 Fail e -> e
                 Pass _ -> unreachable "require Pass else guarantees Fail here"
+
             def _ = cleanup Unit
             def _ = markJobSetupFailure job err
 
@@ -467,17 +471,24 @@ export def stagingDirNsRunner: Runner =
         # report every visible as an input instead (like `localRunner`) to avoid unconditional
         # cache hits. Pass `identity` inward as `FnInputs` (no-op) and call the caller's real
         # `FnInputs` exactly once out here against the full visible set.
-        def visiblePaths = input.getRunnerInputVisible | map getPathName
+        def visiblePaths =
+            input.getRunnerInputVisible
+            | map getPathName
+
         def declaredOutputs = input.getRunnerInputFnOutputs Nil
+
         def innerInput =
             input
             | setRunnerInputFnOutputs (\_ Nil)
             | setRunnerInputFnInputs identity
+
         def plan =
             makeJSONRunnerPlan fuse
             | setJSONRunnerPlanMkMountOps (stagingMountOps stagingDir)
+
         def (Runner _ innerRun) = makeJSONRunner plan
         def reportedInputs = input.getRunnerInputFnInputs visiblePaths
+
         def innerOutput =
             innerRun job innerInput
             | setRunnerOutputInputs reportedInputs
@@ -489,6 +500,7 @@ export def stagingDirNsRunner: Runner =
             innerOutput
 
         def innerCleanable = innerOutput.getRunnerOutputCleanableOutputs
+
         def stagingResult =
             stageWorkspaceOutputsInPlace stagingDir declaredOutputs declaredOutputs innerCleanable
 
@@ -497,12 +509,14 @@ export def stagingDirNsRunner: Runner =
             def err = match stagingResult
                 Fail e -> e
                 Pass _ -> unreachable "require Pass else guarantees Fail here"
+
             def _ = cleanup Unit
 
             innerOutput
             | setRunnerOutputRunnerError (Some err)
 
         def existingPostFinalize = stagedOutputs.getStagedOutputsPostFinalize
+
         def postFinalize preparedItems =
             def _ = existingPostFinalize preparedItems
             def _ = cleanup Unit
@@ -550,13 +564,28 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some runnerError)
 
         def mountOpsResult =
-            mkMountOps (RunnerInput label command visible environment directory stdin res prefix record isatty fnInputs fnOutputs)
+            mkMountOps (
+                RunnerInput
+                label
+                command
+                visible
+                environment
+                directory
+                stdin
+                res
+                prefix
+                record
+                isatty
+                fnInputs
+                fnOutputs
+            )
 
         require Pass mountOps = mountOpsResult
         else
             def runnerError = match mountOpsResult
                 Fail e -> e
                 Pass _ -> unreachable "require Pass else guarantees Fail here"
+
             def _ = markJobSetupFailure job runnerError
 
             RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some runnerError)

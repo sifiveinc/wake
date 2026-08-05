@@ -225,7 +225,8 @@ inline size_t reserve_tuple6() { return reserve_tuple2() + reserve_tuple5(); }
 
 }  // namespace
 
-// prim "stage_outputs" pathsLines stagingBase stageFromDir -> Result (Pair String (List Entry)) String
+// prim "stage_outputs" pathsLines stagingBase stageFromDir -> Result (Pair String (List Entry))
+// String
 //
 // WHEN:    Post-exec. Runners (workspaceRunner, fuseRunner, stagingDirNsRunner) call this
 //          after a job finishes to snapshot declared outputs for hashing + CAS ingest.
@@ -405,9 +406,8 @@ static PRIMTYPE(type_stage_visible_inputs) {
   Data::typeResult.clone(result);
   result[0].unify(Data::typeUnit);
   result[1].unify(Data::typeString);
-  return args.size() == 3 && args[0]->unify(Data::typeString) &&
-         args[1]->unify(Data::typeString) && args[2]->unify(Data::typeString) &&
-         out->unify(result);
+  return args.size() == 3 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
+         args[2]->unify(Data::typeString) && out->unify(result);
 }
 
 static PRIMFN(prim_stage_visible_inputs) {
@@ -454,6 +454,6 @@ static PRIMFN(prim_stage_visible_inputs) {
 
 void prim_register_stage(PrimMap& pmap) {
   prim_register(pmap, "stage_outputs", prim_stage_outputs, type_stage_outputs, PRIM_IMPURE);
-  prim_register(pmap, "stage_visible_inputs", prim_stage_visible_inputs,
-                type_stage_visible_inputs, PRIM_IMPURE);
+  prim_register(pmap, "stage_visible_inputs", prim_stage_visible_inputs, type_stage_visible_inputs,
+                PRIM_IMPURE);
 }

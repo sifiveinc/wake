@@ -588,8 +588,8 @@ static PRIMFN(prim_cas_alloc_staging_dir) {
   }
   auto result = store->alloc_staging_dir(prefix->c_str());
   if (!result) {
-    std::string msg = "Failed to allocate CAS staging directory: " +
-                      cas::cas_error_to_string(result.error());
+    std::string msg =
+        "Failed to allocate CAS staging directory: " + cas::cas_error_to_string(result.error());
     runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
     RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, msg)));
   }
@@ -617,8 +617,8 @@ static PRIMFN(prim_cas_remove_staging_dir) {
   }
   auto result = store->remove_staging_dir(path->c_str());
   if (!result) {
-    std::string msg = "Failed to remove CAS staging directory: " +
-                      cas::cas_error_to_string(result.error());
+    std::string msg =
+        "Failed to remove CAS staging directory: " + cas::cas_error_to_string(result.error());
     runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
     RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, msg)));
   }
