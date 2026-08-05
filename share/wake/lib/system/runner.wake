@@ -423,6 +423,11 @@ def stageVisibleInputs (stagingDir: String) (visibles: List Path): Result Unit E
 
 # Runs a job in a private copy of its declared inputs, then stages declared outputs directly
 # from that private tree. This avoids a FUSE daemon and keeps concurrent Wake runs isolated.
+#
+# Only explicit/constant `FnOutputs` (e.g. `setPlanFnOutputs`) is supported. `setPlanFilterOutputs`
+# silently returns no outputs here (`filter f Nil = Nil`), and since the staging root is deleted
+# after finalization, undeclared outputs are lost, not just unpublished. Use `workspaceRunner`/
+# `fuseRunner` for filter-based `FnOutputs`.
 export def stagingDirNsRunner: Runner =
     def fuse = "{wakePath}/wakebox"
 
@@ -451,13 +456,24 @@ export def stagingDirNsRunner: Runner =
 
             RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some err)
 
+        # This runner disables FUSE tracking, so `jsonInputs` is always empty; conservatively
+        # report every visible as an input instead (like `localRunner`) to avoid unconditional
+        # cache hits. Pass `identity` inward as `FnInputs` (no-op) and call the caller's real
+        # `FnInputs` exactly once out here against the full visible set.
+        def visiblePaths = input.getRunnerInputVisible | map getPathName
         def declaredOutputs = input.getRunnerInputFnOutputs Nil
-        def innerInput = input | setRunnerInputFnOutputs (\_ Nil)
+        def innerInput =
+            input
+            | setRunnerInputFnOutputs (\_ Nil)
+            | setRunnerInputFnInputs identity
         def plan =
             makeJSONRunnerPlan fuse
             | setJSONRunnerPlanMkMountOps (stagingMountOps stagingDir)
         def (Runner _ innerRun) = makeJSONRunner plan
-        def innerOutput = innerRun job innerInput
+        def reportedInputs = input.getRunnerInputFnInputs visiblePaths
+        def innerOutput =
+            innerRun job innerInput
+            | setRunnerOutputInputs reportedInputs
 
         require None = innerOutput.getRunnerOutputRunnerError
         else
