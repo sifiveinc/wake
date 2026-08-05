@@ -528,12 +528,9 @@ static void cleanup_stale_staging(const std::string &staging_dir) {
 //   live file in the window where another wake could race.
 //
 // From this it follows that: a hash present on disk with no *live* (deleted=0) `files`
-// row is truly dead. `files` rows aren't dropped when their producing job is GC'd --
-// they persist so `wake --clean` can still find and unlink them later -- so the liveness
-// check this routine relies on (see sql_get_dead_hashes) is driven by the `deleted` flag,
-// not row presence. That flag is kept accurate by `mark_stale_path_files`, which flips it
-// to 1 for any other row at a path as soon as that path is rematerialized under a new
-// (hash, type, mode) (see `Database::add_hash`/`Database::reuse_job`).
+// is truly dead. Both `delete_stale_files` (DB side) and this routine
+// (filesystem side) rely on that. Inverting the write order (blob-before-row)
+// or clearing run_files before finish_job completes would break both.
 static bool gc_dead_cas_blobs(cas::Cas &cas, Database &db) {
   bool pass = true;
   // Grab list of hashes in CAS.

@@ -391,12 +391,10 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_insert_log =
       "insert into log(job_id, descriptor, seconds, output)"
       " values(?, ?, ?, ?)";
-  // The `where deleted=1` on the upsert's update branch (and on sql_reset_deleted below) is load-
-  // bearing, not just a no-op guard: it makes sqlite3_changes() report 0 whenever the row was
+  // The `where deleted=1` on the upsert's on-conflict branch (and on sql_reset_deleted below) is
+  // load-bearing, not just a no-op guard: it makes sqlite3_changes() report 0 whenever the row was
   // already live at this exact (path, hash, type, mode), which callers use to skip the far more
-  // expensive mark_stale_path_files scan in that (common, steady-state) case -- see add_hash/
-  // reuse_job. Any other row's staleness was already correctly resolved the last time this row's
-  // deleted flag went to 0, so skipping is safe, not just faster.
+  // expensive mark_stale_path_files scan in that idempotent case -- see add_hash/reuse_job.
   const char *sql_insert_file =
       "insert into files(hash, type, mode, path, deleted) values (?, ?, ?, ?, 0)"
       " on conflict(hash, type, mode, path) do update set deleted=0 where deleted=1";
@@ -406,10 +404,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "insert or ignore into run_files(run_id, file_id)"
       " values(?, (select file_id from files where path=? and hash=? and type=? and mode=?))";
   // When a path is (re)materialized, any other files row for that same path is stale -- the
-  // workspace can only ever hold one file at that path, so a different (hash, type, mode) there
-  // now describes content that is no longer on disk. Mark it deleted rather than removing the
-  // row, so cheap DB-only bookkeeping (e.g. CAS blob liveness) stays correct without needing to
-  // eagerly unlink anything from disk.
+  // filesystem can only ever save one file to that path, so a different (hash, type, mode) at that
+  // path now describes content that is no longer on disk.  Mark it deleted rather than removing
+  // the row, so cheap DB-only bookkeeping (e.g. CAS blob liveness) stays correct.
   const char *sql_mark_stale_path_files =
       "update files set deleted=1 where path=? and not (hash=? and type=? and mode=?)";
   const char *sql_get_log =
@@ -465,8 +462,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "                  filetree.access=2)"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=jobs.job_id) <= ?1";
   // A deleted=1 row never owns the physical file at its path -- some other (live) row does, or
-  // nothing does -- so it's pure bookkeeping cruft once no filetree entry still references it.
-  // Safe to drop outright (no unlink needed); the filetree join guards the FK from files(file_id).
+  // nothing in Wake does -- and once no `filetree` entry references it the metadata which had been
+  // saved for Job bookkeeping is likewise no longer needed.
   const char *sql_delete_stale_files =
       "delete from files"
       " where deleted = 1"
@@ -504,10 +501,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " INNER JOIN filetree r"
       " ON l.file_id = r.file_id"
       " WHERE l.access = 2 AND r.access = 0";
-  // Every file we still have a live (non-deleted) record for is a candidate output to remove,
-  // *unless* it's currently claimed as a source/claim registration's output -- those must survive
-  // a clean. A file's output job can be long gone (superseded, GC'd) by the time this runs; unlike
-  // the old filetree-joined query, that no longer excludes it, so stranded outputs are included.
+  // Every file *except* those owned by a source/claim job is a candidate output to remove in the
+  // course of `wake --clean`.  However, in some cases (e.g. jobs with nondeterministic outputs)
+  // the `files` entry can outlive its originating job, so `files` needs to be the outer table.
   const char *sql_get_output_files =
       "select distinct f.path"
       " from files f"
@@ -1286,9 +1282,8 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
 
     // Reusing this job re-materializes file.path from CAS, so any other files row for that
     // path (e.g. from a job that superseded this one and was itself since reaped) is now stale.
-    // Skip the scan entirely when this row was already live (deleted=0): siblings were already
-    // resolved the last time this exact row went live, so most cache-hit re-runs of an
-    // already-stable path can avoid the scan altogether. See sql_reset_deleted.
+    // We can skip the scan entirely when this row was already live (deleted=0) since the other
+    // rows at that path would have been marked stale when this was originally added/updated.
     if (file_row_changed) {
       bind_string(why, imp->mark_stale_path_files, 1, file.path);
       bind_string(why, imp->mark_stale_path_files, 2, file.hash);
@@ -1552,7 +1547,6 @@ std::vector<std::string> Database::clear_jobs() {
   // Now clear everything.
   single_step(why, imp->remove_all_jobs, imp->debugdb);
   single_step(why, imp->remove_output_files, imp->debugdb);
-  // remove_all_jobs just emptied filetree, so every deleted=1 row is now unreferenced.
   single_step(why, imp->delete_stale_files, imp->debugdb);
 
   end_txn();
@@ -1585,7 +1579,6 @@ bool Database::clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string
 
   single_step(why, imp->remove_all_jobs, imp->debugdb);
   single_step(why, imp->remove_output_files, imp->debugdb);
-  // remove_all_jobs just emptied filetree, so every deleted=1 row is now unreferenced.
   single_step(why, imp->delete_stale_files, imp->debugdb);
 
   // Delete files while still holding write lock. This prevents new
@@ -1739,8 +1732,8 @@ void Database::add_hash(const std::string &file, const std::string &type, const 
   bind_integer(why, imp->claim_file, 5, mode);
   single_step(why, imp->claim_file, imp->debugdb);
 
-  // Skip the scan when this exact (path, hash, type, mode) was already the live row -- any
-  // sibling was already marked stale the last time this row went live. See sql_insert_file.
+  // We can skip the scan entirely when this row was already live (deleted=0) since the other
+  // rows at that path would have been marked stale when this was originally added/updated.
   if (file_row_changed) {
     bind_string(why, imp->mark_stale_path_files, 1, file);
     bind_string(why, imp->mark_stale_path_files, 2, hash);
