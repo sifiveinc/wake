@@ -413,10 +413,14 @@ export def writeWakeboxSpec (spec: WakeboxSpec) (indent: Integer) (filePath: Str
     f spec indent filePath
     | rmapError makeError
 
-def stagingMountOps (stagingDir: String) (_input: RunnerInput): Result (List WakeboxMountOp) Error =
+# Produces the sandbox mount ops for a staging-dir based runner: just a single
+# bind mount of `stagingDir` onto the sandbox root (".")
+export def stagingMountOps (stagingDir: String) (_input: RunnerInput): Result (List WakeboxMountOp) Error =
     Pass (WakeboxBindOp stagingDir "." False, Nil)
 
-def stageVisibleInputs (stagingDir: String) (visibles: List Path): Result Unit Error =
+# Copies each visible input `Path` into `stagingDir`, preserving its relative
+# workspace path, so a job can run against a private snapshot of its inputs.
+export def stageVisibleInputs (stagingDir: String) (visibles: List Path): Result Unit Error =
     def raw workspace stagingDir relPaths = prim "stage_visible_inputs"
 
     raw workspace stagingDir (visibles | map getPathName | catWith "\n")
