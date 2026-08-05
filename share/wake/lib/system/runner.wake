@@ -432,25 +432,32 @@ export def stagingDirNsRunner: Runner =
     def fuse = "{wakePath}/wakebox"
 
     def run (job: Job) (input: RunnerInput): RunnerOutput =
-        def stagingDirResult = casAllocStagingDir "job.{input.getRunnerInputPrefix}"
+        def stagingDirResult = casAllocStagingDir "job-{input.getRunnerInputPrefix}"
 
         require Pass stagingDir = stagingDirResult
         else
-            def err = stagingDirResult | getWhenPass "Failed to allocate staging directory".makeError
+            def err = match stagingDirResult
+                Fail e -> e
+                Pass _ -> unreachable "require Pass else guarantees Fail here"
             def _ = markJobSetupFailure job err
 
             RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some err)
 
         def cleanup _ =
-            def _ = casRemoveStagingDir stagingDir
+            match (casRemoveStagingDir stagingDir)
+                Pass _ -> Unit
+                Fail err ->
+                    def _ = printlnLevel logWarning "Failed to remove staging dir {stagingDir}: {err.getErrorCause}"
 
-            Unit
+                    Unit
 
         def stageResult = stageVisibleInputs stagingDir input.getRunnerInputVisible
 
         require Pass _ = stageResult
         else
-            def err = stageResult | getWhenPass "Failed to stage visible inputs".makeError
+            def err = match stageResult
+                Fail e -> e
+                Pass _ -> unreachable "require Pass else guarantees Fail here"
             def _ = cleanup Unit
             def _ = markJobSetupFailure job err
 
@@ -487,7 +494,9 @@ export def stagingDirNsRunner: Runner =
 
         require Pass (Pair stagedOutputs cleanableOutputs) = stagingResult
         else
-            def err = stagingResult | getWhenPass "Failed to stage declared outputs".makeError
+            def err = match stagingResult
+                Fail e -> e
+                Pass _ -> unreachable "require Pass else guarantees Fail here"
             def _ = cleanup Unit
 
             innerOutput
@@ -545,7 +554,9 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
 
         require Pass mountOps = mountOpsResult
         else
-            def runnerError = mountOpsResult | getWhenPass "Failed to create wakebox mount operations".makeError
+            def runnerError = match mountOpsResult
+                Fail e -> e
+                Pass _ -> unreachable "require Pass else guarantees Fail here"
             def _ = markJobSetupFailure job runnerError
 
             RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some runnerError)
