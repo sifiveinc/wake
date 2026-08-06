@@ -206,6 +206,13 @@ struct Formatter {
     return fmt_try_else(DocFitsAllPred(), fits_formatter, else_formatter);
   }
 
+  template <class IFMT, class EFMT>
+  Formatter<SeqAction<
+      Action, IfElseAction<FmtPredicate<TryPredicate<DocFitsWeaklyFlatPred, IFMT>>, IFMT, EFMT>>>
+  fmt_if_fits_weakly_flat(IFMT fits_formatter, EFMT else_formatter) {
+    return fmt_try_else(DocFitsWeaklyFlatPred(), fits_formatter, else_formatter);
+  }
+
   template <class FMT>
   Formatter<SeqAction<Action, WhileAction<FmtPredicate<std::initializer_list<cst_id_t>>, FMT>>>
   fmt_while(std::initializer_list<cst_id_t> ids, FMT formatter) {

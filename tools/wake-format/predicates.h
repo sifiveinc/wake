@@ -40,6 +40,21 @@ class DocFitsAllPred {
   }
 };
 
+// Accepts a doc that fits on the current line and puts no *content* on a following line.
+//
+// A single trailing newline is allowed because it carries no content. That is how a trailing
+// comment is emitted, so 'def x = y # comment' stays on one line while 'def x = f\na\nb' does not.
+// This is the "weakly flat" notion of is_weakly_flat(), measured from the doc alone.
+class DocFitsWeaklyFlatPred {
+ public:
+  bool operator()(const wcl::doc_builder& builder, ctx_t ctx, wcl::doc doc) {
+    if (ctx.sub(builder)->last_width() + doc->first_width() > MAX_COLUMN_WIDTH) {
+      return false;
+    }
+    return !doc->has_newline() || (doc->newline_count() == 1 && doc->last_width() == 0);
+  }
+};
+
 // fmt_if() style predicates
 class IsWSNLCPredicate {
  public:

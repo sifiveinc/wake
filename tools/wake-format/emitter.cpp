@@ -66,6 +66,36 @@ static std::set<memo_map_t*> __memo_maps__ = {};
   }
 
 static inline bool requires_nl(cst_id_t type) { return type == CST_BLOCK || type == CST_REQUIRE; }
+
+// An expression placed on the same line as its '=' may only span multiple lines if it indents
+// those lines itself. Otherwise its continuation lines land at the *parent's* indentation, which
+// terminates the definition early (a blockdef is NL terminated) and emits unparsable wake.
+//
+// Ex: 'def x = ! f a b' exploding the apply gives the following, where the NL after 'f' ends the
+// def and 'a'/'b' become statements of the enclosing block.
+//
+//   '''
+//   def x = ! f
+//   a
+//   b
+//   '''
+//
+// CST_PAREN and CST_MATCH nest their own continuation lines, so they are safe to grow while
+// sharing a line. No other expression kind is.
+static inline bool nests_own_continuation(cst_id_t type) {
+  return type == CST_PAREN || type == CST_MATCH;
+}
+
+// These are held to a stricter standard than correctness requires: they must be entirely free of
+// newlines to share a line, so an application or binop carrying even a trailing comment is given a
+// line of its own.
+//
+// Ex: 'def r_ = join2 be r # fast if be=Tip' becomes
+//
+//   '''
+//   def r_ =
+//       join2 be r # fast if be=Tip
+//   '''
 static inline bool requires_fits_all(cst_id_t type) {
   return type == CST_APP || type == CST_BINARY || type == CST_LITERAL || type == CST_INTERPOLATE ||
          type == CST_IF;
@@ -538,10 +568,12 @@ auto Emitter::rhs_fmt(bool always_newline) {
     // Always newline when requested. Used for top-level defs.
    .pred(ConstPredicate(always_newline), full_fmt)
 
-    // if our hand hand hasn't yet been forced then decide based on how well RHS fits
+    // if our hand hand hasn't yet been forced then decide based on how well RHS fits.
+    // A RHS that indents its own continuation lines only needs its first line to fit. Everything
+    // else must not grow a continuation line at all, or be pushed to a nested line of its own.
+   .pred(nests_own_continuation, fmt().fmt_if_fits_first(flat_fmt, full_fmt))
    .pred(requires_fits_all, fmt().fmt_if_fits_all(flat_fmt, full_fmt))
-   .pred_fits_first(flat_fmt)
-   .otherwise(full_fmt));
+   .otherwise(fmt().fmt_if_fits_weakly_flat(flat_fmt, full_fmt)));
   // clang-format on
 }
 

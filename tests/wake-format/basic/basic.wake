@@ -1499,3 +1499,34 @@ def a = a |< b |< c
 def a = a |> b |< c 
 def a = a |< b |> c 
 def a = a | b |> c | c |< d 
+
+# A RHS sharing the '=' line may only grow extra lines if it indents them itself. Unary, lambda
+# and ascribe do not, so these must all move their body to a nested line instead of leaving
+# continuation lines at the same column as 'def'.
+def unaryRhs Unit =
+    def value = ! contains (matches `^${quote _}.*` projectArtifactNameaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) waivedProjectNameLista
+    def other = 5
+
+    value
+
+def lambdaRhs Unit =
+    def value = \project contains (matches `^${quote _}.*` projectArtifactNameaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) waivedProjectNameLista
+    def other = 5
+
+    value
+
+def ascribeRhs Unit =
+    def value = contains (matches `^${quote _}.*` projectArtifactNameaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) waivedProjectNameLista: Boolean
+    def other = 5
+
+    value
+
+# match nests its own cases, so it is allowed to stay on the '=' line and grow.
+def matchRhs Unit =
+    def value = match (someRatherLongFunctionCall argumentOne argumentTwo)
+        Some y -> y
+        None -> 0
+
+    def other = 5
+
+    value
