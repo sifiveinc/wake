@@ -527,8 +527,8 @@ static void cleanup_stale_staging(const std::string &staging_dir) {
 //   set "reachable from files via filetree or run_files" is never empty for a
 //   live file in the window where another wake could race.
 //
-// From this it follows that: a hash present on disk but absent from `files`
-// is truly dead. Both `delete_orphan_files` (DB side) and this routine
+// From this it follows that: a hash present on disk with no *live* (deleted=0) `files`
+// is truly dead. Both `delete_stale_files` (DB side) and this routine
 // (filesystem side) rely on that. Inverting the write order (blob-before-row)
 // or clearing run_files before finish_job completes would break both.
 static bool gc_dead_cas_blobs(cas::Cas &cas, Database &db) {
