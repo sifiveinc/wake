@@ -464,10 +464,16 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   // A deleted=1 row never owns the physical file at its path -- some other (live) row does, or
   // nothing in Wake does -- and once no `filetree` entry references it the metadata which had been
   // saved for Job bookkeeping is likewise no longer needed.
+  //
+  // This doesn't attempt to exclude the current run from the is-active-Path check of `run_files`
+  // as this is meant to only be cleanup and should specifically *not* break Paths unexpectedly.
+  // Because of that, when this is called in functions intended for *end-of-run* cleanup, it should
+  // only be called after `finish_run()` or some other means of clearing out the current run.
   const char *sql_delete_stale_files =
       "delete from files"
-      " where deleted = 1"
-      " and not exists (select 1 from filetree where filetree.file_id = files.file_id)";
+      "  where deleted = 1"
+      "  and file_id not in (select file_id from run_files)"
+      "  and not exists (select 1 from filetree where filetree.file_id = files.file_id)";
   const char *sql_delete_dups =
       "delete from stats where stat_id in"
       " (select stat_id from (select hashcode, count(*) as num, max(stat_id) as keep from stats "
