@@ -264,6 +264,11 @@ def finalizeJob job inputs outputs cleanable reality runnerError =
     (\_ primJobFinish job inputs.implode preparedOutputStrings.implode cleanable.implode reality)
     clResult
 
+def isSourceOrClaimJob (cmd: List String): Boolean = match cmd
+    prefix, _ if prefix ==* sourceJobCommandPrefix -> True
+    prefix, _ if prefix ==* claimJobCommandPrefix -> True
+    _ -> False
+
 def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo stdout stderr label isatty: Job =
     def hash = jobSignature cmd res finputs foutputs keep
 
@@ -331,10 +336,14 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
         | map parseCachedPathInfo
 
     match cache
-        Pair (job, _) _ -> match (materializeCachedOutputs cachedOutputs)
-            Pass _ -> job
-            Fail err ->
-                panic "Failed to materialize outputs for {str job.getJobId} '{job.getJobDescription}': {err.getErrorCause}"
+        Pair (job, _) _ ->
+            # Keep source and claim files unchanged on cache hits.
+            if isSourceOrClaimJob cmd then
+                job
+            else match (materializeCachedOutputs cachedOutputs)
+                Pass _ -> job
+                Fail err ->
+                    panic "Failed to materialize outputs for {str job.getJobId} '{job.getJobDescription}': {err.getErrorCause}"
         # Cache miss, or -c mode (TODO: determine checking is needed, compare output paths!)
         Pair Nil _ -> build Unit
 

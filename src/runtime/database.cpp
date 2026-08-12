@@ -52,7 +52,6 @@
 #include "util/mkdir_parents.h"
 #include "value.h"
 #include "wcl/iterator.h"
-#include "wcl/tracing.h"
 
 #define VISIBLE 0
 #define INPUT 1
@@ -77,6 +76,7 @@ struct Database::detail {
   sqlite3_stmt *insert_file;
   sqlite3_stmt *reset_deleted;
   sqlite3_stmt *claim_file;
+  sqlite3_stmt *mark_stale_path_files;
   sqlite3_stmt *get_log;
   sqlite3_stmt *replay_log;
   sqlite3_stmt *get_tree;
@@ -87,9 +87,8 @@ struct Database::detail {
   sqlite3_stmt *delete_overlap;
   sqlite3_stmt *find_prior;
   sqlite3_stmt *delete_prior;
-  sqlite3_stmt *collect_stranded_outputs;
   sqlite3_stmt *delete_jobs;
-  sqlite3_stmt *delete_orphan_files;
+  sqlite3_stmt *delete_stale_files;
   sqlite3_stmt *delete_dups;
   sqlite3_stmt *delete_stats;
   sqlite3_stmt *revtop_order;
@@ -140,6 +139,7 @@ struct Database::detail {
         insert_file(0),
         reset_deleted(0),
         claim_file(0),
+        mark_stale_path_files(0),
         get_log(0),
         replay_log(0),
         get_tree(0),
@@ -150,9 +150,8 @@ struct Database::detail {
         delete_overlap(0),
         find_prior(0),
         delete_prior(0),
-        collect_stranded_outputs(0),
         delete_jobs(0),
-        delete_orphan_files(0),
+        delete_stale_files(0),
         delete_dups(0),
         delete_stats(0),
         revtop_order(0),
@@ -392,14 +391,24 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_insert_log =
       "insert into log(job_id, descriptor, seconds, output)"
       " values(?, ?, ?, ?)";
+  // The `where deleted=1` on the upsert's on-conflict branch (and on sql_reset_deleted below) is
+  // load-bearing, not just a no-op guard: it makes sqlite3_changes() report 0 whenever the row was
+  // already live at this exact (path, hash, type, mode), which callers use to skip the far more
+  // expensive mark_stale_path_files scan in that idempotent case -- see add_hash/reuse_job.
   const char *sql_insert_file =
       "insert into files(hash, type, mode, path, deleted) values (?, ?, ?, ?, 0)"
-      " on conflict(hash, type, mode, path) do update set deleted=0";
+      " on conflict(hash, type, mode, path) do update set deleted=0 where deleted=1";
   const char *sql_reset_deleted =
-      "update files set deleted=0 where path=? and hash=? and type=? and mode=?";
+      "update files set deleted=0 where path=? and hash=? and type=? and mode=? and deleted=1";
   const char *sql_claim_file =
       "insert or ignore into run_files(run_id, file_id)"
       " values(?, (select file_id from files where path=? and hash=? and type=? and mode=?))";
+  // When a path is (re)materialized, any other files row for that same path is stale -- the
+  // filesystem can only ever save one file to that path, so a different (hash, type, mode) at that
+  // path now describes content that is no longer on disk.  Mark it deleted rather than removing
+  // the row, so cheap DB-only bookkeeping (e.g. CAS blob liveness) stays correct.
+  const char *sql_mark_stale_path_files =
+      "update files set deleted=1 where path=? and not (hash=? and type=? and mode=?)";
   const char *sql_get_log =
       "select output from log where job_id=? and descriptor=? order by log_id";
   const char *sql_replay_log = "select descriptor, output from log where job_id=? order by log_id";
@@ -446,33 +455,25 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "  and j2.job_id<>?2"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=j2.job_id) <= ?1"
       ")";
-  // Finds output files that are safe to delete from disk after their database rows are removed.
-  // A row qualifies when it is orphaned -- no surviving job references its file_id
-  // (filetree) and no concurrent run protects it (run_files) -- AND no *other* row for the same
-  // path is still referenced. The two path-level guards are what make the unlink safe: because a
-  // path can have several files rows, they preserve a path re-output in place under a new hash and
-  // stop us unlinking a live, tracked file that merely shares a path with an orphaned old-hash row.
-  const char *sql_collect_stranded_outputs =
-      "select distinct f.path, f.type from files f"
-      " where f.file_id not in (select file_id from filetree)"
-      "   and f.file_id not in (select file_id from run_files)"
-      "   and f.path not in"
-      "       (select f2.path from files f2 join filetree ft on ft.file_id = f2.file_id)"
-      "   and f.path not in"
-      "       (select f3.path from files f3 join run_files rf on rf.file_id = f3.file_id)";
   const char *sql_delete_jobs =
       "delete from jobs where keep=0"
       "  and not exists (select 1 from filetree where"
       "                  filetree.job_id=jobs.job_id and"
       "                  filetree.access=2)"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=jobs.job_id) <= ?1";
-  // Like sql_collect_stranded_outputs but without the path guards: this only drops DB rows, is
-  // never used to unlink from disk, so it needs no protection against clobbering a path a live row
-  // owns.
-  const char *sql_delete_orphan_files =
+  // A deleted=1 row never owns the physical file at its path -- some other (live) row does, or
+  // nothing in Wake does -- and once no `filetree` entry references it the metadata which had been
+  // saved for Job bookkeeping is likewise no longer needed.
+  //
+  // This doesn't attempt to exclude the current run from the is-active-Path check of `run_files`
+  // as this is meant to only be cleanup and should specifically *not* break Paths unexpectedly.
+  // Because of that, when this is called in functions intended for *end-of-run* cleanup, it should
+  // only be called after `finish_run()` or some other means of clearing out the current run.
+  const char *sql_delete_stale_files =
       "delete from files"
-      "  where file_id not in (select file_id from filetree)"
-      "  and   file_id not in (select file_id from run_files)";
+      "  where deleted = 1"
+      "  and file_id not in (select file_id from run_files)"
+      "  and not exists (select 1 from filetree where filetree.file_id = files.file_id)";
   const char *sql_delete_dups =
       "delete from stats where stat_id in"
       " (select stat_id from (select hashcode, count(*) as num, max(stat_id) as keep from stats "
@@ -506,22 +507,29 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       " INNER JOIN filetree r"
       " ON l.file_id = r.file_id"
       " WHERE l.access = 2 AND r.access = 0";
+  // Every file *except* those owned by a source/claim job is a candidate output to remove in the
+  // course of `wake --clean`.  However, in some cases (e.g. jobs with nondeterministic outputs)
+  // the `files` entry can outlive its originating job, so `files` needs to be the outer table.
   const char *sql_get_output_files =
-      "select f.path"
-      " from filetree ft join files f on f.file_id=ft.file_id join jobs j on ft.job_id=j.job_id"
-      " where ft.access = 2"
-      " and f.deleted = 0"
-      " and substr(cast(j.commandline as varchar), 1, 8) != '<source>'"
-      " and substr(cast(j.commandline as varchar), 1, 7) != '<claim>'";
+      "select distinct f.path"
+      " from files f"
+      " where f.deleted = 0"
+      " and not exists ("
+      "   select 1 from filetree ft join jobs j on ft.job_id=j.job_id"
+      "   where ft.file_id = f.file_id"
+      "   and ft.access = 2"
+      "   and (substr(cast(j.commandline as varchar), 1, 8) = '<source>'"
+      "        or substr(cast(j.commandline as varchar), 1, 7) = '<claim>')"
+      " )";
   const char *sql_remove_output_files =
       "delete from files"
-      " where file_id in ("
-      "   select f.file_id"
-      "   from filetree ft join files f on f.file_id=ft.file_id join jobs j on ft.job_id=j.job_id"
-      "   where ft.access = 2"
-      "   and f.deleted = 0"
-      "   and substr(cast(j.commandline as varchar), 1, 8) != '<source>'"
-      "   and substr(cast(j.commandline as varchar), 1, 7) != '<claim>'"
+      " where deleted = 0"
+      " and not exists ("
+      "   select 1 from filetree ft join jobs j on ft.job_id=j.job_id"
+      "   where ft.file_id = files.file_id"
+      "   and ft.access = 2"
+      "   and (substr(cast(j.commandline as varchar), 1, 8) = '<source>'"
+      "        or substr(cast(j.commandline as varchar), 1, 7) = '<claim>')"
       " )";
   const char *sql_get_all_file_paths = "select file_id, path, type, deleted from files";
   const char *sql_delete_jobs_by_dead_file =
@@ -590,6 +598,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_insert_file, insert_file);
   PREPARE(sql_reset_deleted, reset_deleted);
   PREPARE(sql_claim_file, claim_file);
+  PREPARE(sql_mark_stale_path_files, mark_stale_path_files);
   PREPARE(sql_get_log, get_log);
   PREPARE(sql_replay_log, replay_log);
   PREPARE(sql_get_tree, get_tree);
@@ -600,9 +609,8 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_delete_overlap, delete_overlap);
   PREPARE(sql_find_prior, find_prior);
   PREPARE(sql_delete_prior, delete_prior);
-  PREPARE(sql_collect_stranded_outputs, collect_stranded_outputs);
   PREPARE(sql_delete_jobs, delete_jobs);
-  PREPARE(sql_delete_orphan_files, delete_orphan_files);
+  PREPARE(sql_delete_stale_files, delete_stale_files);
   PREPARE(sql_delete_dups, delete_dups);
   PREPARE(sql_delete_stats, delete_stats);
   PREPARE(sql_revtop_order, revtop_order);
@@ -664,6 +672,7 @@ void Database::close() {
   FINALIZE(insert_file);
   FINALIZE(reset_deleted);
   FINALIZE(claim_file);
+  FINALIZE(mark_stale_path_files);
   FINALIZE(get_log);
   FINALIZE(replay_log);
   FINALIZE(get_tree);
@@ -674,9 +683,8 @@ void Database::close() {
   FINALIZE(delete_overlap);
   FINALIZE(find_prior);
   FINALIZE(delete_prior);
-  FINALIZE(collect_stranded_outputs);
   FINALIZE(delete_jobs);
-  FINALIZE(delete_orphan_files);
+  FINALIZE(delete_stale_files);
   FINALIZE(delete_dups);
   FINALIZE(delete_stats);
   FINALIZE(revtop_order);
@@ -842,40 +850,6 @@ static std::string rip_column(sqlite3_stmt *stmt, int col) {
                      sqlite3_column_bytes(stmt, col));
 }
 
-static std::vector<std::pair<std::string, std::string>> collect_stranded_output_files(
-    const char *why, sqlite3_stmt *stmt, bool debug) {
-  std::vector<std::pair<std::string, std::string>> stranded;
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
-    auto path = rip_column(stmt, 0);
-    auto type = rip_column(stmt, 1);
-    stranded.emplace_back(std::move(path), std::move(type));
-  }
-  finish_stmt(why, stmt, debug);
-  return stranded;
-}
-
-static void unlink_stranded_output_files(std::vector<std::pair<std::string, std::string>> &stranded,
-                                         const char *context) {
-  if (stranded.empty()) return;
-  // Unlink files first, deepest paths first, so parent directories can become empty.
-  std::sort(stranded.begin(), stranded.end(),
-            [](const auto &a, const auto &b) { return a.first.size() > b.first.size(); });
-  for (const auto &entry : stranded) {
-    const std::string &path = entry.first;
-    const std::string &type = entry.second;
-    if (path == "." || path.empty()) continue;
-    if (type == "directory") {
-      if (rmdir(path.c_str()) == -1 && errno != ENOENT && errno != ENOTEMPTY) {
-        wcl::log::warning("%s: rmdir(%s): %s", context, path.c_str(), strerror(errno))();
-      }
-    } else {
-      if (unlink(path.c_str()) == -1 && errno != ENOENT) {
-        wcl::log::warning("%s: unlink(%s): %s", context, path.c_str(), strerror(errno))();
-      }
-    }
-  }
-}
-
 void Database::entropy(uint64_t *key, int words) {
   const char *why = "Could not restore entropy";
   int word;
@@ -1019,17 +993,9 @@ void Database::clean() {
   bind_integer(why, imp->delete_jobs, 1, imp->gc_watermark);
   single_step("Could not clean database jobs", imp->delete_jobs, imp->debugdb);
 
-  // delete_jobs above reaps keep=0 jobs (no surviving output), cascading their filetree rows and
-  // orphaning any files they referenced; delete_orphan_files then drops those rows with no unlink,
-  // so a divergently-named output whose producing job was GC-reaped strands here. Collect before
-  // the delete, unlink after.
-  auto stranded_files =
-      collect_stranded_output_files(why, imp->collect_stranded_outputs, imp->debugdb);
-  single_step("Could not clean orphan files", imp->delete_orphan_files, imp->debugdb);
-  unlink_stranded_output_files(stranded_files, "clean");
-
   single_step("Could not clean database dups", imp->delete_dups, imp->debugdb);
   single_step("Could not clean database stats", imp->delete_stats, imp->debugdb);
+  single_step("Could not clean stale file entries", imp->delete_stale_files, imp->debugdb);
 
   end_txn();
 
@@ -1318,6 +1284,19 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
     bind_string(why, imp->reset_deleted, 3, file.type);
     bind_integer(why, imp->reset_deleted, 4, file.mode);
     single_step(why, imp->reset_deleted, imp->debugdb);
+    bool file_row_changed = sqlite3_changes(imp->db) != 0;
+
+    // Reusing this job re-materializes file.path from CAS, so any other files row for that
+    // path (e.g. from a job that superseded this one and was itself since reaped) is now stale.
+    // We can skip the scan entirely when this row was already live (deleted=0) since the other
+    // rows at that path would have been marked stale when this was originally added/updated.
+    if (file_row_changed) {
+      bind_string(why, imp->mark_stale_path_files, 1, file.path);
+      bind_string(why, imp->mark_stale_path_files, 2, file.hash);
+      bind_string(why, imp->mark_stale_path_files, 3, file.type);
+      bind_integer(why, imp->mark_stale_path_files, 4, file.mode);
+      single_step(why, imp->mark_stale_path_files, imp->debugdb);
+    }
   }
 
   end_txn();
@@ -1514,23 +1493,11 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   bind_integer(why, imp->delete_prior, 1, imp->gc_watermark);
   bind_integer(why, imp->delete_prior, 2, job);
   single_step(why, imp->delete_prior, imp->debugdb);
-  int superseded = sqlite3_changes(imp->db);
 
   // Eagerly delete jobs with overlapping outputs from completed runs
   bind_integer(why, imp->delete_overlap, 1, imp->gc_watermark);
   bind_integer(why, imp->delete_overlap, 2, job);
   single_step(why, imp->delete_overlap, imp->debugdb);
-  superseded += sqlite3_changes(imp->db);
-
-  // If either delete superseded a prior job, collect any of its output files that are now
-  // stranded (record dropped, file never overwritten) so we can unlink them after the commit.
-  // wake --clean only removes files it still has records for, so such a file would otherwise
-  // survive a clean. Skipped entirely when nothing was superseded -- the common case.
-  std::vector<std::pair<std::string, std::string>> stranded_files;
-  if (superseded > 0) {
-    stranded_files =
-        collect_stranded_output_files(why, imp->collect_stranded_outputs, imp->debugdb);
-  }
 
   // Detect if multiple jobs in this run output the same file (an error condition).
   // The run_jobs table tracks all jobs in the current run, allowing us to constrain
@@ -1555,11 +1522,6 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
     fail = true;
   }
   finish_stmt(why, imp->detect_overlap, imp->debugdb);
-
-  // Unlink the files collected above (skipped on overlap failure, since we abort below).
-  if (!fail) {
-    unlink_stranded_output_files(stranded_files, "finish_job");
-  }
 
   end_txn();
 
@@ -1591,6 +1553,7 @@ std::vector<std::string> Database::clear_jobs() {
   // Now clear everything.
   single_step(why, imp->remove_all_jobs, imp->debugdb);
   single_step(why, imp->remove_output_files, imp->debugdb);
+  single_step(why, imp->delete_stale_files, imp->debugdb);
 
   end_txn();
 
@@ -1622,6 +1585,7 @@ bool Database::clear_jobs_if_safe(wcl::function_ref<void(std::vector<std::string
 
   single_step(why, imp->remove_all_jobs, imp->debugdb);
   single_step(why, imp->remove_output_files, imp->debugdb);
+  single_step(why, imp->delete_stale_files, imp->debugdb);
 
   // Delete files while still holding write lock. This prevents new
   // builds from starting until cleanup is complete.
@@ -1663,9 +1627,6 @@ std::optional<size_t> Database::prune_to_workspace(
     bind_integer(why, imp->delete_jobs_by_dead_file, 1, file_id);
     single_step(why, imp->delete_jobs_by_dead_file, imp->debugdb);
     pruned += sqlite3_changes(imp->db);
-  }
-  if (pruned > 0) {
-    single_step("Could not clean orphan files", imp->delete_orphan_files, imp->debugdb);
   }
 
   end_txn();
@@ -1768,6 +1729,7 @@ void Database::add_hash(const std::string &file, const std::string &type, const 
   bind_integer(why, imp->insert_file, 3, mode);
   bind_string(why, imp->insert_file, 4, file);
   single_step(why, imp->insert_file, imp->debugdb);
+  bool file_row_changed = sqlite3_changes(imp->db) != 0;
 
   bind_integer(why, imp->claim_file, 1, imp->run_id);
   bind_string(why, imp->claim_file, 2, file);
@@ -1775,6 +1737,16 @@ void Database::add_hash(const std::string &file, const std::string &type, const 
   bind_string(why, imp->claim_file, 4, type);
   bind_integer(why, imp->claim_file, 5, mode);
   single_step(why, imp->claim_file, imp->debugdb);
+
+  // We can skip the scan entirely when this row was already live (deleted=0) since the other
+  // rows at that path would have been marked stale when this was originally added/updated.
+  if (file_row_changed) {
+    bind_string(why, imp->mark_stale_path_files, 1, file);
+    bind_string(why, imp->mark_stale_path_files, 2, hash);
+    bind_string(why, imp->mark_stale_path_files, 3, type);
+    bind_integer(why, imp->mark_stale_path_files, 4, mode);
+    single_step(why, imp->mark_stale_path_files, imp->debugdb);
+  }
 
   end_txn();
 }
