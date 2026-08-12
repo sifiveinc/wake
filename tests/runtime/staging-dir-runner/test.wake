@@ -1,4 +1,4 @@
-# Tests for `stagingDirNsRunner`: runs a job against a private copy of its declared
+# Tests for `stagingDirRunner`: runs a job against a private copy of its declared
 # visible inputs (no FUSE daemon), then stages declared outputs directly out of that
 # private tree.
 #
@@ -27,7 +27,7 @@ export def basicOutput Unit =
     makeExecPlan ("sh", "-c", "cat basic-in.txt > basic-out.txt", Nil) (inFile, Nil)
     | setPlanLabel "staging-dir-runner: basic"
     | setPlanFnOutputs (\_ "basic-out.txt", Nil)
-    | runJobWith stagingDirNsRunner
+    | runJobWith stagingDirRunner
     | getJobOutput
 
 export def testBasicOutput _: Result Unit Error =
@@ -45,7 +45,7 @@ export def symlinkOutput Unit =
     makeExecPlan ("sh", "-c", "ln -s symlink-in.txt symlink-out.link", Nil) (inFile, Nil)
     | setPlanLabel "staging-dir-runner: symlink"
     | setPlanFnOutputs (\_ "symlink-out.link", Nil)
-    | runJobWith stagingDirNsRunner
+    | runJobWith stagingDirRunner
     | getJobOutput
 
 export def testSymlinkOutput _: Result Unit Error =
@@ -63,7 +63,7 @@ export def nestedOutput Unit =
     Nil
     | setPlanLabel "staging-dir-runner: nested-output"
     | setPlanFnOutputs (\_ "nested-out/dir/deep.txt", Nil)
-    | runJobWith stagingDirNsRunner
+    | runJobWith stagingDirRunner
     | getJobOutput
 
 export def testNestedOutput _: Result Unit Error =
@@ -83,7 +83,7 @@ export def isolationCheck Unit =
     Nil
     | setPlanLabel "staging-dir-runner: isolation"
     | setPlanFnOutputs (\_ "isolation-out.txt", Nil)
-    | runJobWith stagingDirNsRunner
+    | runJobWith stagingDirRunner
     | getJobOutput
 
 export def testIsolation _: Result Unit Error =
@@ -103,7 +103,7 @@ export def filterInputs Unit =
     | setPlanLabel "staging-dir-runner: filter-inputs"
     | editPlanFnInputs (\_ (\files filter (matches `.*filter-a\.txt` _) files))
     | setPlanFnOutputs (\_ "filter-out.txt", Nil)
-    | runJobWith stagingDirNsRunner
+    | runJobWith stagingDirRunner
     | getJobInputs
 
 export def testFilterInputs _: Result Unit Error =
@@ -121,7 +121,7 @@ export def failingJobWithOutput Unit =
     makeExecPlan ("sh", "-c", "echo partial > failing-out.txt; exit 3", Nil) Nil
     | setPlanLabel "staging-dir-runner: failing-with-output"
     | setPlanFnOutputs (\_ "failing-out.txt", Nil)
-    | runJobWith stagingDirNsRunner
+    | runJobWith stagingDirRunner
 
 export def testFailingJobOutputStillStaged _: Result Unit Error =
     def job = failingJobWithOutput Unit
@@ -150,7 +150,7 @@ export def missingDeclaredOutput Unit =
     | setPlanLabel "staging-dir-runner: missing-declared-output"
     | setPlanFnOutputs (\_ "does-not-exist.txt", Nil)
     | setPlanShare False
-    | runJobWith stagingDirNsRunner
+    | runJobWith stagingDirRunner
     | getJobOutput
 
 export def testMissingDeclaredOutput _: Result Unit Error =
@@ -170,7 +170,7 @@ export def noOutputsJob Unit =
     | setPlanLabel "staging-dir-runner: no-outputs"
     | setPlanFnOutputs (\_ Nil)
     | setPlanShare False
-    | runJobWith stagingDirNsRunner
+    | runJobWith stagingDirRunner
 
 export def testNoOutputs _: Result Unit Error =
     def job = noOutputsJob Unit
@@ -191,7 +191,7 @@ export def filterOutputsUnsupported Unit =
     makeExecPlan ("sh", "-c", "echo unseen > filter-declared.txt", Nil) Nil
     | setPlanLabel "staging-dir-runner: filter-outputs-unsupported"
     | setPlanFilterOutputs (matches `.*\.txt`)
-    | runJobWith stagingDirNsRunner
+    | runJobWith stagingDirRunner
 
 export def testFilterOutputsUnsupported _: Result Unit Error =
     def job = filterOutputsUnsupported Unit
@@ -212,7 +212,7 @@ export def outsideWorkspaceOutput Unit =
     | setPlanLabel "staging-dir-runner: outside-workspace"
     | setPlanFnOutputs (\_ "../escape.txt", Nil)
     | setPlanShare False
-    | runJobWith stagingDirNsRunner
+    | runJobWith stagingDirRunner
     | getJobOutput
 
 export def testOutsideWorkspaceOutput _: Result Unit Error =

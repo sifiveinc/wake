@@ -155,7 +155,7 @@ wcl::result<std::vector<StageEntry>, std::string> stage_outputs(
     if (S_ISREG(st.st_mode)) {
       // In-place mode: hash directly from `source_path`; CAS ingest will atomically
       // rename the source into blobs/. Skip the per-output reflink. Used by runners
-      // whose source tree is private and ephemeral (e.g. stagingDirNsRunner).
+      // whose source tree is private and ephemeral (e.g. stagingDirRunner).
       std::string staging_path =
           in_place ? source_path : stage_root + "/" + std::to_string(next_stage_id++);
       if (!in_place) {
@@ -228,7 +228,7 @@ inline size_t reserve_tuple6() { return reserve_tuple2() + reserve_tuple5(); }
 // prim "stage_outputs" pathsLines stagingBase stageFromDir -> Result (Pair String (List Entry))
 // String
 //
-// WHEN:    Post-exec. Runners (workspaceRunner, fuseRunner, stagingDirNsRunner) call this
+// WHEN:    Post-exec. Runners (workspaceRunner, fuseRunner, stagingDirRunner) call this
 //          after a job finishes to snapshot declared outputs for hashing + CAS ingest.
 // LAYOUT:  Produces a FLAT staging tree — `stage.XXXXXX/{0,1,2,...}` numbered slots, one
 //          per output, in declaration order. Flatness decouples hashing from path nesting.
@@ -236,7 +236,7 @@ inline size_t reserve_tuple6() { return reserve_tuple2() + reserve_tuple5(); }
 //          returned `staging_path` for each file points at its original source location
 //          (under stage_from_dir). CAS ingest then atomically renames sources straight
 //          into blobs/. Safe only when the source tree is private and ephemeral
-//          (e.g. stagingDirNsRunner) — otherwise renaming files away from a shared
+//          (e.g. stagingDirRunner) — otherwise renaming files away from a shared
 //          workspace would be visible to concurrent readers.
 //
 // where Entry = (destPath, type, stagingPathOrTarget, mode, mtimeSec, mtimeNsec)
@@ -301,7 +301,7 @@ static PRIMFN(prim_stage_outputs) {
 
   // In-place mode: caller signals "no flat slot needed; hash directly from source paths"
   // by passing an empty stagingBase. CAS ingest will atomically rename the source files
-  // out of stage_from_dir into the blobs/ tree. Used by stagingDirNsRunner whose
+  // out of stage_from_dir into the blobs/ tree. Used by stagingDirRunner whose
   // stage_from_dir is a private per-job tree that gets wiped at PostFinalize anyway.
   const bool in_place = (staging_base_arg->size() == 0);
 

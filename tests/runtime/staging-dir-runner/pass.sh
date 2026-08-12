@@ -1,5 +1,5 @@
 #!/bin/sh
-# Exercises stagingDirNsRunner: a job runner that runs jobs against a private copy of
+# Exercises stagingDirRunner: a job runner that runs jobs against a private copy of
 # their declared visible inputs (no FUSE) and stages declared outputs directly out of
 # that private tree.
 

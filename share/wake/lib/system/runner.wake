@@ -238,15 +238,11 @@ def stageWorkspaceOutputsImpl (inPlace: Boolean) (stageFromDir: String) (allOutp
         require True = subset scmp normAllOutputPaths stagedOutputPaths
         else failWithError "Missing staged metadata for workspace outputs"
 
-        def cleanableOutputs =
-            if inPlace then
-                (baseCleanableOutputs ++ stagedOutputPaths)
-                | distinctBy scmp
-            else
-                (baseCleanableOutputs ++ stagedOutputPaths ++ (stagingRoot, Nil))
-                | distinctBy scmp
-
         def stagingRootOpt = if inPlace then None else Some stagingRoot
+
+        def cleanableOutputs =
+            (baseCleanableOutputs ++ stagedOutputPaths ++ optionToList stagingRootOpt)
+            | distinctBy scmp
 
         Pass (
             Pair
@@ -427,49 +423,48 @@ export def stageVisibleInputs (stagingDir: String) (visibles: List Path): Result
     | rmapError makeError
     | addErrorContext "Failed to stage visible inputs into {stagingDir}: "
 
-# Runs a job in a private copy of its declared inputs, then stages declared outputs directly
-# from that private tree. This avoids a FUSE daemon and keeps concurrent Wake runs isolated.
+# Runs a job in a private copy of its declared inputs, then stages declared outputs in place from
+# that private tree (without workspaceRunner's extra safety copy). Outputs still go through CAS
+# ingestion and workspace materialization. The job does not go through
+# FUSE workspace tracking, and keeps concurrent Wake runs isolated.
 #
-# Only explicit/constant `FnOutputs` (e.g. `setPlanFnOutputs`) is supported. `setPlanFilterOutputs`
-# silently returns no outputs here (`filter f Nil = Nil`), and since the staging root is deleted
-# after finalization, undeclared outputs are lost, not just unpublished. Use `workspaceRunner`/
-# `fuseRunner` for filter-based `FnOutputs`.
-export def stagingDirNsRunner: Runner =
-    def fuse = "{wakePath}/wakebox"
+# This runner does not detect files created by the job, so `FnOutputs` starts with an empty list.
+# Add every output that should be materialized to the workspace explicitly. `setPlanFilterOutputs`
+# alone therefore selects no outputs (`filter f Nil = Nil`). To retain unhashed side-effect files,
+# explicitly add them before applying any output filter; files not selected are discarded when the
+# private staging tree is removed.
+export def stagingDirRunner: Runner =
+    def wakebox = "{wakePath}/wakebox"
 
     def run (job: Job) (input: RunnerInput): RunnerOutput =
-        def stagingDirResult = casAllocStagingDir "job-{input.getRunnerInputPrefix}"
+        def getFailure result =
+            require Some err = result.getFail
+            else unreachable "getFailure requires a failed result"
 
-        require Pass stagingDir = stagingDirResult
-        else
-            def err = match stagingDirResult
-                Fail e -> e
-                Pass _ -> unreachable "require Pass else guarantees Fail here"
+            err
 
+        def setupFailure err =
             def _ = markJobSetupFailure job err
 
             RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some err)
 
+        def stagingDirResult = casAllocStagingDir "job-{input.getRunnerInputPrefix}"
+
+        require Pass stagingDir = stagingDirResult
+        else setupFailure (getFailure stagingDirResult)
+
         def cleanup _ = match (casRemoveStagingDir stagingDir)
             Pass _ -> Unit
             Fail err ->
-                def _ =
-                    printlnLevel logWarning "Failed to remove staging dir {stagingDir}: {err.getErrorCause}"
-
-                Unit
+                printlnLevel logWarning "Failed to remove staging dir {stagingDir}: {err.getErrorCause}"
 
         def stageResult = stageVisibleInputs stagingDir input.getRunnerInputVisible
 
         require Pass _ = stageResult
         else
-            def err = match stageResult
-                Fail e -> e
-                Pass _ -> unreachable "require Pass else guarantees Fail here"
-
             def _ = cleanup Unit
-            def _ = markJobSetupFailure job err
 
-            RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some err)
+            setupFailure (getFailure stageResult)
 
         # This runner disables FUSE tracking, so `jsonInputs` is always empty; conservatively
         # report every visible as an input instead (like `localRunner`) to avoid unconditional
@@ -487,7 +482,7 @@ export def stagingDirNsRunner: Runner =
             | setRunnerInputFnInputs identity
 
         def plan =
-            makeJSONRunnerPlan fuse
+            makeJSONRunnerPlan wakebox
             | setJSONRunnerPlanMkMountOps (stagingMountOps stagingDir)
 
         def (Runner _ innerRun) = makeJSONRunner plan
@@ -510,28 +505,22 @@ export def stagingDirNsRunner: Runner =
 
         require Pass (Pair stagedOutputs cleanableOutputs) = stagingResult
         else
-            def err = match stagingResult
-                Fail e -> e
-                Pass _ -> unreachable "require Pass else guarantees Fail here"
-
             def _ = cleanup Unit
 
             innerOutput
-            | setRunnerOutputRunnerError (Some err)
+            | setRunnerOutputRunnerError (Some (getFailure stagingResult))
 
-        def existingPostFinalize = stagedOutputs.getStagedOutputsPostFinalize
-
-        def postFinalize preparedItems =
+        def postFinalize existingPostFinalize preparedItems =
             def _ = existingPostFinalize preparedItems
             def _ = cleanup Unit
 
             Unit
 
         innerOutput
-        | setRunnerOutputOutputs (stagedOutputs | setStagedOutputsPostFinalize postFinalize)
+        | setRunnerOutputOutputs (stagedOutputs | editStagedOutputsPostFinalize postFinalize)
         | setRunnerOutputCleanableOutputs cleanableOutputs
 
-    makeRunner "staging-dir-ns" run
+    makeRunner "staging-dir" run
 
 export def defaultJSONRunnerMkMountOps (_input: RunnerInput): Result (List WakeboxMountOp) Error =
     Pass (WakeboxFuseWorkspaceOp ".", Nil)
