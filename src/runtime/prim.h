@@ -92,12 +92,10 @@ void require_fail(const char *message, unsigned size, Runtime &runtime, const Sc
   Closure *arg = static_cast<Closure *>(args[i]);
 #define RECORD(arg, i) Record *arg = static_cast<Record *>(args[i]);
 
-#define INTEGER_MPZ(arg, i)                   \
-  do {                                        \
-    HeapObject *arg = args[i];                \
-    REQUIRE(typeid(*arg) == typeid(Integer)); \
-  } while (0);                                \
-  mpz_t arg = {static_cast<Integer *>(args[i])->wrap()};
+#define INTEGER_MPZ(arg, i)        \
+  REQUIRE(is_integer(args[i]));    \
+  IntegerView arg##_view(args[i]); \
+  mpz_t arg = {arg##_view.mpz};
 
 /* Useful expressions for primitives */
 Value *alloc_order(Heap &h, int x);

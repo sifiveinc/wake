@@ -252,7 +252,7 @@ void Heap::GC(size_t requested_pads) {
 
   // Move and compact all root objects over to the new space
   for (RootRing *root = roots.next; root != &roots; root = root->next) {
-    if (!root->root) continue;
+    if (!root->root || is_small_int(root->root)) continue;
     auto out = root->root->moveto(progress.free);
     progress.free = out.free;
     root->root = out.obj;
