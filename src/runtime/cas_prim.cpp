@@ -568,6 +568,64 @@ static PRIMFN(prim_cas_blob_abs_path) {
   RETURN(claim_result(runtime.heap, true, String::claim(runtime.heap, path)));
 }
 
+static PRIMTYPE(type_cas_alloc_staging_dir) {
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeString);
+  result[1].unify(Data::typeString);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(result);
+}
+
+static PRIMFN(prim_cas_alloc_staging_dir) {
+  CASContext* ctx = static_cast<CASContext*>(data);
+  EXPECT(1);
+  STRING(prefix, 0);
+  cas::Cas* store = ctx->get_store();
+  if (!store) {
+    std::string msg = "CAS store not initialized";
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, msg)));
+  }
+  auto result = store->alloc_staging_dir(prefix->c_str());
+  if (!result) {
+    std::string msg =
+        "Failed to allocate CAS staging directory: " + cas::cas_error_to_string(result.error());
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, msg)));
+  }
+  runtime.heap.reserve(reserve_result() + String::reserve(result->size()));
+  RETURN(claim_result(runtime.heap, true, String::claim(runtime.heap, *result)));
+}
+
+static PRIMTYPE(type_cas_remove_staging_dir) {
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeUnit);
+  result[1].unify(Data::typeString);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(result);
+}
+
+static PRIMFN(prim_cas_remove_staging_dir) {
+  CASContext* ctx = static_cast<CASContext*>(data);
+  EXPECT(1);
+  STRING(path, 0);
+  cas::Cas* store = ctx->get_store();
+  if (!store) {
+    std::string msg = "CAS store not initialized";
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, msg)));
+  }
+  auto result = store->remove_staging_dir(path->c_str());
+  if (!result) {
+    std::string msg =
+        "Failed to remove CAS staging directory: " + cas::cas_error_to_string(result.error());
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, msg)));
+  }
+  runtime.heap.reserve(reserve_result() + reserve_unit());
+  RETURN(claim_result(runtime.heap, true, claim_unit(runtime.heap)));
+}
+
 // ============================================================================
 // Primitive Registration
 // ============================================================================
@@ -576,6 +634,10 @@ void prim_register_cas(CASContext* ctx, PrimMap& pmap) {
   prim_register(pmap, "cas_dir", prim_cas_dir, type_cas_dir, PRIM_PURE, ctx);
   prim_register(pmap, "cas_blob_abs_path", prim_cas_blob_abs_path, type_cas_blob_abs_path,
                 PRIM_PURE, ctx);
+  prim_register(pmap, "cas_alloc_staging_dir", prim_cas_alloc_staging_dir,
+                type_cas_alloc_staging_dir, PRIM_IMPURE, ctx);
+  prim_register(pmap, "cas_remove_staging_dir", prim_cas_remove_staging_dir,
+                type_cas_remove_staging_dir, PRIM_IMPURE, ctx);
   prim_register(pmap, "cas_materialize_item", prim_cas_materialize_item, type_cas_materialize_item,
                 PRIM_IMPURE, ctx);
   prim_register(pmap, "materialize_staged_workspace_item", prim_materialize_staged_workspace_item,

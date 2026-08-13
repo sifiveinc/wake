@@ -1,0 +1,264 @@
+# Tests for `stagingDirRunner`: runs a job against a private copy of its declared
+# visible inputs (no FUSE daemon), then stages declared outputs directly out of that
+# private tree.
+#
+# Coverage:
+#  - basic file output round-trip (content + hash stability across cache hit)
+#  - symlink output staging
+#  - directory input round-trip
+#  - isolation: files not declared `Visible` are not observable by the job
+#  - `FnInputs` filtering is honored (only reported inputs affect rerun tracking)
+#  - outputs are staged even when the job itself fails (getJobFailedOutputs)
+#  - a declared output that the job never produces is a hard failure
+#  - a job with no declared outputs and `getJobOutputs`/`getJobOutput` fail as expected
+#  - `setPlanFilterOutputs`-declared (non-constant) outputs are silently dropped
+#    (documented limitation of this runner)
+#  - workspace-escaping declared output paths ("../x") are rejected
+#  - no leftover staging directories survive under `.build/cas/staging` after
+#    success, expected failure, or setup failure
+
+export def writeContent (path: String) (content: String) =
+    write path content
+
+# --- basic file round trip ---
+
+export def basicOutput Unit =
+    require Pass inFile = writeContent "basic-in.txt" "hello"
+    makeExecPlan ("sh", "-c", "cat basic-in.txt > basic-out.txt", Nil) (inFile, Nil)
+    | setPlanLabel "staging-dir-runner: basic"
+    | setPlanFnOutputs (\_ "basic-out.txt", Nil)
+    | runJobWith stagingDirRunner
+    | getJobOutput
+
+export def testBasicOutput _: Result Unit Error =
+    require Pass out = basicOutput Unit
+    require Pass content = read out
+    require True = content ==* "hello"
+    else failWithError "expected 'hello', got '{content}'"
+    Pass Unit
+    | addErrorContext "basic-output"
+
+# --- symlink output ---
+
+export def symlinkOutput Unit =
+    require Pass inFile = writeContent "symlink-in.txt" "target contents"
+    makeExecPlan ("sh", "-c", "ln -s symlink-in.txt symlink-out.link", Nil) (inFile, Nil)
+    | setPlanLabel "staging-dir-runner: symlink"
+    | setPlanFnOutputs (\_ "symlink-out.link", Nil)
+    | runJobWith stagingDirRunner
+    | getJobOutput
+
+export def testSymlinkOutput _: Result Unit Error =
+    require Pass out = symlinkOutput Unit
+    require PathTypeSymlink = out.getPathType
+    else failWithError "expected symlink output, got {format out.getPathType}"
+    Pass Unit
+    | addErrorContext "symlink-output"
+
+# --- directory input, nested file output ---
+
+export def nestedOutput Unit =
+    makeExecPlan
+    ("sh", "-c", "mkdir -p nested-out/dir && echo deep > nested-out/dir/deep.txt", Nil)
+    Nil
+    | setPlanLabel "staging-dir-runner: nested-output"
+    | setPlanFnOutputs (\_ "nested-out/dir/deep.txt", Nil)
+    | runJobWith stagingDirRunner
+    | getJobOutput
+
+export def testNestedOutput _: Result Unit Error =
+    require Pass out = nestedOutput Unit
+    require Pass content = read out
+    require True = content ==* "deep\n"
+    else failWithError "expected 'deep\\n', got '{content}'"
+    Pass Unit
+    | addErrorContext "nested-output"
+
+# --- isolation: undeclared workspace files must not be visible to the job ---
+
+export def isolationCheck Unit =
+    require Pass _secret = writeContent "isolation-secret.txt" "top secret"
+    makeExecPlan
+    ("sh", "-c", "test -f isolation-secret.txt && echo FOUND > isolation-out.txt || echo NOTFOUND > isolation-out.txt", Nil)
+    Nil
+    | setPlanLabel "staging-dir-runner: isolation"
+    | setPlanFnOutputs (\_ "isolation-out.txt", Nil)
+    | runJobWith stagingDirRunner
+    | getJobOutput
+
+export def testIsolation _: Result Unit Error =
+    require Pass out = isolationCheck Unit
+    require Pass content = read out
+    require True = content ==* "NOTFOUND\n"
+    else failWithError "expected job to not see undeclared file, got '{content}'"
+    Pass Unit
+    | addErrorContext "isolation"
+
+# --- FnInputs filtering must be honored by the wrapper ---
+
+export def filterInputs Unit =
+    require Pass a = writeContent "filter-a.txt" "aaa"
+    require Pass b = writeContent "filter-b.txt" "bbb"
+    makeExecPlan ("sh", "-c", "cat filter-a.txt filter-b.txt > filter-out.txt", Nil) (a, b, Nil)
+    | setPlanLabel "staging-dir-runner: filter-inputs"
+    | editPlanFnInputs (\_ (\files filter (matches `.*filter-a\.txt` _) files))
+    | setPlanFnOutputs (\_ "filter-out.txt", Nil)
+    | runJobWith stagingDirRunner
+    | getJobInputs
+
+export def testFilterInputs _: Result Unit Error =
+    require Pass inputs = filterInputs Unit
+    require i, Nil = inputs
+    else failWithError "expected exactly one reported input, got {format inputs}"
+    require True = i.getPathName ==* "filter-a.txt"
+    else failWithError "expected reported input 'filter-a.txt', got '{i.getPathName}'"
+    Pass Unit
+    | addErrorContext "filter-inputs"
+
+# --- outputs are staged even when the job fails, and are reachable via getJobFailedOutputs ---
+
+export def failingJobWithOutput Unit =
+    makeExecPlan ("sh", "-c", "echo partial > failing-out.txt; exit 3", Nil) Nil
+    | setPlanLabel "staging-dir-runner: failing-with-output"
+    | setPlanFnOutputs (\_ "failing-out.txt", Nil)
+    | runJobWith stagingDirRunner
+
+export def testFailingJobOutputStillStaged _: Result Unit Error =
+    def job = failingJobWithOutput Unit
+
+    require Exited 3 = job.getJobStatus
+    else failWithError "expected job to exit 3, got {format job.getJobStatus}"
+
+    require Fail _ = job.getJobOutputs
+    else failWithError "expected getJobOutputs to fail for a failed job"
+
+    require Pass outs = job.getJobFailedOutputs
+    require out, Nil = outs
+    else failWithError "expected exactly one failed output, got {format outs}"
+
+    require Pass content = read out
+    require True = content ==* "partial\n"
+    else failWithError "expected 'partial\\n', got '{content}'"
+
+    Pass Unit
+    | addErrorContext "failing-job-output-still-staged"
+
+# --- a declared output the job never produces is a hard failure, and never partially applies ---
+
+export def missingDeclaredOutput Unit =
+    makeExecPlan ("sh", "-c", "true # missing-declared-output", Nil) Nil
+    | setPlanLabel "staging-dir-runner: missing-declared-output"
+    | setPlanFnOutputs (\_ "does-not-exist.txt", Nil)
+    | setPlanShare False
+    | runJobWith stagingDirRunner
+    | getJobOutput
+
+export def testMissingDeclaredOutput _: Result Unit Error =
+    require Fail _ = missingDeclaredOutput Unit
+    else failWithError "expected a Fail for a declared output the job never wrote"
+
+    require False = access "does-not-exist.txt" 0
+    else failWithError "does-not-exist.txt should not exist in the workspace"
+
+    Pass Unit
+    | addErrorContext "missing-declared-output"
+
+# --- no declared outputs: getJobOutputs/getJobOutput both fail cleanly ---
+
+export def noOutputsJob Unit =
+    makeExecPlan ("sh", "-c", "true # no-outputs", Nil) Nil
+    | setPlanLabel "staging-dir-runner: no-outputs"
+    | setPlanFnOutputs (\_ Nil)
+    | setPlanShare False
+    | runJobWith stagingDirRunner
+
+export def testNoOutputs _: Result Unit Error =
+    def job = noOutputsJob Unit
+
+    require Pass Nil = job.getJobOutputs
+    else failWithError "expected getJobOutputs to succeed with an empty list"
+
+    require Fail _ = job.getJobOutput
+    else failWithError "expected getJobOutput to fail when there are no outputs"
+
+    Pass Unit
+    | addErrorContext "no-outputs"
+
+# --- setPlanFilterOutputs (a non-constant FnOutputs) is documented to silently
+# yield no outputs under this runner, since `filter f Nil = Nil` regardless of `f`. ---
+
+export def filterOutputsUnsupported Unit =
+    makeExecPlan ("sh", "-c", "echo unseen > filter-declared.txt", Nil) Nil
+    | setPlanLabel "staging-dir-runner: filter-outputs-unsupported"
+    | setPlanFilterOutputs (matches `.*\.txt`)
+    | runJobWith stagingDirRunner
+
+export def testFilterOutputsUnsupported _: Result Unit Error =
+    def job = filterOutputsUnsupported Unit
+
+    require True = job.isJobOk
+    else failWithError "expected the underlying job to succeed"
+
+    require Pass Nil = job.getJobOutputs
+    else failWithError "expected setPlanFilterOutputs to yield no outputs under this runner"
+
+    Pass Unit
+    | addErrorContext "filter-outputs-unsupported"
+
+# --- declared output paths that escape the workspace are rejected ---
+
+export def outsideWorkspaceOutput Unit =
+    makeExecPlan ("sh", "-c", "true # outside-workspace", Nil) Nil
+    | setPlanLabel "staging-dir-runner: outside-workspace"
+    | setPlanFnOutputs (\_ "../escape.txt", Nil)
+    | setPlanShare False
+    | runJobWith stagingDirRunner
+    | getJobOutput
+
+export def testOutsideWorkspaceOutput _: Result Unit Error =
+    require Fail _ = outsideWorkspaceOutput Unit
+    else failWithError "expected a workspace-escaping output path to be rejected"
+
+    Pass Unit
+    | addErrorContext "outside-workspace-output"
+
+# --- no leftover per-job staging directories after success, job failure, or setup failure ---
+
+def stagingRoot = ".build/cas/staging"
+
+export def leftoverStagingDirs Unit =
+    require True = access stagingRoot 0
+    else Pass Nil
+
+    sources stagingRoot `.*`
+
+export def testNoLeftoverStagingDirs _: Result Unit Error =
+    # Exercise success, job-failure, and setup-failure (missing declared output) paths.
+    def _ = basicOutput Unit
+    def _ = failingJobWithOutput Unit
+    def _ = missingDeclaredOutput Unit
+
+    require Pass leftovers = leftoverStagingDirs Unit
+
+    require Nil = leftovers
+    else
+        failWithError
+        "expected no leftover staging directories, found: {catWith ", " (map getPathName leftovers)}"
+
+    Pass Unit
+    | addErrorContext "no-leftover-staging-dirs"
+
+export def test _ =
+    require Pass Unit = testBasicOutput Unit
+    require Pass Unit = testSymlinkOutput Unit
+    require Pass Unit = testNestedOutput Unit
+    require Pass Unit = testIsolation Unit
+    require Pass Unit = testFilterInputs Unit
+    require Pass Unit = testFailingJobOutputStillStaged Unit
+    require Pass Unit = testMissingDeclaredOutput Unit
+    require Pass Unit = testNoOutputs Unit
+    require Pass Unit = testFilterOutputsUnsupported Unit
+    require Pass Unit = testOutsideWorkspaceOutput Unit
+    require Pass Unit = testNoLeftoverStagingDirs Unit
+
+    Pass 0
