@@ -1,0 +1,31 @@
+package lvltest
+
+from wake import _
+
+# A regex/quote memory-blowup scenario.
+#
+# Applying the same regular expression to every element of a large list, where the pattern is
+# rebuilt from a string on every call, re-creates (and re-allocates) the compiled RE2 program
+# once per element, blowing up memory.  The fix has two halves, both checked here:
+#
+#   quoteMarker -- `quote` compiles a RegExp from a constant String.  It is pure and TOTAL, so
+#                  LVL MUST hoist it: the regex is compiled once and shared, not per element.
+#                  (Previously `quote` round-tripped through a fallible stringToRegExp, producing
+#                  an RDes that blocked hoisting; it is now a directly-hoistable pure prim.)
+#
+#   matchMarker -- `matches` uses the `match` prim, which is PRIM_PARTIAL (it can abort on
+#                  >2GiB inputs with old RE2).  Even though its arguments are constant and
+#                  argument-independent, it MUST NOT be hoisted out of a lambda that may run
+#                  zero times -- the same safety rule that keeps a partial op conditional.
+#
+# The test asserts quoteMarker is lifted to a strictly shallower scope than matchMarker.
+def quoteBody (x: String): RegExp =
+    def quoteMarker = quote "constant.literal"
+    quoteMarker
+
+def matchBody (x: String): Boolean =
+    def matchMarker = matches `constant.*` "constant-subject-string"
+    matchMarker
+
+export def regexCase (list: List String): Pair (List RegExp) (List Boolean) =
+    Pair (map quoteBody list) (map matchBody list)
