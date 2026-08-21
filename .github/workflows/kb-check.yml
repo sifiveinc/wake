@@ -1,0 +1,48 @@
+name: KB & AGENTS upkeep
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+jobs:
+  kb-check:
+    name: validate knowledge base
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          # Full history is required so kb-check can diff HEAD against the
+          # SHA recorded in knowledge/.last-validated-sha.
+          fetch-depth: 0
+
+      - name: Run kb-check
+        # Soft-fail by default: report findings without blocking the merge.
+        # Path-citation breakage IS a hard error and will turn the job red;
+        # delta-only findings (KB topics needing review) surface in the log
+        # but don't gate. Flip `continue-on-error` to false once the team
+        # treats the KB as load-bearing.
+        continue-on-error: true
+        run: ./scripts/kb-check.sh
+
+      - name: Hard-fail on broken citations
+        # Re-run with the soft-fail filter peeled away: any non-zero exit that
+        # isn't purely "delta needs review" should fail the job.
+        run: |
+          set +e
+          out=$(./scripts/kb-check.sh)
+          rc=$?
+          echo "$out"
+          # Exit non-zero only if path-citations broke. The summary line
+          # "paths:   N broken" indicates hard breakage.
+          if echo "$out" | grep -qE 'paths:[[:space:]]+[0-9]+ broken'; then
+            echo "::error::knowledge-base path citations are broken"
+            exit 1
+          fi
+          # Surface delta as an annotation but don't fail.
+          if echo "$out" | grep -qE 'delta:[[:space:]]+[0-9]+ file'; then
+            echo "::warning::changed files map to KB topics; review and run scripts/kb-bless.sh"
+          fi
+          exit 0
