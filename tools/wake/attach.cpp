@@ -41,6 +41,15 @@ namespace {
 // namespaces (there's a short window right after wakebox forks it).
 constexpr int kPayloadRetries = 40;
 constexpr int kPayloadRetryDelayUs = 50000;  // 50ms * 40 = 2s
+constexpr size_t kWarningContentWidth = 64;
+
+std::string warning_line(std::string content) {
+  if (content.size() > kWarningContentWidth) {
+    content.resize(kWarningContentWidth - 3);
+    content += "...";
+  }
+  return "| " + content + std::string(kWarningContentWidth - content.size(), ' ') + " |";
+}
 
 std::string read_comm(pid_t pid) {
   std::ifstream comm_file("/proc/" + std::to_string(pid) + "/comm");
@@ -194,11 +203,14 @@ int attach_job(Database &db, long job_id) {
     close(cwd_fd);
 
     std::cerr << "+------------------------------------------------------------------+\n"
-              << "| Attached to the live sandbox for Wake job " << job_id << "\n"
-              << "| PID: " << *payload_pid << "  CWD: " << cwd_display << "\n"
-              << "|                                                                  |\n"
-              << "| WARNING: This shell is read/write. Any changes you make affect   |\n"
-              << "| the in-progress job and may change the build result.             |\n"
+              << warning_line("Attached to the live sandbox for Wake job " + std::to_string(job_id))
+              << '\n'
+              << warning_line("PID: " + std::to_string(*payload_pid) + "  CWD: " + cwd_display)
+              << '\n'
+              << warning_line("") << '\n'
+              << warning_line("WARNING: This shell is read/write. Any changes you make affect")
+              << '\n'
+              << warning_line("the in-progress job and may change the build result.") << '\n'
               << "+------------------------------------------------------------------+"
               << std::endl;
 
