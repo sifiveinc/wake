@@ -587,8 +587,9 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_clear_live_job = "delete from live_jobs where job_id = ?";
   const char *sql_clear_live_jobs_by_run = "delete from live_jobs where run_id = ?";
   const char *sql_get_live_job =
-      "select lj.pid, j.directory from live_jobs lj"
+      "select lj.pid, lj.run_id, j.directory from live_jobs lj"
       " join jobs j on lj.job_id = j.job_id"
+      " join runs r on lj.run_id = r.run_id and r.end_time is null"
       " where lj.job_id = ?";
 
 #define PREPARE(sql, member)                                                                     \
@@ -2854,11 +2855,18 @@ std::optional<LiveJobInfo> Database::get_live_job(long job_id) const {
   std::optional<LiveJobInfo> out;
   if (sqlite3_step(imp->get_live_job) == SQLITE_ROW) {
     out = LiveJobInfo{static_cast<pid_t>(sqlite3_column_int64(imp->get_live_job, 0)),
-                       rip_column(imp->get_live_job, 1)};
+                      sqlite3_column_int64(imp->get_live_job, 1), rip_column(imp->get_live_job, 2)};
   }
   finish_stmt(why, imp->get_live_job, imp->debugdb);
   end_txn();
   return out;
+}
+
+bool Database::is_live_run(long run_id) const {
+  for (const auto &run : get_runs()) {
+    if (run.id == run_id) return !run.end_time && RunLockProbe::is_live(run_id);
+  }
+  return false;
 }
 
 std::vector<std::pair<std::string, int>> Database::get_interleaved_output(long job_id) const {

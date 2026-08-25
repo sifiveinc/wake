@@ -20,16 +20,8 @@
 
 #include "runtime/database.h"
 
-// Attach a read/write shell to the live FUSE sandbox of a still-running job.
-//
-// Linux only, and only for jobs the calling user launched: it works entirely
-// unprivileged (no helper, no capabilities) by fork()ing a single-threaded
-// child that setns() into the job's own user+mount namespaces, which the
-// kernel permits because the caller's euid owns those namespaces. The view is
-// read/write -- a kernel-enforced read-only view would need CAP_SYS_ADMIN the
-// owner doesn't have; see the design doc revision for why that was abandoned.
-// Filesystem view only (no pid-namespace/process interaction). Returns the
-// attached shell's exit status, or EXIT_FAILURE on error, for easy CLI use.
+// Attach a read/write shell to a running job's FUSE sandbox.
+// Returns the shell's exit status, or EXIT_FAILURE on error.
 int attach_job(Database &db, long job_id);
 
 #endif

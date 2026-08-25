@@ -433,7 +433,7 @@ void print_help(const char *argv0) {
     << "    --last-executed    Capture all jobs executed by the last build. Skips cache"   << std::endl
     << "    --history          Report the cmndline history of all wake commands recorded"  << std::endl
     << "    --ps               Show jobs currently running in active wake builds"          << std::endl
-    << "    --attach           With --job JOB, attach a shell to its live sandbox (Linux only)"      << std::endl
+    << "    --attach           With --job JOB, attach a shell to its live FUSE sandbox"    << std::endl
     << "    --failed   -f      Capture jobs which failed last build"                       << std::endl
     << "    --tag      KEY=VAL Capture jobs which are tagged, matching KEY and VAL globs"  << std::endl
     << "    --canceled         Capture jobs which were canceled (run ended before job finished)" << std::endl
