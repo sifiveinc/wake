@@ -455,11 +455,16 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "  and j2.job_id<>?2"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=j2.job_id) <= ?1"
       ")";
+  // Reaps output-less jobs that have no reuse value, except failures. A failed job is always
+  // keep=0 and commonly has no output, so otherwise its diagnostic record is deleted when a later
+  // run advances the GC watermark. This uses the same failure definition as `wake --failed`.
   const char *sql_delete_jobs =
       "delete from jobs where keep=0"
       "  and not exists (select 1 from filetree where"
       "                  filetree.job_id=jobs.job_id and"
       "                  filetree.access=2)"
+      "  and runner_status is null"
+      "  and coalesce((select status from stats where stat_id=jobs.stat_id), 0) = 0"
       "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=jobs.job_id) <= ?1";
   // A deleted=1 row never owns the physical file at its path -- some other (live) row does, or
   // nothing in Wake does -- and once no `filetree` entry references it the metadata which had been

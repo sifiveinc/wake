@@ -1,0 +1,51 @@
+# Failed jobs that produce no outputs must stay in the database so they can be
+# inspected after later runs, while successful no-output jobs are still reclaimed.
+
+# Exits non-zero and writes nothing. getJobStatus (not getJobOutput) keeps the
+# failure from propagating, so the build still succeeds.
+export def failingNoOutput Unit =
+    makeExecPlan ("sh", "-c", "exit 3", Nil) Nil
+    | setPlanLabel "no-output-failed"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobStatus
+
+export def passingNoOutput Unit =
+    makeExecPlan ("sh", "-c", "true", Nil) Nil
+    | setPlanLabel "no-output-passed"
+    | setPlanPersistence Once
+    | runJobWith defaultRunner
+    | getJobStatus
+
+export def passingNoOutputOther Unit =
+    makeExecPlan ("sh", "-c", "true", Nil) Nil
+    | setPlanLabel "no-output-passed-other"
+    | setPlanPersistence Once
+    | runJobWith defaultRunner
+    | getJobStatus
+
+# A runner failure with a successful command must be retained too. `wake --failed`
+# defines failure as either a non-zero exit status or a runner error.
+export def runnerFailNoOutput (tag: String) =
+    def run job input =
+        def (Runner _ virtRun) = virtualRunner
+        virtRun job input
+        | setRunnerOutputRunnerError (Some "intentional runner failure".makeError)
+
+    def runner = makeRunner "failing-no-output-runner" run
+
+    makeExecPlan ("sh", "-c", "true", Nil) Nil
+    | setPlanLabel "no-output-runner-failed-{tag}"
+    | setPlanEnvVar "RUNNER_FAIL_TAG" tag
+    | setPlanPersistence Once
+    | runJobWith runner
+    | getJobStatus
+
+# A final run needs a distinct kept job so the GC watermark advances past all
+# successful no-output jobs created above.
+export def other Unit =
+    makeExecPlan ("sh", "-c", "printf other >/dev/null", Nil) Nil
+    | setPlanLabel "no-output-other"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobStatus
