@@ -98,6 +98,7 @@ struct CommandLineOptions {
   const char *label_filter;  // TODO: Allow unions of multiple filters
   const char *log_header;
   const char *user_config;
+  const char *attach_job_id;
 
   std::optional<int64_t> log_header_source_width;
 
@@ -149,7 +150,7 @@ struct CommandLineOptions {
       {0, "last-executed", GOPT_ARGUMENT_FORBIDDEN},
       {0, "history", GOPT_ARGUMENT_FORBIDDEN},
       {0, "ps", GOPT_ARGUMENT_FORBIDDEN},
-      {0, "attach", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "attach", GOPT_ARGUMENT_REQUIRED},
       {0, "active", GOPT_ARGUMENT_FORBIDDEN},
       {0, "queued", GOPT_ARGUMENT_FORBIDDEN},
       {0, "in-flight", GOPT_ARGUMENT_FORBIDDEN},
@@ -273,6 +274,7 @@ struct CommandLineOptions {
     label_filter = arg(options, "label-filter")->argument;
     log_header = arg(options, "log-header")->argument;
     user_config = arg(options, "user-config")->argument;
+    attach_job_id = arg(options, "attach")->argument;
 
     if (arg(options, "log-header-align")->count) {
       log_header_align = std::make_optional(true);
@@ -347,10 +349,8 @@ struct CommandLineOptions {
     }
 
     if (attach) {
-      size_t num_ids = 0;
-      for (const auto &group : job_ids) num_ids += group.size();
-      if (num_ids != 1) {
-        return std::optional<std::string>{"--attach requires exactly one --job <id>!"};
+      if (!job_ids.empty()) {
+        return std::optional<std::string>{"--attach takes a job id directly; do not use --job!"};
       }
     }
 

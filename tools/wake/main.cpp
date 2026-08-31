@@ -433,7 +433,7 @@ void print_help(const char *argv0) {
     << "    --last-executed    Capture all jobs executed by the last build. Skips cache"   << std::endl
     << "    --history          Report the cmndline history of all wake commands recorded"  << std::endl
     << "    --ps               Show jobs currently running in active wake builds"          << std::endl
-    << "    --attach           With --job JOB, attach a shell to its live FUSE sandbox"    << std::endl
+    << "    --attach     JOB   Attach a shell to the specified job ID's live FUSE sandbox" << std::endl
     << "    --failed   -f      Capture jobs which failed last build"                       << std::endl
     << "    --tag      KEY=VAL Capture jobs which are tagged, matching KEY and VAL globs"  << std::endl
     << "    --canceled         Capture jobs which were canceled (run ended before job finished)" << std::endl
@@ -641,10 +641,10 @@ int main(int argc, char **argv) {
   }
 
   bool is_db_inspect_capture = !clo.job_ids.empty() || !clo.output_files.empty() ||
-                               !clo.input_files.empty() || !clo.labels.empty() ||
-                               !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
-                               clo.tagdag || clo.canceled || clo.active || clo.queued ||
-                               clo.in_flight || clo.history || clo.ps;
+                                !clo.input_files.empty() || !clo.labels.empty() ||
+                                !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
+                                clo.tagdag || clo.canceled || clo.active || clo.queued ||
+                                clo.in_flight || clo.history || clo.ps || clo.attach;
 
   // DescribePolicy::human() is the default and doesn't have a flag.
   // DescribePolicy::debug() is overloaded and can't be marked as a db flag
@@ -963,9 +963,9 @@ int main(int argc, char **argv) {
 #if defined(__linux__)
       long job_id;
       try {
-        job_id = std::stol(clo.job_ids[0][0]);
+        job_id = std::stol(clo.attach_job_id);
       } catch (const std::exception &) {
-        std::cerr << "wake --attach: invalid job id '" << clo.job_ids[0][0] << "'" << std::endl;
+        std::cerr << "wake --attach: invalid job id '" << clo.attach_job_id << "'" << std::endl;
         return 1;
       }
       return attach_job(db, job_id);
