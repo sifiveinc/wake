@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 SiFive, Inc.
+ * Copyright 2026 SiFive, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -165,6 +165,10 @@ int attach_job(Database &db, long job_id) {
   const char *shell = getenv("SHELL");
   if (!shell || !*shell) shell = "/bin/sh";
 
+  std::string host_live_workspace = std::filesystem::current_path().string() + "/.fuse/" +
+                                    std::to_string(getuid()) + "." + std::to_string(getgid()) +
+                                    "/" + std::to_string(info->pid);
+
   // setns(CLONE_NEWUSER) requires a single-threaded process, so enter the
   // namespaces from a forked child. The attached view is read/write.
   pid_t child = fork();
@@ -202,17 +206,21 @@ int attach_job(Database &db, long job_id) {
     }
     close(cwd_fd);
 
-    std::cerr << "+------------------------------------------------------------------+\n"
-              << warning_line("Attached to the live sandbox for Wake job " + std::to_string(job_id))
-              << '\n'
-              << warning_line("PID: " + std::to_string(*payload_pid) + "  CWD: " + cwd_display)
-              << '\n'
-              << warning_line("") << '\n'
-              << warning_line("WARNING: This shell is read/write. Any changes you make affect")
-              << '\n'
-              << warning_line("the in-progress job and may change the build result.") << '\n'
-              << "+------------------------------------------------------------------+"
-              << std::endl;
+    std::cerr
+        << "+------------------------------------------------------------------+\n"
+        << warning_line("Attached to the live sandbox for Wake job " + std::to_string(job_id))
+        << '\n'
+        << warning_line("Payload PID: " + std::to_string(*payload_pid) + "  CWD: " + cwd_display)
+        << '\n'
+        << warning_line("Host FUSE live workspace:") << '\n'
+        << warning_line(host_live_workspace) << '\n'
+        << warning_line("Tools unavailable in shell can be run using the host FUSE path") << '\n'
+        << warning_line("above.") << '\n'
+        << warning_line("") << '\n'
+        << warning_line("WARNING: This shell and the host FUSE workspace are read/write.") << '\n'
+        << warning_line("Any changes you make affect the in-progress job and may change") << '\n'
+        << warning_line("the build result.") << '\n'
+        << "+------------------------------------------------------------------+" << std::endl;
 
     execl(shell, shell, nullptr);
     std::cerr << "wake --attach: exec(" << shell << "): " << strerror(errno) << std::endl;
