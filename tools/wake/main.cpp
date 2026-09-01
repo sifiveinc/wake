@@ -641,10 +641,10 @@ int main(int argc, char **argv) {
   }
 
   bool is_db_inspect_capture = !clo.job_ids.empty() || !clo.output_files.empty() ||
-                                !clo.input_files.empty() || !clo.labels.empty() ||
-                                !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
-                                clo.tagdag || clo.canceled || clo.active || clo.queued ||
-                                clo.in_flight || clo.history || clo.ps || clo.attach;
+                               !clo.input_files.empty() || !clo.labels.empty() ||
+                               !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
+                               clo.tagdag || clo.canceled || clo.active || clo.queued ||
+                               clo.in_flight || clo.history || clo.ps || clo.attach;
 
   // DescribePolicy::human() is the default and doesn't have a flag.
   // DescribePolicy::debug() is overloaded and can't be marked as a db flag
