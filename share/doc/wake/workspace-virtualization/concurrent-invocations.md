@@ -19,6 +19,10 @@ builds:
 | ------------- | -------------------------------------------------------------------- |
 | `--history`   | Report the command-line history of all wake commands, including completed and in-flight runs. |
 | `--ps`        | Show jobs currently running in active wake builds, grouped by run. Each job lists its id, elapsed time (or `[queued]` if not yet started), and label. |
+| `--attach JOB` | Open a shell in a running FUSE-sandboxed job's live workspace view. |
+
+For details on attaching to a job and using its host-visible FUSE workspace,
+see [Inspecting a Live Job](inspecting-live-jobs.md).
 
 ### Example: watching jobs across concurrent runs
 
