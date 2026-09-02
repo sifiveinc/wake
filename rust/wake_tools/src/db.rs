@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use rusqlite::{params, Connection, OpenFlags};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -10,7 +10,7 @@ pub struct WakeDb {
     path: PathBuf,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Artifact {
     pub path: String,
     pub kind: String,
@@ -19,7 +19,7 @@ pub struct Artifact {
     pub deleted: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct JobSummary {
     pub job: i64,
     pub run: i64,
@@ -39,7 +39,7 @@ pub struct JobSummary {
     pub noise: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct JobDetail {
     #[serde(flatten)]
     pub summary: JobSummary,
@@ -55,7 +55,7 @@ pub struct JobDetail {
     pub fanouts: Vec<FanoutConsumer>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FanoutConsumer {
     pub artifact: String,
     pub job: i64,
@@ -63,7 +63,7 @@ pub struct FanoutConsumer {
     pub status: Option<i64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ArtifactFanout {
     pub artifact: String,
     pub kind: String,
@@ -72,13 +72,13 @@ pub struct ArtifactFanout {
     pub consumers: Vec<FanoutConsumer>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Tag {
     pub uri: String,
     pub content: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunSummary {
     pub run: i64,
     pub starttime: i64,
@@ -109,7 +109,8 @@ pub struct TelemetryJob {
     pub endtime: i64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum JobState {
     #[default]
     All,
@@ -118,7 +119,7 @@ pub enum JobState {
     Running,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct JobFilter {
     pub query: Option<String>,
     pub state: JobState,
@@ -146,7 +147,8 @@ impl Default for JobFilter {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum GroupBy {
     #[default]
     Command,
@@ -179,7 +181,7 @@ impl GroupBy {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct DashboardMetrics {
     pub jobs: usize,
     pub failed: usize,
@@ -195,7 +197,7 @@ pub struct DashboardMetrics {
     pub peak_memory_bytes: i64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DashboardGroup {
     pub key: String,
     pub jobs: usize,
@@ -204,7 +206,7 @@ pub struct DashboardGroup {
     pub runtime: f64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Dashboard {
     pub metrics: DashboardMetrics,
     pub group_by: String,
@@ -435,6 +437,22 @@ impl WakeDb {
         Ok(jobs)
     }
 
+    pub fn filtered_jobs_page(
+        &self,
+        filter: &JobFilter,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<JobSummary>> {
+        let end = offset.saturating_add(limit).clamp(1, 100_000);
+        let mut jobs = self.filtered_jobs(filter, end)?;
+        if offset >= jobs.len() {
+            return Ok(Vec::new());
+        }
+        jobs.drain(..offset);
+        jobs.truncate(limit.clamp(1, 100_000));
+        Ok(jobs)
+    }
+
     pub fn job(&self, job_id: i64) -> Result<Option<JobDetail>> {
         let connection = self.open()?;
         let result = connection.query_row(
@@ -564,6 +582,23 @@ impl WakeDb {
             })?
             .collect::<rusqlite::Result<_>>()?;
         Ok(Some(detail))
+    }
+
+    /// Whether a relative path is a recorded, non-deleted output artifact or is
+    /// contained by a recorded output directory.
+    pub fn owns_artifact_path(&self, path: &str) -> Result<bool> {
+        let connection = self.open()?;
+        let exists = connection.query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM filetree ft JOIN files f ON f.file_id = ft.file_id
+                 WHERE ft.access = 2 AND f.deleted = 0
+                   AND (f.path = ?1 OR (f.type = 'directory'
+                                        AND substr(?1, 1, length(f.path) + 1) = f.path || '/'))
+             )",
+            [path],
+            |row| row.get(0),
+        )?;
+        Ok(exists)
     }
 
     pub fn fanouts(&self, filter: &JobFilter, limit: usize) -> Result<Vec<ArtifactFanout>> {
@@ -979,6 +1014,18 @@ mod tests {
         let detail = db.job(2).unwrap().unwrap();
         assert_eq!(detail.fanouts.len(), 1);
         assert_eq!(detail.fanouts[0].artifact, "out/main.o");
+        let page = db
+            .filtered_jobs_page(
+                &JobFilter {
+                    hide_noise: false,
+                    ..JobFilter::default()
+                },
+                1,
+                1,
+            )
+            .unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].job, 2);
         std::fs::remove_file(path).unwrap();
     }
 }

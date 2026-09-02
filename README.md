@@ -211,7 +211,17 @@ or put it behind an authenticated reverse proxy or SSH tunnel.
 Run `wake tui` (or `wake --tui`) for the same dashboard in a terminal. Use `d`
 to switch between the dashboard and job triage, `t` to open the failure queue,
 `g` to change dashboard grouping, `/` to search, `f` to
-cycle status, the arrow keys or `j`/`k` to select a job, and `q` to quit.
+cycle status, the arrow keys or `j`/`k` to select a job, `[`/`]` to select an
+artifact, `a` to read a bounded preview, and `q` to quit.
+
+Run `wake tunnel-vision` to federate local and remote Wake databases into one
+TUI. Sources are declared in `.wake/tunnel-vision.json`; remote sources run the
+same read-only MCP service through SSH, `srun`, or another argv-based launcher.
+Jobs use source-qualified identities such as `gpu-a#42`, artifacts use virtual
+paths such as `wake://gpu-a/results/log.txt`, and the dashboard presents each
+Slurm/Ray/local source as an execution lane. See
+[Tunnel Vision](share/doc/wake/tunnel-vision.md) for setup, the OTEL correlation
+contract, and the remote-access security model.
 
 Run `wake mcp` (or `wake --mcp`) to expose build data to an MCP client over
 standard input and output. For example:
@@ -228,10 +238,12 @@ standard input and output. For example:
 ```
 
 The MCP server offers `get_wake_dashboard`, `get_wake_job`,
-`list_wake_fanouts`, `list_wake_jobs`, and `list_wake_runs`. Dashboard and list
-calls support status, run, command, artifact, and runtime
-filters as the interactive views. It never modifies the Wake database or
-workspace.
+`inspect_wake_artifact`, `list_wake_fanouts`, `list_wake_jobs`, and
+`list_wake_runs`. Dashboard and list calls support status, run, command,
+artifact, and runtime filters as the interactive views. It opens `wake.db`
+read-only. Artifact inspection is bounded and confined to the configured root;
+the requested path must also be a non-deleted output recorded in `wake.db`. It
+never modifies the database or workspace.
 
 ## OpenTelemetry
 
@@ -250,6 +262,9 @@ and the standard trace sampler variables are supported. Set
 
 Orchestrators can parent the Wake build graph beneath an existing trace with
 `WAKE_OTEL_PARENT_TRACEPARENT` and `WAKE_OTEL_PARENT_TRACESTATE`.
+Tunnel Vision runs also accept `WAKE_TUNNEL_TRIAGE_ID`,
+`WAKE_TUNNEL_SOURCE_ID`, `WAKE_RUNNER_KIND`, and `WAKE_RUNNER_HOST` as
+searchable span attributes.
 
 Each invocation becomes a `wake.run` span with child spans for jobs executed by
 that invocation. Spans include job labels, status, timing, resource usage, and

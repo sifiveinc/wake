@@ -1,5 +1,13 @@
+use crate::artifact::{ArtifactRoot, DEFAULT_READ_LIMIT, MAX_READ_LIMIT};
 use crate::db::{GroupBy, JobFilter, JobState, WakeDb};
 use serde_json::{json, Value};
+
+#[derive(Clone, Debug)]
+pub struct WakeService {
+    pub db: WakeDb,
+    pub artifacts: ArtifactRoot,
+    pub source_id: String,
+}
 
 const SERVER_INFO_KEY: &str = "io.modelcontextprotocol/serverInfo";
 const MODERN_VERSION: &str = "2026-07-28";
@@ -49,6 +57,22 @@ fn tools() -> Value {
             "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
         },
         {
+            "name": "inspect_wake_artifact",
+            "title": "Inspect Wake Artifact",
+            "description": "Read a bounded text window from a recorded output artifact or list a recorded output directory. Paths are checked against wake.db and confined to the configured artifact root.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative artifact path" },
+                    "offset": { "type": "integer", "minimum": 0, "default": 0 },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_READ_LIMIT, "default": DEFAULT_READ_LIMIT }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            },
+            "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
             "name": "list_wake_fanouts",
             "title": "List Wake Fanouts",
             "description": "List output artifacts consumed by downstream jobs, ordered by consumer count. Accepts the same producer-job filters as list_wake_jobs.",
@@ -82,6 +106,7 @@ fn tools() -> Value {
                     "artifact": { "type": "string", "description": "Substring in an output artifact path or kind" },
                     "min_runtime": { "type": "number", "minimum": 0 },
                     "include_noise": { "type": "boolean", "default": false },
+                    "offset": { "type": "integer", "minimum": 0, "maximum": 100000, "default": 0 },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
                 },
                 "additionalProperties": false
@@ -200,7 +225,7 @@ fn job_filter(arguments: &Value) -> Result<JobFilter, String> {
     })
 }
 
-fn tool_call(db: &WakeDb, params: &Value) -> Value {
+fn tool_call(service: &WakeService, params: &Value) -> Value {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return tool_error("missing tool name");
     };
@@ -228,7 +253,7 @@ fn tool_call(db: &WakeDb, params: &Value) -> Value {
             if !(1..=200).contains(&limit) {
                 return tool_error("limit must be between 1 and 200");
             }
-            match db.dashboard(&filter, group, limit as usize) {
+            match service.db.dashboard(&filter, group, limit as usize) {
                 Ok(dashboard) => tool_result(json!({ "dashboard": dashboard })),
                 Err(error) => tool_error(error.to_string()),
             }
@@ -237,9 +262,38 @@ fn tool_call(db: &WakeDb, params: &Value) -> Value {
             let Some(job_id) = arguments.get("job_id").and_then(Value::as_i64) else {
                 return tool_error("job_id must be an integer");
             };
-            match db.job(job_id) {
+            match service.db.job(job_id) {
                 Ok(Some(job)) => tool_result(json!({ "job": job })),
                 Ok(None) => tool_error(format!("Wake job {job_id} was not found")),
+                Err(error) => tool_error(error.to_string()),
+            }
+        }
+        "inspect_wake_artifact" => {
+            let Some(path) = arguments.get("path").and_then(Value::as_str) else {
+                return tool_error("path must be a string");
+            };
+            let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(0);
+            let limit = arguments
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(DEFAULT_READ_LIMIT as u64);
+            if !(1..=MAX_READ_LIMIT as u64).contains(&limit) {
+                return tool_error(format!("limit must be between 1 and {MAX_READ_LIMIT}"));
+            }
+            match service.db.owns_artifact_path(path) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return tool_error(
+                        "path is not a non-deleted output artifact recorded in wake.db",
+                    )
+                }
+                Err(error) => return tool_error(error.to_string()),
+            }
+            match service
+                .artifacts
+                .inspect(&service.source_id, path, offset, limit as usize)
+            {
+                Ok(artifact) => tool_result(json!({ "artifact": artifact })),
                 Err(error) => tool_error(error.to_string()),
             }
         }
@@ -252,7 +306,7 @@ fn tool_call(db: &WakeDb, params: &Value) -> Value {
             if !(1..=200).contains(&limit) {
                 return tool_error("limit must be between 1 and 200");
             }
-            match db.fanouts(&filter, limit as usize) {
+            match service.db.fanouts(&filter, limit as usize) {
                 Ok(fanouts) => tool_result(json!({ "fanouts": fanouts })),
                 Err(error) => tool_error(error.to_string()),
             }
@@ -266,7 +320,14 @@ fn tool_call(db: &WakeDb, params: &Value) -> Value {
             if !(1..=200).contains(&limit) {
                 return tool_error("limit must be between 1 and 200");
             }
-            match db.filtered_jobs(&filter, limit as usize) {
+            let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(0);
+            if offset > 100_000 {
+                return tool_error("offset must be between 0 and 100000");
+            }
+            match service
+                .db
+                .filtered_jobs_page(&filter, offset as usize, limit as usize)
+            {
                 Ok(jobs) => tool_result(json!({ "jobs": jobs })),
                 Err(error) => tool_error(error.to_string()),
             }
@@ -276,7 +337,7 @@ fn tool_call(db: &WakeDb, params: &Value) -> Value {
             if !(1..=200).contains(&limit) {
                 return tool_error("limit must be between 1 and 200");
             }
-            match db.runs(limit as usize) {
+            match service.db.runs(limit as usize) {
                 Ok(runs) => tool_result(json!({ "runs": runs })),
                 Err(error) => tool_error(error.to_string()),
             }
@@ -285,7 +346,7 @@ fn tool_call(db: &WakeDb, params: &Value) -> Value {
     }
 }
 
-pub fn handle(db: &WakeDb, request: Value) -> Option<Value> {
+pub fn handle(service: &WakeService, request: Value) -> Option<Value> {
     let id = request.get("id").cloned();
     let method = request.get("method").and_then(Value::as_str);
     if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
@@ -327,7 +388,7 @@ pub fn handle(db: &WakeDb, request: Value) -> Option<Value> {
             }
             result
         }
-        "tools/call" => tool_call(db, &params),
+        "tools/call" => tool_call(service, &params),
         _ => {
             return Some(error(
                 id,
@@ -342,6 +403,9 @@ pub fn handle(db: &WakeDb, request: Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn tools_are_deterministically_sorted() {
@@ -355,5 +419,74 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort_unstable();
         assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn artifact_tool_is_bounded_and_source_qualified() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("wake-mcp-artifact-{suffix}"));
+        fs::create_dir(&root).unwrap();
+        let database = root.join("wake.db");
+        Connection::open(&database)
+            .unwrap()
+            .execute_batch(
+                "PRAGMA user_version = 1;
+                 CREATE TABLE files(file_id INTEGER PRIMARY KEY, path TEXT, type TEXT,
+                                    deleted INTEGER);
+                 CREATE TABLE filetree(job_id INTEGER, file_id INTEGER, access INTEGER);
+                 INSERT INTO files VALUES(1, 'result.txt', 'file', 0);
+                 INSERT INTO filetree VALUES(1, 1, 2);",
+            )
+            .unwrap();
+        fs::write(root.join("result.txt"), "tunnel vision").unwrap();
+        fs::write(root.join("secret.txt"), "not an artifact").unwrap();
+        let service = WakeService {
+            db: WakeDb::new(database).unwrap(),
+            artifacts: ArtifactRoot::new(&root).unwrap(),
+            source_id: "slurm-a".to_owned(),
+        };
+        let response = handle(
+            &service,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "inspect_wake_artifact",
+                    "arguments": { "path": "result.txt", "limit": 6 }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            response.pointer("/result/structuredContent/artifact/uri"),
+            Some(&json!("wake://slurm-a/result.txt"))
+        );
+        assert_eq!(
+            response.pointer("/result/structuredContent/artifact/content"),
+            Some(&json!("tunnel"))
+        );
+        assert_eq!(
+            response.pointer("/result/structuredContent/artifact/truncated"),
+            Some(&json!(true))
+        );
+        let rejected = handle(
+            &service,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "inspect_wake_artifact",
+                    "arguments": { "path": "secret.txt" }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(rejected.pointer("/result/isError"), Some(&json!(true)));
+        fs::remove_dir_all(root).unwrap();
     }
 }
