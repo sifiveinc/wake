@@ -191,8 +191,11 @@ overrides wakeroot, and wakeroot overrides nothing
 Wake includes three read-only Rust tools for inspecting build artifacts and
 history.
 
-Run `wake ui` (or `wake --ui`) from a workspace to browse recorded jobs, output
-artifacts, status, and logs in a browser. The server listens at
+Run `wake ui` (or `wake --ui`) from a workspace to open a dashboard of build
+health, resource metrics, job groups, failures, and high-fanout artifacts. The
+jobs view filters by status, run, command, artifact path or kind, and runtime, and links
+producer jobs to their downstream consumers. A command regular expression can
+be entered in the filter bar to hide user-selected noise. The server listens at
 `http://127.0.0.1:8080` by default.
 
 To connect from another machine, explicitly select a reachable interface and
@@ -205,9 +208,10 @@ wake ui --ui-address 0.0.0.0 --ui-port 8080
 Remote mode has no built-in authentication. Use it only on a trusted network,
 or put it behind an authenticated reverse proxy or SSH tunnel.
 
-Run `wake tui` (or `wake --tui`) for an interactive terminal view. Use the
-arrow keys or `j`/`k` to select a job, `/` to search, `f` to show only failed
-jobs, `r` to refresh, and `q` to quit.
+Run `wake tui` (or `wake --tui`) for the same dashboard in a terminal. Use `d`
+to switch between the dashboard and job triage, `t` to open the failure queue,
+`g` to change dashboard grouping, `/` to search, `f` to
+cycle status, the arrow keys or `j`/`k` to select a job, and `q` to quit.
 
 Run `wake mcp` (or `wake --mcp`) to expose build data to an MCP client over
 standard input and output. For example:
@@ -223,8 +227,11 @@ standard input and output. For example:
 }
 ```
 
-The MCP server offers `list_wake_jobs`, `get_wake_job`, and `list_wake_runs`.
-It never modifies the Wake database or workspace.
+The MCP server offers `get_wake_dashboard`, `get_wake_job`,
+`list_wake_fanouts`, `list_wake_jobs`, and `list_wake_runs`. Dashboard and list
+calls support status, run, command, artifact, and runtime
+filters as the interactive views. It never modifies the Wake database or
+workspace.
 
 ## OpenTelemetry
 

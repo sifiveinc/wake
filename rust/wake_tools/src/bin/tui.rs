@@ -14,7 +14,7 @@ use ratatui::Terminal;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use wake_tools::db::{JobDetail, JobState, JobSummary, WakeDb};
+use wake_tools::db::{Dashboard, GroupBy, JobDetail, JobFilter, JobState, JobSummary, WakeDb};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -45,23 +45,37 @@ impl Drop for TerminalGuard {
 
 struct App {
     db: WakeDb,
+    dashboard: Option<Dashboard>,
     jobs: Vec<JobSummary>,
     detail: Option<JobDetail>,
     selected: usize,
     filter: String,
     state: JobState,
+    group_by: GroupBy,
+    include_noise: bool,
+    view: View,
     editing: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Dashboard,
+    Jobs,
 }
 
 impl App {
     fn new(db: WakeDb) -> Result<Self> {
         let mut app = Self {
             db,
+            dashboard: None,
             jobs: Vec::new(),
             detail: None,
             selected: 0,
             filter: String::new(),
             state: JobState::All,
+            group_by: GroupBy::Command,
+            include_noise: false,
+            view: View::Dashboard,
             editing: false,
         };
         app.refresh()?;
@@ -70,11 +84,14 @@ impl App {
 
     fn refresh(&mut self) -> Result<()> {
         let selected_job = self.jobs.get(self.selected).map(|job| job.job);
-        self.jobs = self.db.jobs(
-            (!self.filter.is_empty()).then_some(self.filter.as_str()),
-            self.state,
-            1_000,
-        )?;
+        let filter = JobFilter {
+            query: (!self.filter.is_empty()).then(|| self.filter.clone()),
+            state: self.state,
+            hide_noise: !self.include_noise,
+            ..JobFilter::default()
+        };
+        self.dashboard = Some(self.db.dashboard(&filter, self.group_by, 30)?);
+        self.jobs = self.db.filtered_jobs(&filter, 1_000)?;
         self.selected = selected_job
             .and_then(|id| self.jobs.iter().position(|job| job.job == id))
             .unwrap_or(0)
@@ -103,8 +120,25 @@ impl App {
         self.state = match self.state {
             JobState::All => JobState::Failed,
             JobState::Failed => JobState::Passed,
-            JobState::Passed => JobState::All,
+            JobState::Passed => JobState::Running,
+            JobState::Running => JobState::All,
         };
+        self.refresh()
+    }
+
+    fn cycle_group(&mut self) -> Result<()> {
+        self.group_by = match self.group_by {
+            GroupBy::Command => GroupBy::Label,
+            GroupBy::Label => GroupBy::Status,
+            GroupBy::Status => GroupBy::Artifact,
+            GroupBy::Artifact => GroupBy::Run,
+            GroupBy::Run => GroupBy::Command,
+        };
+        self.refresh()
+    }
+
+    fn toggle_noise(&mut self) -> Result<()> {
+        self.include_noise = !self.include_noise;
         self.refresh()
     }
 }
@@ -118,15 +152,11 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
             Constraint::Length(1),
         ])
         .split(frame.area());
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(43), Constraint::Percentage(57)])
-        .split(vertical[1]);
-
     let state_name = match app.state {
         JobState::All => "all",
         JobState::Failed => "failed",
         JobState::Passed => "passed",
+        JobState::Running => "running",
     };
     let filter_style = if app.editing {
         Style::default()
@@ -135,6 +165,12 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
     } else {
         Style::default()
     };
+    let view_name = if app.view == View::Dashboard {
+        "Dashboard"
+    } else {
+        "Jobs"
+    };
+    let noise_name = if app.include_noise { "shown" } else { "hidden" };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
@@ -145,8 +181,8 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!(
-                "  jobs: {}  state: {state_name}  search: ",
-                app.jobs.len()
+                "  {view_name} · jobs: {} · state: {state_name} · noise: {noise_name} · search: ",
+                app.jobs.len(),
             )),
             Span::styled(
                 if app.filter.is_empty() {
@@ -164,6 +200,146 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
         ),
         vertical[0],
     );
+
+    if app.view == View::Dashboard {
+        draw_dashboard(frame, app, vertical[1]);
+    } else {
+        draw_jobs(frame, app, vertical[1]);
+    }
+    let help = if app.view == View::Dashboard {
+        " d jobs · t triage failures · g grouping · n noise · / search · f state · r refresh · q quit "
+    } else {
+        " ↑/↓ or j/k select · d dashboard · / search · f state · n noise · r refresh · q quit "
+    };
+    frame.render_widget(
+        Paragraph::new(help).style(Style::default().fg(Color::DarkGray)),
+        vertical[2],
+    );
+}
+
+fn draw_dashboard(frame: &mut ratatui::Frame, app: &App, area: ratatui::layout::Rect) {
+    let Some(dashboard) = &app.dashboard else {
+        frame.render_widget(Paragraph::new("Loading dashboard…"), area);
+        return;
+    };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(6), Constraint::Min(1)])
+        .split(area);
+    let metric = &dashboard.metrics;
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    format!(" {:>5} failed ", metric.failed),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {:>5} passed ", metric.passed),
+                    Style::default().fg(Color::Green),
+                ),
+                Span::styled(
+                    format!(" {:>5} running ", metric.running),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(format!(" {:>5} artifacts ", metric.artifacts)),
+                Span::raw(format!(" {:>5} fanouts ", metric.fanout_edges)),
+            ]),
+            Line::raw(format!(
+                " runtime {:.2}s · CPU {:.2}s · I/O {} · peak memory {} · {} noise jobs hidden",
+                metric.total_runtime,
+                metric.total_cputime,
+                format_bytes(metric.io_bytes),
+                format_bytes(metric.peak_memory_bytes),
+                metric.hidden_noise,
+            )),
+        ])
+        .block(Block::default().borders(Borders::ALL).title("Overview")),
+        rows[0],
+    );
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(rows[1]);
+    let groups = dashboard
+        .groups
+        .iter()
+        .map(|group| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{:<24}", truncate(&group.key, 24)),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::raw(format!(
+                    " {:>4} jobs  {:>3} fail  {:>7.2}s",
+                    group.jobs, group.failed, group.runtime
+                )),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        List::new(groups).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("Groups · {}", dashboard.group_by)),
+        ),
+        columns[0],
+    );
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(columns[1]);
+    let failures = dashboard
+        .failures
+        .iter()
+        .map(|job| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("#{:<7}", job.job), Style::default().fg(Color::Red)),
+                Span::raw(truncate(&job.label, 34)),
+                Span::raw(format!("  {:.2}s", job.runtime.unwrap_or_default())),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        List::new(failures).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Triage queue · newest failures"),
+        ),
+        right[0],
+    );
+    let fanouts = dashboard
+        .fanouts
+        .iter()
+        .map(|fanout| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{:>3}× ", fanout.consumers.len()),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(truncate(&fanout.artifact, 42)),
+                Span::styled(
+                    format!("  #{}", fanout.producer_job),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        List::new(fanouts).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("High-fanout artifacts"),
+        ),
+        right[1],
+    );
+}
+
+fn draw_jobs(frame: &mut ratatui::Frame, app: &App, area: ratatui::layout::Rect) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(43), Constraint::Percentage(57)])
+        .split(area);
 
     let items: Vec<ListItem> = app
         .jobs
@@ -205,11 +381,12 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
                     .fg(Color::Cyan),
             ),
             Line::raw(format!(
-                "job #{} · run #{} · status {:?} · {:.3}s",
+                "job #{} · run #{} · status {:?} · {:.3}s · CPU {:.3}s",
                 job.summary.job,
                 job.summary.run,
                 job.summary.status,
-                job.summary.runtime.unwrap_or_default()
+                job.summary.runtime.unwrap_or_default(),
+                job.summary.cputime.unwrap_or_default(),
             )),
             Line::raw(""),
             Line::styled("Command", Style::default().fg(Color::Yellow)),
@@ -226,6 +403,28 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
                 .iter()
                 .map(|artifact| Line::raw(format!("  {} ({})", artifact.path, artifact.kind))),
         );
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            format!("Inputs ({})", job.inputs.len()),
+            Style::default().fg(Color::Yellow),
+        ));
+        lines.extend(
+            job.inputs
+                .iter()
+                .take(50)
+                .map(|artifact| Line::raw(format!("  {} ({})", artifact.path, artifact.kind))),
+        );
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            format!("Downstream consumers ({})", job.fanouts.len()),
+            Style::default().fg(Color::Yellow),
+        ));
+        lines.extend(job.fanouts.iter().take(50).map(|consumer| {
+            Line::raw(format!(
+                "  #{} {} ← {}",
+                consumer.job, consumer.label, consumer.artifact
+            ))
+        }));
         lines.push(Line::raw(""));
         lines.push(Line::styled(
             "Standard output",
@@ -248,11 +447,31 @@ fn draw(frame: &mut ratatui::Frame, app: &App) {
             .wrap(Wrap { trim: false }),
         columns[1],
     );
-    frame.render_widget(
-        Paragraph::new(" ↑/↓ or j/k select · / search · f status · r refresh · q quit ")
-            .style(Style::default().fg(Color::DarkGray)),
-        vertical[2],
-    );
+}
+
+fn truncate(value: &str, width: usize) -> String {
+    let count = value.chars().count();
+    if count <= width {
+        return value.to_owned();
+    }
+    value
+        .chars()
+        .take(width.saturating_sub(1))
+        .collect::<String>()
+        + "…"
+}
+
+fn format_bytes(value: i64) -> String {
+    let value = value.max(0) as f64;
+    if value >= 1024.0 * 1024.0 * 1024.0 {
+        format!("{:.1} GiB", value / (1024.0 * 1024.0 * 1024.0))
+    } else if value >= 1024.0 * 1024.0 {
+        format!("{:.1} MiB", value / (1024.0 * 1024.0))
+    } else if value >= 1024.0 {
+        format!("{:.1} KiB", value / 1024.0)
+    } else {
+        format!("{} B", value as i64)
+    }
 }
 
 pub fn run() -> Result<()> {
@@ -291,6 +510,20 @@ pub fn run() -> Result<()> {
                     match key.code {
                         KeyCode::Char('q') => break,
                         KeyCode::Char('/') => app.editing = true,
+                        KeyCode::Char('d') => {
+                            app.view = if app.view == View::Dashboard {
+                                View::Jobs
+                            } else {
+                                View::Dashboard
+                            };
+                        }
+                        KeyCode::Char('t') => {
+                            app.state = JobState::Failed;
+                            app.view = View::Jobs;
+                            app.refresh()?;
+                        }
+                        KeyCode::Char('g') if app.view == View::Dashboard => app.cycle_group()?,
+                        KeyCode::Char('n') => app.toggle_noise()?,
                         KeyCode::Char('f') => app.cycle_state()?,
                         KeyCode::Char('r') => app.refresh()?,
                         KeyCode::Down | KeyCode::Char('j') => app.move_selection(1)?,
