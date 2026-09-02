@@ -3,6 +3,8 @@ use std::path::Path;
 
 #[path = "mcp.rs"]
 mod mcp;
+#[path = "otel.rs"]
+mod otel;
 #[path = "tui.rs"]
 mod tui;
 #[path = "ui.rs"]
@@ -18,8 +20,9 @@ fn main() -> Result<()> {
         "wake-ui" => ui::run(),
         "wake-tui" => tui::run(),
         "wake-mcp" => mcp::run(),
+        "wake-otel" => otel::run(),
         name => Err(anyhow!(
-            "{name} must be installed or linked as wake-ui, wake-tui, or wake-mcp"
+            "{name} must be installed or linked as wake-ui, wake-tui, wake-mcp, or wake-otel"
         )),
     }
 }

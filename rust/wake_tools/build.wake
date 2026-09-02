@@ -22,5 +22,6 @@ export def buildWakeTools _ =
     require Pass ui = installAs "lib/wake/wake-ui" tools
     require Pass tui = installAs "lib/wake/wake-tui" tools
     require Pass mcp = installAs "lib/wake/wake-mcp" tools
+    require Pass otel = installAs "lib/wake/wake-otel" tools
 
-    Pass (ui, tui, mcp, Nil)
+    Pass (ui, tui, mcp, otel, Nil)

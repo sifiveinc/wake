@@ -42,9 +42,11 @@ compile_commands.json
 /lib/wake/wake-ui
 /lib/wake/wake-tui
 /lib/wake/wake-mcp
+/lib/wake/wake-otel
 /lib/wake/libpreload-wake.*
 /vendor/lemon/lemon.*
 /tmp
+/.wake/
 *.swp
 *.swo
 *.swn

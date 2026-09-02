@@ -226,6 +226,28 @@ standard input and output. For example:
 The MCP server offers `list_wake_jobs`, `get_wake_job`, and `list_wake_runs`.
 It never modifies the Wake database or workspace.
 
+## OpenTelemetry
+
+Wake can export each completed build as an OpenTelemetry trace using
+OTLP/HTTP with protobuf. Set a standard OTLP endpoint to enable it:
+
+```sh
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 wake build
+```
+
+Alternatively, `wake --otel build` enables export to the OpenTelemetry default
+endpoint. `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`,
+`OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`,
+and the standard trace sampler variables are supported. Set
+`OTEL_SDK_DISABLED=true` to disable export.
+
+Each invocation becomes a `wake.run` span with child spans for jobs executed by
+that invocation. Spans include job labels, status, timing, resource usage, and
+cache counts; commands, environment variables, logs, and artifact paths are not
+exported. Telemetry errors produce a warning but never change the build result.
+See [OpenTelemetry support](share/doc/wake/opentelemetry.md) for configuration
+and the trace schema.
+
 Documentation for wake can be found in [share/doc/wake](share/doc/wake).
 
  - Try the [Tutorial](share/doc/wake/tutorial.md) for a step-by-step

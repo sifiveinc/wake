@@ -59,6 +59,29 @@ pub struct RunSummary {
     pub commandline: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct TelemetryRun {
+    pub run: i64,
+    pub starttime: i64,
+    pub endtime: i64,
+    pub used_jobs: i64,
+    pub jobs: Vec<TelemetryJob>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TelemetryJob {
+    pub job: i64,
+    pub label: String,
+    pub status: i64,
+    pub runtime: f64,
+    pub cputime: f64,
+    pub membytes: i64,
+    pub ibytes: i64,
+    pub obytes: i64,
+    pub starttime: i64,
+    pub endtime: i64,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub enum JobState {
     #[default]
@@ -291,6 +314,60 @@ impl WakeDb {
             .collect::<rusqlite::Result<_>>()?;
         Ok(runs)
     }
+
+    pub fn telemetry_run(&self, run_id: i64) -> Result<Option<TelemetryRun>> {
+        let connection = self.open()?;
+        let run = connection.query_row(
+            "SELECT run_id, time, end_time FROM runs WHERE run_id = ?1 AND end_time IS NOT NULL",
+            [run_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        );
+        let (run, starttime, endtime) = match run {
+            Ok(run) => run,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let used_jobs = connection.query_row(
+            "SELECT count(*) FROM run_jobs WHERE run_id = ?1",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        let mut statement = connection.prepare(
+            "SELECT j.job_id, j.label, s.status, s.runtime, s.cputime, s.membytes, \
+                    s.ibytes, s.obytes, j.starttime, j.endtime \
+             FROM jobs j JOIN stats s ON j.stat_id = s.stat_id \
+             WHERE j.run_id = ?1 ORDER BY j.job_id",
+        )?;
+        let jobs = statement
+            .query_map([run_id], |row| {
+                Ok(TelemetryJob {
+                    job: row.get(0)?,
+                    label: row.get(1)?,
+                    status: row.get(2)?,
+                    runtime: row.get(3)?,
+                    cputime: row.get(4)?,
+                    membytes: row.get(5)?,
+                    ibytes: row.get(6)?,
+                    obytes: row.get(7)?,
+                    starttime: row.get(8)?,
+                    endtime: row.get(9)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(Some(TelemetryRun {
+            run,
+            starttime,
+            endtime,
+            used_jobs,
+            jobs,
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -318,5 +395,42 @@ mod tests {
         let result = WakeDb::new(&path);
         std::fs::remove_file(path).unwrap();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn reads_completed_run_for_telemetry() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("wake-telemetry-{suffix}.db"));
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA user_version = 1;
+                 CREATE TABLE runs(run_id INTEGER PRIMARY KEY, time INTEGER, end_time INTEGER);
+                 CREATE TABLE run_jobs(run_id INTEGER, job_id INTEGER);
+                 CREATE TABLE stats(stat_id INTEGER PRIMARY KEY, status INTEGER, runtime REAL,
+                                    cputime REAL, membytes INTEGER, ibytes INTEGER, obytes INTEGER);
+                 CREATE TABLE jobs(job_id INTEGER PRIMARY KEY, run_id INTEGER, label TEXT,
+                                   stat_id INTEGER, starttime INTEGER, endtime INTEGER);
+                 INSERT INTO runs VALUES(7, 100, 900);
+                 INSERT INTO stats VALUES(3, 0, 0.8, 0.4, 1024, 20, 30);
+                 INSERT INTO jobs VALUES(11, 7, 'compile', 3, 120, 800);
+                 INSERT INTO run_jobs VALUES(7, 11);
+                 INSERT INTO run_jobs VALUES(7, 4);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let run = WakeDb::new(&path)
+            .unwrap()
+            .telemetry_run(7)
+            .unwrap()
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(run.used_jobs, 2);
+        assert_eq!(run.jobs.len(), 1);
+        assert_eq!(run.jobs[0].label, "compile");
     }
 }

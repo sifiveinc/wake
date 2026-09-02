@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <wcl/defer.h>
 #include <wcl/filepath.h>
@@ -471,6 +472,7 @@ void print_help(const char *argv0) {
     << "    --ui-port PORT     Port for the UI server (default 8080)"                      << std::endl
     << "    --tui              Open the interactive artifact triage TUI (also: wake tui)" << std::endl
     << "    --mcp              Serve Wake's read-only MCP server over stdio (also: wake mcp)" << std::endl
+    << "    --otel             Export this run as OTLP/HTTP traces after it completes"     << std::endl
     << std::endl
     << "  Help functions:" << std::endl
     << "    --version          Print the version of wake on standard output"               << std::endl
@@ -580,6 +582,51 @@ static bool gc_dead_cas_blobs(cas::Cas &cas, Database &db) {
   return pass;
 }
 
+static bool equals_ignore_case(const char *value, const char *expected) {
+  if (!value) return false;
+  while (*value && *expected) {
+    if (std::tolower(static_cast<unsigned char>(*value)) !=
+        std::tolower(static_cast<unsigned char>(*expected)))
+      return false;
+    ++value;
+    ++expected;
+  }
+  return *value == 0 && *expected == 0;
+}
+
+static bool otel_enabled(bool command_line) {
+  if (equals_ignore_case(getenv("OTEL_SDK_DISABLED"), "true")) return false;
+  return command_line || getenv("OTEL_EXPORTER_OTLP_ENDPOINT") ||
+         getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+}
+
+static void export_otel_run(long run_id, int exit_code) {
+  std::string exporter = wcl::make_canonical(find_execpath() + "/../lib/wake/wake-otel");
+  std::string run = std::to_string(run_id);
+  std::string status = std::to_string(exit_code);
+  pid_t pid = fork();
+  if (pid == 0) {
+    execl(exporter.c_str(), "wake-otel", "--run-id", run.c_str(), "--exit-code", status.c_str(),
+          "--wake-version", VERSION_STR, nullptr);
+    std::cerr << "exec(" << exporter << "): " << strerror(errno) << std::endl;
+    _exit(127);
+  }
+  if (pid < 0) {
+    std::cerr << "warning: unable to start OpenTelemetry exporter: " << strerror(errno)
+              << std::endl;
+    return;
+  }
+
+  int wait_status = 0;
+  pid_t waited;
+  do {
+    waited = waitpid(pid, &wait_status, 0);
+  } while (waited == -1 && errno == EINTR);
+  if (waited != pid || !WIFEXITED(wait_status) || WEXITSTATUS(wait_status) != 0) {
+    std::cerr << "warning: OpenTelemetry export failed (build result unaffected)" << std::endl;
+  }
+}
+
 int main(int argc, char **argv) {
   // Make sure we always get core dumps but don't fail
   // if that fails for some reason.
@@ -610,6 +657,7 @@ int main(int argc, char **argv) {
   }
 
   CommandLineOptions clo(argc, argv);
+  const bool export_otel = otel_enabled(clo.otel);
   const bool ui_mode = clo.ui || clo.ui_address || clo.ui_port;
   const bool tui_mode = clo.tui;
   const bool mcp_mode = clo.mcp;
@@ -1434,7 +1482,9 @@ int main(int argc, char **argv) {
     }
   }
 
+  const long completed_run = db.current_run_id();
   db.finish_run();
+  if (export_otel) export_otel_run(completed_run, pass ? 0 : 1);
   db.clean();
 
   if (!gc_dead_cas_blobs(*cas_ctx.get_store(), db))

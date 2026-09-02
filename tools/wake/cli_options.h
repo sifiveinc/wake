@@ -74,6 +74,7 @@ struct CommandLineOptions {
   bool ui;
   bool tui;
   bool mcp;
+  bool otel;
   bool rm;
   bool recursive;
   std::optional<bool> log_header_align;
@@ -210,6 +211,7 @@ struct CommandLineOptions {
       {0, "ui", GOPT_ARGUMENT_FORBIDDEN},
       {0, "tui", GOPT_ARGUMENT_FORBIDDEN},
       {0, "mcp", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "otel", GOPT_ARGUMENT_FORBIDDEN},
       {0, "ui-address", GOPT_ARGUMENT_REQUIRED},
       {0, "ui-port", GOPT_ARGUMENT_REQUIRED},
       {0, 0, GOPT_LAST}
@@ -265,6 +267,7 @@ struct CommandLineOptions {
     ui = arg(options, "ui")->count;
     tui = arg(options, "tui")->count;
     mcp = arg(options, "mcp")->count;
+    otel = arg(options, "otel")->count;
     rm = arg(options, "rm")->count;
     recursive = arg(options, "recursive")->count;
 
