@@ -792,7 +792,8 @@ export def rscApiGetStringBlob (blob: CacheSearchBlob): Result String Error =
     Pass content
 
 # rscApiGetBlobsToCas: Batched analogue of rscApiGetFileBlobToCas. Downloads many file blobs,
-# verifies each blob's hash, and ingests each into CAS. Returns the PreparedStagingItems
+# verifies each blob's hash, and ingests each into CAS. Inline blob content is stored directly in
+# CAS rather than being written to a temporary file. Returns the PreparedStagingItems
 # (in input order) so the caller can materialize them later, after every blob for a job has been verified.
 export def rscApiGetBlobsToCas (entries: List (Pair CacheSearchBlob (Pair String Integer))): Result (List PreparedStagingItem) Error =
     def blobs =
@@ -809,24 +810,31 @@ export def rscApiGetBlobsToCas (entries: List (Pair CacheSearchBlob (Pair String
         require Some resolvedContent = mlookup blobId contentById
         else failWithError "rsc: no downloaded bytes found for blob {blobId}"
 
-        require Pass blobPath = match resolvedContent
-            Left downloadedPath -> Pass downloadedPath
-            # CAS ingestion needs a path, unlike the stdout/stderr string consumer above.
-            Right inlineContent -> writeTempFile "rsc.blob.{blobId}" inlineContent
-
-        def actualHash = blobPath.getPathHash
+        def actualHash = match resolvedContent
+            Left downloadedPath -> downloadedPath.getPathHash
+            Right inlineContent -> hashString inlineContent
 
         require Pass _ = verifyBlobHash blobId actualHash contentHash
 
-        # Build a synthetic PreparedStagingItem from the staging path under ".build/wake-{pid}/...".
-        # That path will be ingested and reflink/copy'd into CAS.
-        def preparedItem =
-            PreparedStagingItem
-            (StagingFile (StagingFileOutput path blobPath.getPathName mode 0 0)) # use 0 for mtime; This will be set to the current time on materialization.
-            contentHash
+        # Use 0 for mtime; this is set to the current time on materialization. The staging path is
+        # not needed after CAS ingestion, so inline blobs use their destination as a placeholder.
+        require Pass preparedItem = match resolvedContent
+            Left downloadedPath ->
+                PreparedStagingItem
+                (StagingFile (StagingFileOutput path downloadedPath.getPathName mode 0 0))
+                contentHash
+                | Pass
+            Right inlineContent ->
+                require Pass _ = ingestStringIntoCas path inlineContent contentHash
+
+                Pass (PreparedStagingItem (StagingFile (StagingFileOutput path path mode 0 0)) contentHash)
+
+        def ingestPrepared = match resolvedContent
+            Left _ -> ingestPreparedStagingItemIntoCas preparedItem
+            Right _ -> Pass Unit
 
         require Pass _ =
-            ingestPreparedStagingItemIntoCas preparedItem
+            ingestPrepared
             | addErrorContext "rsc: Failed to ingest blob {blobId} into CAS for {path}"
 
         Pass preparedItem

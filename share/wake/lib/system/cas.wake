@@ -56,6 +56,11 @@ def primCasIngestStagedItem (destPath: String) (itemType: String) (stagingPathOr
     raw destPath itemType stagingPathOrTarget hash
     | rmapError makeError
 
+# Store inline content in CAS under its already-verified hash.
+export def ingestStringIntoCas (destPath: String) (content: String) (hash: String): Result Unit Error =
+    primCasIngestStagedItem destPath "string" content hash
+    | addErrorContext "Ingesting inline content for {destPath}"
+
 # Materialize a staged item directly into the workspace without hashing it or storing it in CAS.
 def primMaterializeStagedWorkspaceItem (destPath: String) (itemType: String) (stagingPathOrTarget: String) (mode: Integer) (mtimeSec: Integer) (mtimeNsec: Integer): Result Unit Error =
     def raw destPath itemType stagingPathOrTarget mode mtimeSec mtimeNsec =

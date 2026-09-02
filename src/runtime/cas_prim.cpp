@@ -429,6 +429,7 @@ static PRIMFN(prim_materialize_staged_workspace_item) {
 // prim "cas_ingest_staged_item" destPath type stagingPathOrTarget hash -> Result Unit Error
 // Stores staged content in CAS under its precomputed hash. Does not write to the workspace.
 // - type="file": stagingPathOrTarget = staging path
+// - type="string": stagingPathOrTarget = inline file contents
 // - type="symlink": stagingPathOrTarget = symlink target
 // - type="directory": no-op (directories have no CAS blob)
 static PRIMTYPE(type_cas_ingest_staged_item) {
@@ -490,6 +491,24 @@ static PRIMFN(prim_cas_ingest_staged_item) {
     }
 
     cleanup_staging_file(staging_path, dest_str);
+
+  } else if (type == "string") {
+    std::string content(staging_path_or_target->c_str(), staging_path_or_target->size());
+    cas::ContentHash expected_hash;
+    std::string parse_error;
+    if (!parse_hash_string(hash_str->c_str(), expected_hash, parse_error)) {
+      runtime.heap.reserve(reserve_result() + String::reserve(parse_error.size()));
+      auto err = String::claim(runtime.heap, parse_error);
+      RETURN(claim_result(runtime.heap, false, err));
+    }
+
+    auto store_result = store->store_blob_with_hash(content, expected_hash);
+    if (!store_result) {
+      std::string msg = "Failed to store inline staged file in CAS for " + dest_str;
+      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+      auto err = String::claim(runtime.heap, msg);
+      RETURN(claim_result(runtime.heap, false, err));
+    }
 
   } else if (type == "symlink") {
     // Handle symlink: insert the target bytes into CAS under the precomputed hash.

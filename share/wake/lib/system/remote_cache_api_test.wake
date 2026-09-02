@@ -4,11 +4,13 @@ from wake import _
 
 export def testInlineStringBlobDecoding Unit: Result Unit Error =
     def content = "shared stdout"
+
     def encoded =
         content
         | unicodeToBytes
         | map (\byte ('%', strHex byte, Nil) | cat)
         | cat
+
     def blob = CacheSearchBlob "shared" "db://{encoded}" (hashString content)
 
     require Pass values = rscApiGetStringBlobs (blob, blob, Nil)
@@ -18,6 +20,29 @@ export def testInlineStringBlobDecoding Unit: Result Unit Error =
 
     require True = actual1 ==* content && actual2 ==* content
     else failWithError "Inline string blobs did not decode to expected content"
+
+    Pass Unit
+
+export def testInlineFileBlobStaging Unit: Result Unit Error =
+    def content = "inline file"
+
+    def encoded =
+        content
+        | unicodeToBytes
+        | map (\byte ('%', strHex byte, Nil) | cat)
+        | cat
+
+    def blob = CacheSearchBlob "inline-file" "db://{encoded}" (hashString content)
+
+    require Pass preparedItems = rscApiGetBlobsToCas (Pair blob (Pair "test-inline-file" 0644), Nil)
+
+    require (PreparedStagingItem (StagingFile (StagingFileOutput path stagingPath mode 0 0)) hash, Nil) =
+        preparedItems
+    else failWithError "Expected inline file blob to be prepared for CAS materialization"
+
+    require True =
+        path ==* "test-inline-file" && stagingPath ==* path && mode == 0644 && hash ==* hashString content
+    else failWithError "Inline file staging item did not preserve metadata"
 
     Pass Unit
 
@@ -97,6 +122,7 @@ export def testDisablingCacheWithEndpoints (api: RemoteCacheApi): Result Unit Er
 
     def runTests Unit: Result Unit Error =
         require Pass _ = testInlineStringBlobDecoding Unit
+        require Pass _ = testInlineFileBlobStaging Unit
 
         # First Disable Cache
         require Pass _ = testDisableCache Unit
