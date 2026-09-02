@@ -72,6 +72,7 @@ struct CommandLineOptions {
   bool include_hidden;
   bool ui;
   bool tui;
+  bool tunnel_vision;
   bool mcp;
   bool otel;
   bool rm;
@@ -204,6 +205,7 @@ struct CommandLineOptions {
       {0, "include-hidden", GOPT_ARGUMENT_FORBIDDEN},
       {0, "ui", GOPT_ARGUMENT_FORBIDDEN},
       {0, "tui", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "tunnel-vision", GOPT_ARGUMENT_FORBIDDEN},
       {0, "mcp", GOPT_ARGUMENT_FORBIDDEN},
       {0, "otel", GOPT_ARGUMENT_FORBIDDEN},
       {0, "ui-address", GOPT_ARGUMENT_REQUIRED},
@@ -259,6 +261,7 @@ struct CommandLineOptions {
     include_hidden = arg(options, "include-hidden")->count;
     ui = arg(options, "ui")->count;
     tui = arg(options, "tui")->count;
+    tunnel_vision = arg(options, "tunnel-vision")->count;
     mcp = arg(options, "mcp")->count;
     otel = arg(options, "otel")->count;
     rm = arg(options, "rm")->count;

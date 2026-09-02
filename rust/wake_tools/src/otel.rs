@@ -118,6 +118,36 @@ fn job_attributes(job: &TelemetryJob) -> Vec<KeyValue> {
     ]
 }
 
+fn tunnel_attributes_from(run_id: i64, value: impl Fn(&str) -> Option<String>) -> Vec<KeyValue> {
+    let mappings = [
+        ("WAKE_TUNNEL_TRIAGE_ID", "wake.triage.id"),
+        ("WAKE_TUNNEL_SOURCE_ID", "wake.source.id"),
+        ("WAKE_RUNNER_KIND", "wake.runner.kind"),
+        ("WAKE_RUNNER_HOST", "wake.runner.host"),
+    ];
+    let mut attributes = mappings
+        .into_iter()
+        .filter_map(|(variable, key)| {
+            value(variable)
+                .filter(|value| !value.is_empty())
+                .map(|value| KeyValue::new(key, value))
+        })
+        .collect::<Vec<_>>();
+    if let Some(source) = value("WAKE_TUNNEL_SOURCE_ID") {
+        if !source.is_empty() {
+            attributes.push(KeyValue::new(
+                "wake.run.coordinate",
+                format!("{source}:{run_id}"),
+            ));
+        }
+    }
+    attributes
+}
+
+fn tunnel_attributes(run_id: i64) -> Vec<KeyValue> {
+    tunnel_attributes_from(run_id, |name| std::env::var(name).ok())
+}
+
 pub fn export_run(run: &TelemetryRun, exit_code: i32, wake_version: &str) -> Result<()> {
     let exporter = OtlpSpanExporter::builder()
         .with_http()
@@ -143,17 +173,19 @@ pub fn export_run(run: &TelemetryRun, exit_code: i32, wake_version: &str) -> Res
     let tracer = provider.tracer("wake");
     let executed_jobs = i64::try_from(run.jobs.len()).unwrap_or(i64::MAX);
     let cached_jobs = run.used_jobs.saturating_sub(executed_jobs);
+    let mut run_attributes = vec![
+        KeyValue::new("wake.run.id", run.run),
+        KeyValue::new("wake.run.exit_code", i64::from(exit_code)),
+        KeyValue::new("wake.jobs.used", run.used_jobs),
+        KeyValue::new("wake.jobs.executed", executed_jobs),
+        KeyValue::new("wake.jobs.cached", cached_jobs),
+    ];
+    run_attributes.extend(tunnel_attributes(run.run));
     let run_span = tracer
         .span_builder("wake.run")
         .with_kind(SpanKind::Internal)
         .with_start_time(timestamp(run.starttime)?)
-        .with_attributes(vec![
-            KeyValue::new("wake.run.id", run.run),
-            KeyValue::new("wake.run.exit_code", i64::from(exit_code)),
-            KeyValue::new("wake.jobs.used", run.used_jobs),
-            KeyValue::new("wake.jobs.executed", executed_jobs),
-            KeyValue::new("wake.jobs.cached", cached_jobs),
-        ])
+        .with_attributes(run_attributes)
         .start_with_context(&tracer, &parent_context());
     let run_context = Context::current_with_span(run_span);
 
@@ -231,5 +263,23 @@ mod tests {
             span_context.trace_id().to_string(),
             "4bf92f3577b34da6a3ce929d0e0e4736"
         );
+    }
+
+    #[test]
+    fn maps_tunnel_correlation_attributes() {
+        let attributes = tunnel_attributes_from(17, |name| match name {
+            "WAKE_TUNNEL_TRIAGE_ID" => Some("triage-4".to_owned()),
+            "WAKE_TUNNEL_SOURCE_ID" => Some("slurm-a".to_owned()),
+            "WAKE_RUNNER_KIND" => Some("slurm".to_owned()),
+            "WAKE_RUNNER_HOST" => Some("gpu-a".to_owned()),
+            _ => None,
+        });
+        let pairs = attributes
+            .iter()
+            .map(|attribute| (attribute.key.as_str(), attribute.value.to_string()))
+            .collect::<Vec<_>>();
+        assert!(pairs.contains(&("wake.triage.id", "triage-4".to_owned())));
+        assert!(pairs.contains(&("wake.source.id", "slurm-a".to_owned())));
+        assert!(pairs.contains(&("wake.run.coordinate", "slurm-a:17".to_owned())));
     }
 }

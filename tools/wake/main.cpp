@@ -453,6 +453,7 @@ void print_help(const char *argv0) {
     << "    --ui-address ADDR  Address for the UI server (default 127.0.0.1)"              << std::endl
     << "    --ui-port PORT     Port for the UI server (default 8080)"                      << std::endl
     << "    --tui              Open the interactive artifact triage TUI (also: wake tui)" << std::endl
+    << "    --tunnel-vision    Open federated local/remote triage (also: wake tunnel-vision)" << std::endl
     << "    --mcp              Serve Wake's read-only MCP server over stdio (also: wake mcp)" << std::endl
     << "    --otel             Export this run as OTLP/HTTP traces after it completes"     << std::endl
     << std::endl
@@ -630,18 +631,21 @@ int main(int argc, char **argv) {
   // companion subcommands into flags so options can follow them.
   char ui_option[] = "--ui";
   char tui_option[] = "--tui";
+  char tunnel_vision_option[] = "--tunnel-vision";
   char mcp_option[] = "--mcp";
   if (argc > 1) {
     std::string subcommand(argv[1]);
     if (subcommand == "ui") argv[1] = ui_option;
     if (subcommand == "tui") argv[1] = tui_option;
+    if (subcommand == "tunnel-vision") argv[1] = tunnel_vision_option;
     if (subcommand == "mcp") argv[1] = mcp_option;
   }
 
   CommandLineOptions clo(argc, argv);
   const bool export_otel = otel_enabled(clo.otel);
   const bool ui_mode = clo.ui || clo.ui_address || clo.ui_port;
-  const bool tui_mode = clo.tui;
+  const bool tunnel_vision_mode = clo.tunnel_vision;
+  const bool tui_mode = clo.tui || tunnel_vision_mode;
   const bool mcp_mode = clo.mcp;
   const bool companion_mode = ui_mode || tui_mode || mcp_mode;
 
@@ -756,7 +760,7 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  if (clo.workspace && !chdir_workspace(clo.chdir, wake_cwd, src_dir)) {
+  if (clo.workspace && !tunnel_vision_mode && !chdir_workspace(clo.chdir, wake_cwd, src_dir)) {
     std::cerr << "Unable to locate wake.db in any parent directory." << std::endl;
     return 1;
   }
@@ -768,7 +772,11 @@ int main(int argc, char **argv) {
       execl(companion.c_str(), name, "--address", clo.ui_address ? clo.ui_address : "127.0.0.1",
             "--port", clo.ui_port ? clo.ui_port : "8080", nullptr);
     } else {
-      execl(companion.c_str(), name, nullptr);
+      if (tunnel_vision_mode) {
+        execl(companion.c_str(), name, "--tunnel-vision", nullptr);
+      } else {
+        execl(companion.c_str(), name, nullptr);
+      }
     }
     std::cerr << "exec(" << companion << "): " << strerror(errno) << std::endl;
     return 1;

@@ -33,6 +33,22 @@ An orchestrator can make `wake.run` a child of an existing distributed trace
 by passing its W3C context in `WAKE_OTEL_PARENT_TRACEPARENT` and, when present,
 `WAKE_OTEL_PARENT_TRACESTATE`. Wake does not write these variables itself.
 
+For a Tunnel Vision triage, propagate the same parent context to every local,
+Slurm, and Ray invocation. Each `wake.run` then becomes a sibling under the
+orchestrator span, so overlapping runs remain parallel rather than being
+misrepresented as parent/child work. These optional correlation attributes are
+also copied onto each `wake.run` span:
+
+- `WAKE_TUNNEL_TRIAGE_ID` as `wake.triage.id`
+- `WAKE_TUNNEL_SOURCE_ID` as `wake.source.id`
+- `WAKE_RUNNER_KIND` as `wake.runner.kind`
+- `WAKE_RUNNER_HOST` as `wake.runner.host`
+- `<source>:<run_id>` as `wake.run.coordinate` when a source ID is present
+
+Use the same triage and source IDs in `.wake/tunnel-vision.json`. The W3C trace
+context provides causal linkage, while the explicit triage ID remains a stable
+search key if a collector samples or stores trace segments independently.
+
 The client uses OTLP/HTTP protobuf. HTTPS endpoints use the host's trusted root
 certificates. If no service name is configured, Wake uses `wake`.
 
@@ -43,6 +59,7 @@ run start and end timestamps. It is a root span unless an orchestrator supplies
 the W3C parent context described above. It contains:
 
 - `wake.run.id`
+- `wake.run.coordinate` (when Tunnel Vision source metadata is set)
 - `wake.run.exit_code`
 - `wake.jobs.used`
 - `wake.jobs.executed`
@@ -62,3 +79,6 @@ failed runs set the OpenTelemetry span status to error.
 
 Wake deliberately omits command lines, environment variables, standard output,
 standard error, artifact paths, and file contents from telemetry.
+
+See [Tunnel Vision](tunnel-vision.md) for the federated TUI and its separate,
+on-demand read-only artifact data plane.
