@@ -186,10 +186,13 @@ overrides wakeroot, and wakeroot overrides nothing
 
 # Documentation
 
-## Artifact triage UI
+## Artifact triage tools
 
-Run `wake ui` (or `wake --ui`) from a workspace to browse recorded jobs, their
-output artifacts, status, and logs. The server is read-only and listens at
+Wake includes three read-only Rust tools for inspecting build artifacts and
+history.
+
+Run `wake ui` (or `wake --ui`) from a workspace to browse recorded jobs, output
+artifacts, status, and logs in a browser. The server listens at
 `http://127.0.0.1:8080` by default.
 
 To connect from another machine, explicitly select a reachable interface and
@@ -201,6 +204,27 @@ wake ui --ui-address 0.0.0.0 --ui-port 8080
 
 Remote mode has no built-in authentication. Use it only on a trusted network,
 or put it behind an authenticated reverse proxy or SSH tunnel.
+
+Run `wake tui` (or `wake --tui`) for an interactive terminal view. Use the
+arrow keys or `j`/`k` to select a job, `/` to search, `f` to show only failed
+jobs, `r` to refresh, and `q` to quit.
+
+Run `wake mcp` (or `wake --mcp`) to expose build data to an MCP client over
+standard input and output. For example:
+
+```json
+{
+  "mcpServers": {
+    "wake": {
+      "command": "/path/to/wake",
+      "args": ["mcp", "--chdir", "/path/to/workspace"]
+    }
+  }
+}
+```
+
+The MCP server offers `list_wake_jobs`, `get_wake_job`, and `list_wake_runs`.
+It never modifies the Wake database or workspace.
 
 Documentation for wake can be found in [share/doc/wake](share/doc/wake).
 

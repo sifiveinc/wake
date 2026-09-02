@@ -39,6 +39,9 @@ compile_commands.json
 /lib/wake/shim-wake.*
 /lib/wake/wake-hash
 /lib/wake/wake-hash.*
+/lib/wake/wake-ui
+/lib/wake/wake-tui
+/lib/wake/wake-mcp
 /lib/wake/libpreload-wake.*
 /vendor/lemon/lemon.*
 /tmp
@@ -51,3 +54,4 @@ compile_commands.json
 /rust/entity/target/*
 /rust/log_viewer/target/*
 /rust/rsc/target/*
+/rust/wake_tools/target/*

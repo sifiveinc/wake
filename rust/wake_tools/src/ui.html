@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Wake artifact triage</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1020;--panel:#121a2d;--line:#27324b;--text:#e6edf7;--muted:#96a2b8;--ok:#4ade80;--run:#facc15;--bad:#fb7185}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px ui-sans-serif,system-ui,sans-serif}header{padding:22px 28px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:18px}h1{font-size:19px;margin:0}header span,.muted{color:var(--muted)}main{display:grid;grid-template-columns:minmax(360px,42%) 1fr;height:calc(100vh - 68px)}aside{border-right:1px solid var(--line);overflow:auto}.tools{padding:14px;position:sticky;top:0;background:var(--bg);display:flex;gap:8px}input,select{background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--text);padding:9px 10px}input{flex:1}.job{padding:13px 16px;border-top:1px solid var(--line);cursor:pointer}.job:hover,.job.on{background:var(--panel)}.row{display:flex;justify-content:space-between;gap:12px}.label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bad{color:var(--bad)}.ok{color:var(--ok)}.run{color:var(--run)}section{overflow:auto;padding:24px}h2{margin:0 0 8px;font-size:18px}h3{font-size:13px;color:var(--muted);text-transform:uppercase;margin:24px 0 8px}.card,pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:13px}pre{white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto}.files{margin:0;padding-left:20px}.files li{padding:3px 0}code{color:#bfdbfe}.empty{color:var(--muted);padding:30px}@media(max-width:760px){main{display:block;height:auto}aside{border-right:0;max-height:48vh}section{padding:18px}}
+  </style>
+</head>
+<body>
+  <header><h1>Wake artifact triage</h1><span id="summary">Loading…</span></header>
+  <main>
+    <aside><div class="tools"><input id="q" placeholder="Search jobs or artifacts"><select id="state"><option value="all">All</option><option value="failed">Failed</option><option value="passed">Passed</option></select></div><div id="jobs"></div></aside>
+    <section id="detail"><div class="empty">Select a job to inspect its artifacts and logs.</div></section>
+  </main>
+  <script>
+    let data=[],selected=null;
+    const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const state=()=>document.querySelector('#state').value;
+    const status=j=>j.status===null?['running','run']:j.status===0?['passed','ok']:['failed','bad'];
+    async function load(){const q=encodeURIComponent(document.querySelector('#q').value);data=await fetch(`/api/jobs?q=${q}&state=${state()}`).then(r=>{if(!r.ok)throw Error(r.statusText);return r.json()});render()}
+    function render(){document.querySelector('#summary').textContent=`${data.length} jobs`;document.querySelector('#jobs').innerHTML=data.map(j=>{const [text,css]=status(j);return `<div class="job ${selected===j.job?'on':''}" data-id="${j.job}"><div class="row"><b class="label">${esc(j.label||'(unlabelled)')}</b><span class="${css}">${text}</span></div><div class="row muted"><span>#${j.job}</span><span>${j.artifacts.length} artifact${j.artifacts.length===1?'':'s'}</span></div></div>`}).join('')||'<div class="empty">No matching jobs.</div>';document.querySelectorAll('.job').forEach(e=>e.onclick=()=>show(+e.dataset.id))}
+    async function show(id){selected=id;render();const j=await fetch(`/api/jobs/${id}`).then(r=>r.json());const artifacts=j.artifacts||[];document.querySelector('#detail').innerHTML=`<h2>${esc(j.label||'(unlabelled)')}</h2><div class="muted">Job #${j.job} · ${j.status===null?'in flight':`exit ${j.status}`}</div><h3>Command</h3><div class="card"><code>${esc((j.commandline||[]).join(' '))}</code></div><h3>Artifacts (${artifacts.length})</h3><div class="card">${artifacts.length?`<ul class="files">${artifacts.map(f=>`<li><code>${esc(f.path)}</code> <span class="muted">${esc(f.kind)}</span></li>`).join('')}</ul>`:'<span class="muted">No recorded outputs</span>'}</div><h3>Standard output</h3><pre>${esc(j.stdout)||'<span class="muted">Empty</span>'}</pre><h3>Standard error</h3><pre>${esc(j.stderr)||'<span class="muted">Empty</span>'}</pre>`}
+    let timer;document.querySelector('#q').oninput=()=>{clearTimeout(timer);timer=setTimeout(load,180)};document.querySelector('#state').onchange=load;load().catch(e=>document.querySelector('#jobs').innerHTML=`<div class="empty bad">${esc(e)}</div>`);setInterval(load,5000);
+  </script>
+</body>
+</html>
