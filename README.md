@@ -241,6 +241,9 @@ endpoint. `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`,
 and the standard trace sampler variables are supported. Set
 `OTEL_SDK_DISABLED=true` to disable export.
 
+Orchestrators can parent the Wake build graph beneath an existing trace with
+`WAKE_OTEL_PARENT_TRACEPARENT` and `WAKE_OTEL_PARENT_TRACESTATE`.
+
 Each invocation becomes a `wake.run` span with child spans for jobs executed by
 that invocation. Spans include job labels, status, timing, resource usage, and
 cache counts; commands, environment variables, logs, and artifact paths are not

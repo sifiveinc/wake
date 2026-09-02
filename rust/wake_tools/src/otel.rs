@@ -1,13 +1,50 @@
 use crate::db::{TelemetryJob, TelemetryRun};
 use anyhow::{anyhow, Context as _, Result};
+use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::trace::{Span, SpanKind, Status, TraceContextExt, Tracer, TracerProvider as _};
 use opentelemetry::{Context, KeyValue};
 use opentelemetry_otlp::{Protocol, SpanExporter as OtlpSpanExporter, WithExportConfig};
 use opentelemetry_sdk::error::OTelSdkResult;
-use opentelemetry_sdk::trace::{SdkTracerProvider, SpanData};
+use opentelemetry_sdk::propagation::TraceContextPropagator;
+use opentelemetry_sdk::trace::{
+    BatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider, SpanData,
+};
 use opentelemetry_sdk::Resource;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+struct ParentTraceContext {
+    traceparent: String,
+    tracestate: Option<String>,
+}
+
+impl Extractor for ParentTraceContext {
+    fn get(&self, key: &str) -> Option<&str> {
+        match key {
+            "traceparent" => Some(self.traceparent.as_str()),
+            "tracestate" => self.tracestate.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        if self.tracestate.is_some() {
+            vec!["traceparent", "tracestate"]
+        } else {
+            vec!["traceparent"]
+        }
+    }
+}
+
+fn parent_context() -> Context {
+    let Ok(traceparent) = std::env::var("WAKE_OTEL_PARENT_TRACEPARENT") else {
+        return Context::new();
+    };
+    TraceContextPropagator::new().extract(&ParentTraceContext {
+        traceparent,
+        tracestate: std::env::var("WAKE_OTEL_PARENT_TRACESTATE").ok(),
+    })
+}
 
 #[derive(Debug)]
 struct RecordingExporter {
@@ -92,9 +129,16 @@ pub fn export_run(run: &TelemetryRun, exit_code: i32, wake_version: &str) -> Res
         inner: exporter,
         error: Arc::clone(&export_error),
     };
+    let batch_processor = BatchSpanProcessor::builder(exporter)
+        .with_batch_config(
+            BatchConfigBuilder::default()
+                .with_max_queue_size(run.jobs.len().saturating_add(1))
+                .build(),
+        )
+        .build();
     let provider = SdkTracerProvider::builder()
         .with_resource(resource(wake_version))
-        .with_batch_exporter(exporter)
+        .with_span_processor(batch_processor)
         .build();
     let tracer = provider.tracer("wake");
     let executed_jobs = i64::try_from(run.jobs.len()).unwrap_or(i64::MAX);
@@ -110,7 +154,7 @@ pub fn export_run(run: &TelemetryRun, exit_code: i32, wake_version: &str) -> Res
             KeyValue::new("wake.jobs.executed", executed_jobs),
             KeyValue::new("wake.jobs.cached", cached_jobs),
         ])
-        .start(&tracer);
+        .start_with_context(&tracer, &parent_context());
     let run_context = Context::current_with_span(run_span);
 
     for job in &run.jobs {
@@ -134,7 +178,8 @@ pub fn export_run(run: &TelemetryRun, exit_code: i32, wake_version: &str) -> Res
     run_context
         .span()
         .end_with_timestamp(timestamp(run.endtime)?);
-    let shutdown = provider.shutdown();
+    drop(run_context);
+    let shutdown = provider.shutdown_with_timeout(Duration::from_secs(60));
     let recorded_error = export_error
         .lock()
         .map_err(|_| anyhow!("OpenTelemetry exporter error lock was poisoned"))?
@@ -171,5 +216,20 @@ mod tests {
         });
         assert_eq!(attributes.len(), 8);
         assert_eq!(attributes[0].key.as_str(), "wake.job.id");
+    }
+
+    #[test]
+    fn extracts_parent_trace_context() {
+        let context = TraceContextPropagator::new().extract(&ParentTraceContext {
+            traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_owned(),
+            tracestate: None,
+        });
+        let span_context = context.span().span_context().clone();
+        assert!(span_context.is_valid());
+        assert!(span_context.is_remote());
+        assert_eq!(
+            span_context.trace_id().to_string(),
+            "4bf92f3577b34da6a3ce929d0e0e4736"
+        );
     }
 }

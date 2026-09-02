@@ -29,13 +29,18 @@ Wake and the Rust OpenTelemetry SDK honor these standard variables:
 - `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG`
 - `OTEL_SDK_DISABLED`
 
+An orchestrator can make `wake.run` a child of an existing distributed trace
+by passing its W3C context in `WAKE_OTEL_PARENT_TRACEPARENT` and, when present,
+`WAKE_OTEL_PARENT_TRACESTATE`. Wake does not write these variables itself.
+
 The client uses OTLP/HTTP protobuf. HTTPS endpoints use the host's trusted root
 certificates. If no service name is configured, Wake uses `wake`.
 
 ## Trace model
 
-Every exported trace has a `wake.run` root span covering the recorded run start
-and end timestamps. It contains:
+Every exported Wake trace segment has a `wake.run` span covering the recorded
+run start and end timestamps. It is a root span unless an orchestrator supplies
+the W3C parent context described above. It contains:
 
 - `wake.run.id`
 - `wake.run.exit_code`
