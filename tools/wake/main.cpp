@@ -55,6 +55,7 @@
 #include "dst/todst.h"
 #include "json/json5.h"
 #include "markup.h"
+#include "ui.h"
 #include "optimizer/ssa.h"
 #include "parser/cst.h"
 #include "parser/parser.h"
@@ -466,6 +467,9 @@ void print_help(const char *argv0) {
     << "    --simple           Report only label, cmdline, and tags of captured jobs"      << std::endl
     << "    --script   -s      Format captured jobs as an executable shell script"         << std::endl
     << "    --include-hidden   Include hidden introspection jobs in query results"         << std::endl
+    << "    --ui               Serve the artifact triage web UI (also: wake ui)"           << std::endl
+    << "    --ui-address ADDR  Address for the UI server (default 127.0.0.1)"              << std::endl
+    << "    --ui-port PORT     Port for the UI server (default 8080)"                      << std::endl
     << std::endl
     << "  Help functions:" << std::endl
     << "    --version          Print the version of wake on standard output"               << std::endl
@@ -593,6 +597,8 @@ int main(int argc, char **argv) {
   for (int i = 1; i < argc; ++i) original_command_line += " " + shell_escape(argv[i]);
 
   CommandLineOptions clo(argc, argv);
+  const bool ui_mode = clo.ui || clo.ui_address || clo.ui_port ||
+                       (clo.argc == 2 && std::string(clo.argv[1]) == "ui");
 
   if (clo.help) {
     print_help(clo.argv[0]);
@@ -660,7 +666,7 @@ int main(int argc, char **argv) {
                                !clo.input_files.empty() || !clo.labels.empty() ||
                                !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
                                clo.tagdag || clo.canceled || clo.active || clo.queued ||
-                               clo.in_flight || clo.history || clo.ps || clo.attach;
+                               clo.in_flight || clo.history || clo.ps || clo.attach || ui_mode;
 
   // DescribePolicy::human() is the default and doesn't have a flag.
   // DescribePolicy::debug() is overloaded and can't be marked as a db flag
@@ -671,14 +677,16 @@ int main(int argc, char **argv) {
   bool is_db_inspection = is_db_inspect_capture || is_db_inspect_render;
 
   // Arguments are forbidden with these options
-  bool noargs =
-      is_db_inspection || clo.init || clo.html || clo.global || clo.exports || clo.api || clo.exec;
+  bool noargs = is_db_inspection || clo.init || clo.html || clo.global || clo.exports || clo.api ||
+                clo.exec || ui_mode;
   bool targets = clo.argc == 1 && !noargs;
   bool notype = clo.init || is_db_inspection || clo.parse;
   bool noexecute = notype || clo.html || clo.tcheck || clo.dumpssa || clo.global || clo.exports ||
                    clo.api || targets;
 
-  if (noargs && clo.argc > 1) {
+  // `ui` is accepted as a friendly subcommand in addition to `--ui`.
+  const bool ui_subcommand = ui_mode && clo.argc == 2 && std::string(clo.argv[1]) == "ui";
+  if (noargs && clo.argc > 1 && !ui_subcommand) {
     std::cerr << "Unexpected positional arguments on the command-line!" << std::endl;
     std::cerr << "   ";
     for (int i = 1; i < clo.argc; i++) {
@@ -859,6 +867,11 @@ int main(int argc, char **argv) {
     }
 
     return 0;
+  }
+
+  if (ui_mode) {
+    return serve_ui(db, clo.ui_address ? clo.ui_address : "127.0.0.1",
+                    clo.ui_port ? clo.ui_port : "8080");
   }
 
   // If the user asked us to clean the local build, do so.

@@ -186,6 +186,22 @@ overrides wakeroot, and wakeroot overrides nothing
 
 # Documentation
 
+## Artifact triage UI
+
+Run `wake ui` (or `wake --ui`) from a workspace to browse recorded jobs, their
+output artifacts, status, and logs. The server is read-only and listens at
+`http://127.0.0.1:8080` by default.
+
+To connect from another machine, explicitly select a reachable interface and
+port:
+
+```sh
+wake ui --ui-address 0.0.0.0 --ui-port 8080
+```
+
+Remote mode has no built-in authentication. Use it only on a trusted network,
+or put it behind an authenticated reverse proxy or SSH tunnel.
+
 Documentation for wake can be found in [share/doc/wake](share/doc/wake).
 
  - Try the [Tutorial](share/doc/wake/tutorial.md) for a step-by-step
