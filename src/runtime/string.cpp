@@ -26,6 +26,7 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 
@@ -76,6 +77,35 @@ static PRIMFN(prim_strlen) {
   STRING(arg, 0);
   MPZ out(arg->size());
   RETURN(Integer::alloc(runtime.heap, out));
+}
+
+static PRIMTYPE(type_split_once) {
+  TypeVar list;
+  Data::typeList.clone(list);
+  list[0].unify(Data::typeString);
+  return args.size() == 2 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
+         out->unify(list);
+}
+
+static PRIMFN(prim_split_once) {
+  EXPECT(2);
+  STRING(separator, 0);
+  STRING(string, 1);
+
+  const char *begin = string->c_str();
+  const char *end = begin + string->size();
+  const char *match =
+      std::search(begin, end, separator->c_str(), separator->c_str() + separator->size());
+  if (separator->size() != 0 && match == end) RETURN(alloc_nil(runtime.heap));
+
+  size_t prefix_size = match - begin;
+  const char *suffix = match + separator->size();
+  size_t suffix_size = end - suffix;
+  runtime.heap.reserve(reserve_list(2) + String::reserve(prefix_size) +
+                       String::reserve(suffix_size));
+  Value *parts[] = {String::claim(runtime.heap, begin, prefix_size),
+                    String::claim(runtime.heap, suffix, suffix_size)};
+  RETURN(claim_list(runtime.heap, 2, parts));
 }
 
 static PRIMTYPE(type_lcat) {
@@ -838,6 +868,7 @@ static PRIMFN(prim_to_lower) {
 
 void prim_register_string(PrimMap &pmap, StringInfo *info) {
   prim_register(pmap, "strlen", prim_strlen, type_strlen, PRIM_PURE);
+  prim_register(pmap, "split_once", prim_split_once, type_split_once, PRIM_PURE);
   prim_register(pmap, "vcat", prim_vcat, type_vcat, PRIM_PURE);
   prim_register(pmap, "lcat", prim_lcat, type_lcat, PRIM_PURE);
   prim_register(pmap, "explode", prim_explode, type_explode, PRIM_PURE);
