@@ -214,8 +214,6 @@ int attach_job(Database &db, long job_id) {
         << '\n'
         << warning_line("Host FUSE live workspace:") << '\n'
         << warning_line(host_live_workspace) << '\n'
-        << warning_line("Tools unavailable in shell can be run using the host FUSE path") << '\n'
-        << warning_line("above.") << '\n'
         << warning_line("") << '\n'
         << warning_line("WARNING: This shell and the host FUSE workspace are read/write.") << '\n'
         << warning_line("Any changes you make affect the in-progress job and may change") << '\n'

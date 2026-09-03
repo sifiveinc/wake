@@ -13,6 +13,10 @@ Run 12: wake -x 'buildEverything Unit'
   348     [queued]    link core
 ```
 
+When this list is large, combine `--ps` with the other job filters, especially
+`--label`, to narrow it. Other useful filters include `--input`, `--output`,
+`--tag`, and `--job`.
+
 Then attach a shell to job `341`'s live FUSE-sandboxed workspace:
 
 ```
