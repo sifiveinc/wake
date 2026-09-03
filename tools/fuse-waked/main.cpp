@@ -677,6 +677,14 @@ static const char *trace_out(int code) {
     return &buf[0];
   }
 }
+
+// Wakebox maps the FUSE daemon's UID/GID into the sandbox. Report that identity
+// rather than backing-file ownership, which may not be mapped into the sandbox.
+static void set_virtual_ownership(struct stat *stbuf) {
+  stbuf->st_uid = getuid();
+  stbuf->st_gid = getgid();
+}
+
 // Returns file attributes. For staged items, stats the staging file or synthesizes
 // attributes from stored metadata. Resolves hardlinks to their source.
 static int wakefuse_getattr(const char *path, struct stat *stbuf) {
@@ -739,6 +747,7 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
                             if (res == -1) return -errno;
                             // Combine file type from staging file with tracked permissions
                             stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (*f.mode & ~S_IFMT);
+                            set_virtual_ownership(stbuf);
                             return 0;
                           },
                           [stbuf](const StagedSymlinkData &l) {
@@ -747,8 +756,7 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
                             stbuf->st_mode = S_IFLNK | 0777;
                             stbuf->st_nlink = 1;
                             stbuf->st_size = l.target.size();
-                            stbuf->st_uid = getuid();
-                            stbuf->st_gid = getgid();
+                            set_virtual_ownership(stbuf);
                             stbuf->st_mtim = l.mtime;
                             return 0;
                           },
@@ -758,8 +766,7 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
                             stbuf->st_size = 4096;
                             stbuf->st_mode = S_IFDIR | (d.mode & 07777);
                             stbuf->st_nlink = 1;
-                            stbuf->st_uid = getuid();
-                            stbuf->st_gid = getgid();
+                            set_virtual_ownership(stbuf);
                             stbuf->st_mtim = d.mtime;
                             return 0;
                           },
@@ -769,6 +776,7 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
                             int res = stat(s.real_path.c_str(), stbuf);
                             if (res == -1) return -errno;
                             stbuf->st_mode = s.type_bits | (s.mode & 07777);
+                            set_virtual_ownership(stbuf);
                             return 0;
                           },
                       },
@@ -787,6 +795,7 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
             stbuf->st_mode = (stbuf->st_mode & S_IFMT) | visible_mode_or(visible_it->second, 0444);
             stbuf->st_mtim.tv_sec = visible_it->second.mtime / 1000000000L;
             stbuf->st_mtim.tv_nsec = visible_it->second.mtime % 1000000000L;
+            set_virtual_ownership(stbuf);
             return 0;
           }
         } else if (type == "symlink") {
@@ -796,8 +805,7 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
             stbuf->st_mode = S_IFLNK | 0777;
             stbuf->st_nlink = 1;
             stbuf->st_size = target.size();
-            stbuf->st_uid = getuid();
-            stbuf->st_gid = getgid();
+            set_virtual_ownership(stbuf);
             stbuf->st_mtim.tv_sec = visible_it->second.mtime / 1000000000L;
             stbuf->st_mtim.tv_nsec = visible_it->second.mtime % 1000000000L;
             return 0;
@@ -809,8 +817,7 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
         stbuf->st_mode = S_IFDIR | visible_mode_or(visible_it->second, 0755);
         stbuf->st_size = 4096;
         stbuf->st_nlink = 1;
-        stbuf->st_uid = getuid();
-        stbuf->st_gid = getgid();
+        set_virtual_ownership(stbuf);
         stbuf->st_mtim.tv_sec = visible_it->second.mtime / 1000000000L;
         stbuf->st_mtim.tv_nsec = visible_it->second.mtime % 1000000000L;
         return 0;
