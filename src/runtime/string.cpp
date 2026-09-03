@@ -26,7 +26,6 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <fstream>
 #include <sstream>
 
@@ -92,19 +91,15 @@ static PRIMFN(prim_split_once) {
   STRING(separator, 0);
   STRING(string, 1);
 
-  const char *begin = string->c_str();
-  const char *end = begin + string->size();
-  const char *match =
-      std::search(begin, end, separator->c_str(), separator->c_str() + separator->size());
-  if (separator->size() != 0 && match == end) RETURN(alloc_nil(runtime.heap));
+  size_t match = string->as_sv().find(separator->as_sv());
+  if (match == std::string_view::npos) RETURN(alloc_nil(runtime.heap));
 
-  size_t prefix_size = match - begin;
-  const char *suffix = match + separator->size();
-  size_t suffix_size = end - suffix;
-  runtime.heap.reserve(reserve_list(2) + String::reserve(prefix_size) +
-                       String::reserve(suffix_size));
-  Value *parts[] = {String::claim(runtime.heap, begin, prefix_size),
-                    String::claim(runtime.heap, suffix, suffix_size)};
+  size_t suffix_offset = match + separator->size();
+  size_t suffix_size = string->size() - suffix_offset;
+  runtime.heap.reserve(reserve_list(2) + String::reserve(match) + String::reserve(suffix_size));
+  const char *begin = string->c_str();
+  Value *parts[] = {String::claim(runtime.heap, begin, match),
+                    String::claim(runtime.heap, begin + suffix_offset, suffix_size)};
   RETURN(claim_list(runtime.heap, 2, parts));
 }
 
