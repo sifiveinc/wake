@@ -810,31 +810,21 @@ export def rscApiGetBlobsToCas (entries: List (Pair CacheSearchBlob (Pair String
         require Some resolvedContent = mlookup blobId contentById
         else failWithError "rsc: no downloaded bytes found for blob {blobId}"
 
-        def actualHash = match resolvedContent
-            Left downloadedPath -> downloadedPath.getPathHash
-            Right inlineContent -> hashString inlineContent
+        def Pair actualHash stagingPath = match resolvedContent
+            Left downloadedPath -> Pair downloadedPath.getPathHash downloadedPath.getPathName
+            Right inlineContent -> Pair (hashString inlineContent) path
 
         require Pass _ = verifyBlobHash blobId actualHash contentHash
 
-        # Use 0 for mtime; this is set to the current time on materialization. The staging path is
-        # not needed after CAS ingestion, so inline blobs use their destination as a placeholder.
-        require Pass preparedItem = match resolvedContent
-            Left downloadedPath ->
-                PreparedStagingItem
-                (StagingFile (StagingFileOutput path downloadedPath.getPathName mode 0 0))
-                contentHash
-                | Pass
-            Right inlineContent ->
-                require Pass _ = ingestStringIntoCas path inlineContent contentHash
-
-                Pass (PreparedStagingItem (StagingFile (StagingFileOutput path path mode 0 0)) contentHash)
-
-        def ingestPrepared = match resolvedContent
-            Left _ -> ingestPreparedStagingItemIntoCas preparedItem
-            Right _ -> Pass Unit
+        # Use 0 for mtime; set to the current time on materialization. Inline blobs have no staging
+        # file, so they use their destination as the staging path (ignored by CAS materialization).
+        def preparedItem =
+            PreparedStagingItem (StagingFile (StagingFileOutput path stagingPath mode 0 0)) contentHash
 
         require Pass _ =
-            ingestPrepared
+            match resolvedContent
+                Left _ -> ingestPreparedStagingItemIntoCas preparedItem
+                Right inlineContent -> ingestStringIntoCas path inlineContent actualHash
             | addErrorContext "rsc: Failed to ingest blob {blobId} into CAS for {path}"
 
         Pass preparedItem
