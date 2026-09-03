@@ -33,11 +33,15 @@ _Part of [Workspace Virtualization and Multiple Wake Invocations](../workspace-v
   - `wake --ps` lists jobs currently running across all active builds, grouped
     by run, with each job's id, elapsed time (or `[queued]`), and label. Use it
     to find the id of the job you want to inspect.
-  - `wake --job <jobID> -v` describes a specific job in verbose form, including
-    its command-line, environment, working directory, and any stdout/stderr
-    streamed so far.
+   - `wake --job <jobID> -v` describes a specific job in verbose form, including
+     its command-line, environment, working directory, and any stdout/stderr
+     streamed so far.
+   - `wake --attach <jobID>` opens a read/write shell in a FUSE-sandboxed job's
+     live filesystem view, including its in-progress outputs at their real
+     workspace paths. Its banner prints the host-visible FUSE root for that
+     job, which host-installed tools can use to read a live file by its
+     workspace-relative path.
 
-  These options let you watch a job's command and streamed output, but they do
-  *not* expose the job's not-yet-completed output files, since those are not
-  materialized until the job finishes. Inspecting the in-progress build outputs
-  of a long-running job is something the Wake team is actively looking into.
+    Attach is available only for a live FUSE-sandboxed job run by the same user.
+    Its shell and the host-visible FUSE path both use the job's live writable
+    workspace, so changes through either can affect the build result.

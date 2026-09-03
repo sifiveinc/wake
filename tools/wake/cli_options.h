@@ -42,6 +42,7 @@ struct CommandLineOptions {
   bool last_exe;
   bool history;
   bool ps;
+  bool attach;
   bool active;
   bool lsp;
   bool failed;
@@ -97,6 +98,7 @@ struct CommandLineOptions {
   const char *label_filter;  // TODO: Allow unions of multiple filters
   const char *log_header;
   const char *user_config;
+  const char *attach_job_id;
 
   std::optional<int64_t> log_header_source_width;
 
@@ -148,6 +150,7 @@ struct CommandLineOptions {
       {0, "last-executed", GOPT_ARGUMENT_FORBIDDEN},
       {0, "history", GOPT_ARGUMENT_FORBIDDEN},
       {0, "ps", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "attach", GOPT_ARGUMENT_REQUIRED},
       {0, "active", GOPT_ARGUMENT_FORBIDDEN},
       {0, "queued", GOPT_ARGUMENT_FORBIDDEN},
       {0, "in-flight", GOPT_ARGUMENT_FORBIDDEN},
@@ -217,6 +220,7 @@ struct CommandLineOptions {
     last_exe = arg(options, "last-executed")->count;
     history = arg(options, "history")->count;
     ps = arg(options, "ps")->count;
+    attach = arg(options, "attach")->count;
     active = arg(options, "active")->count;
     queued = arg(options, "queued")->count;
     in_flight = arg(options, "in-flight")->count;
@@ -270,6 +274,7 @@ struct CommandLineOptions {
     label_filter = arg(options, "label-filter")->argument;
     log_header = arg(options, "log-header")->argument;
     user_config = arg(options, "user-config")->argument;
+    attach_job_id = arg(options, "attach")->argument;
 
     if (arg(options, "log-header-align")->count) {
       log_header_align = std::make_optional(true);
@@ -341,6 +346,12 @@ struct CommandLineOptions {
   std::optional<std::string> validate() {
     if (quiet && verbose) {
       return std::optional<std::string>{"Cannot specify both -v and -q!"};
+    }
+
+    if (attach) {
+      if (!job_ids.empty()) {
+        return std::optional<std::string>{"--attach takes a job id directly; do not use --job!"};
+      }
     }
 
     if (profile && !debug) {

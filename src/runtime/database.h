@@ -18,6 +18,8 @@
 #ifndef DATABASE_H
 #define DATABASE_H
 
+#include <sys/types.h>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -90,6 +92,13 @@ struct OpenRunJobReflection {
   long job_id;
   std::string label;
   int64_t starttime;  // 0 = queued (not yet forked), non-zero = wall-clock ns at fork
+};
+
+// Host pid, run, and working directory of a currently-running job.
+struct LiveJobInfo {
+  pid_t pid;
+  long run_id;
+  std::string directory;
 };
 
 struct JobReflection {
@@ -193,6 +202,13 @@ struct Database {
       long *job);  // key used for accesses below
 
   void start_job(long job, int64_t starttime);  // record wall-clock start time eagerly
+  // Like above, but also records the host pid of the just-forked runner process
+  // in live_jobs, for `wake --attach`. Use for real (forked) jobs only.
+  void start_job(long job, int64_t starttime, pid_t pid);
+  // Returns the recorded pid, run, and working directory for a still-running job, if any.
+  std::optional<LiveJobInfo> get_live_job(long job_id) const;
+  // True when the run is unfinished and its owning wake process still holds its lock.
+  bool is_live_run(long run_id) const;
   void finish_job(long job,
                   const std::string &inputs,       // null separated
                   const std::string &outputs,      // null separated

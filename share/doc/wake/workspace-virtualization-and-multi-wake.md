@@ -43,6 +43,8 @@ Some things this makes possible:
   projection of wake state.
 - [Running Multiple Wake Invocations Concurrently](workspace-virtualization/concurrent-invocations.md)
   — how concurrent runs coordinate, and options for observing active runs.
+- [Inspecting a Live Job](workspace-virtualization/inspecting-live-jobs.md)
+  — attaching to a running job and accessing its host-visible live workspace.
 - [Managing Workspace Disk Usage with CAS](workspace-virtualization/managing-disk-usage.md)
   — reclaiming space with `--prune`, `--rm`, and staging cleanup.
 - [Known Limitations and Good to Know](workspace-virtualization/limitations.md).
