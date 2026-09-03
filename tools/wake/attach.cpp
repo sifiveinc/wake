@@ -206,19 +206,22 @@ int attach_job(Database &db, long job_id) {
     }
     close(cwd_fd);
 
-    std::cerr
-        << "+------------------------------------------------------------------+\n"
-        << warning_line("Attached to the live sandbox for Wake job " + std::to_string(job_id))
-        << '\n'
-        << warning_line("Payload PID: " + std::to_string(*payload_pid) + "  CWD: " + cwd_display)
-        << '\n'
-        << warning_line("Host FUSE live workspace:") << '\n'
-        << warning_line(host_live_workspace) << '\n'
-        << warning_line("") << '\n'
-        << warning_line("WARNING: This shell and the host FUSE workspace are read/write.") << '\n'
-        << warning_line("Any changes you make affect the in-progress job and may change") << '\n'
-        << warning_line("the build result.") << '\n'
-        << "+------------------------------------------------------------------+" << std::endl;
+    std::cerr << "+------------------------------------------------------------------+\n"
+              << warning_line("Attached to the live sandbox for Wake job " + std::to_string(job_id))
+              << '\n'
+              << warning_line("Payload PID: " + std::to_string(*payload_pid) +
+                              "  CWD: " + cwd_display)
+              << '\n'
+              << warning_line("Host FUSE live workspace:") << '\n'
+              << warning_line(host_live_workspace) << '\n'
+              << warning_line("") << '\n'
+              << warning_line("WARNING: This shell and the host FUSE workspace are read/write.")
+              << '\n'
+              << warning_line("Any changes you make affect the in-progress job and may change")
+              << '\n'
+              << warning_line("the build result.") << '\n'
+              << "+------------------------------------------------------------------+"
+              << std::endl;
 
     execl(shell, shell, nullptr);
     std::cerr << "wake --attach: exec(" << shell << "): " << strerror(errno) << std::endl;
