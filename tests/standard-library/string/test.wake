@@ -36,6 +36,12 @@ export def testSplitOnce _ =
     require None = splitOnce ":" "key"
     else False
 
+    require Some (Pair "a" "bcc") = splitOnce "ab" "aabbcc"
+    else False
+
+    require Some (Pair "key:value0:" "") = splitOnce "value1" "key:value0:value1"
+    else False
+
     require Some (Pair "" "key") = splitOnce "" "key"
     else False
 
