@@ -643,10 +643,16 @@ def chunkList (n: Integer) (xs: List a): List (List a) =
 
     head, chunkList n tail
 
-# resolveBlobsToPaths: Resolves many blobs to local file paths holding their bytes. db-scheme blobs
-# are decoded inline (no network); file/http(s) blobs are downloaded via few batched curl jobs. Blobs
-# are deduped by id so shared content is only fetched once. Returns an assoc list of (blobId -> Path).
-def resolveBlobsToPaths (blobs: List CacheSearchBlob): Result (List (Pair String Path)) Error =
+# Either: Holds one of two possible values.
+data Either a b =
+    Left a
+    Right b
+
+# resolveBlobsToPathsOrStrings: Resolves many blobs to local file paths or inline strings. db-scheme
+# blobs are decoded inline (no network); file/http(s) blobs are downloaded via few batched curl jobs.
+# Blobs are deduped by id so shared content is only fetched once. Returns an assoc list of
+# (blobId -> Either Path String).
+def resolveBlobsToPathsOrStrings (blobs: List CacheSearchBlob): Result (List (Pair String (Either Path String))) Error =
     # Dedupe by blob id: identical ids resolve to identical bytes, so fetch each once.
     def uniqueBlobs =
         blobs
@@ -677,13 +683,11 @@ def resolveBlobsToPaths (blobs: List CacheSearchBlob): Result (List (Pair String
         parsedBlobs
         | splitBy (\(Pair _ (Pair scheme _)) scheme ==* "db")
 
-    # Resolve db-scheme blobs inline to temp files (no curl), reusing the already-parsed scheme/path.
-    def resolveDbBlob ((Pair blob (Pair scheme path)): Pair CacheSearchBlob (Pair String String)): Result (Pair String Path) Error =
-        require Pass tmp =
-            resolveDbScheme scheme path
-            |> writeTempFile "rsc.blob.{blob.getCacheSearchBlobId}"
+    # Decode db-scheme blobs inline rather than materializing tracked temporary files.
+    def resolveDbBlob ((Pair blob (Pair scheme path)): Pair CacheSearchBlob (Pair String String)): Result (Pair String (Either Path String)) Error =
+        require Pass content = resolveDbScheme scheme path
 
-        Pass (Pair blob.getCacheSearchBlobId tmp)
+        Pass (Pair blob.getCacheSearchBlobId (Right content))
 
     require Pass dbResolved =
         dbParsed
@@ -698,7 +702,7 @@ def resolveBlobsToPaths (blobs: List CacheSearchBlob): Result (List (Pair String
     def wakePid: Integer = prim "pid"
     def httpDir = ".build/wake-{str wakePid}/stdlib/http"
 
-    def downloadChunk (chunk: List CacheSearchBlob): Result (List (Pair String Path)) Error =
+    def downloadChunk (chunk: List CacheSearchBlob): Result (List (Pair String (Either Path String))) Error =
         # Sort the chunk deterministically by blob id so that two batches with the same blob set
         # produce byte-identical curl jobs (which wake then dedups to a single job / single writer).
         def sortedChunk =
@@ -731,7 +735,7 @@ def resolveBlobsToPaths (blobs: List CacheSearchBlob): Result (List (Pair String
         sortedChunk
         | map (
             \b match (mlookup (destForBlob b) pathByName)
-                Some p -> Pass (Pair b.getCacheSearchBlobId p)
+                Some p -> Pass (Pair b.getCacheSearchBlobId (Left p))
                 None ->
                     failWithError "rsc: batched download did not produce output for blob {b.getCacheSearchBlobId}"
         )
@@ -749,17 +753,20 @@ def resolveBlobsToPaths (blobs: List CacheSearchBlob): Result (List (Pair String
 # rscApiGetStringBlobs: Batched analogue of rscApiGetStringBlob. Downloads many blobs, verifies each
 # blob's content hash, and returns the contents in the same order as the input.
 export def rscApiGetStringBlobs (blobs: List CacheSearchBlob): Result (List String) Error =
-    require Pass resolved = resolveBlobsToPaths blobs
+    require Pass resolved = resolveBlobsToPathsOrStrings blobs
 
-    def pathById =
+    def contentById =
         resolved
         | listToMap scmp
 
     def resolveOne ((CacheSearchBlob blobId _uri contentHash): CacheSearchBlob): Result String Error =
-        require Some blobPath = mlookup blobId pathById
-        else failWithError "rsc: no downloaded bytes found for blob {blobId}"
+        require Pass content =
+            require Some resolvedContent = mlookup blobId contentById
+            else failWithError "rsc: no downloaded bytes found for blob {blobId}"
 
-        require Pass content = read blobPath
+            match resolvedContent
+                Left blobPath -> read blobPath
+                Right inlineContent -> Pass inlineContent
 
         def actualHash = hashString content
 
@@ -785,36 +792,39 @@ export def rscApiGetStringBlob (blob: CacheSearchBlob): Result String Error =
     Pass content
 
 # rscApiGetBlobsToCas: Batched analogue of rscApiGetFileBlobToCas. Downloads many file blobs,
-# verifies each blob's hash, and ingests each into CAS. Returns the PreparedStagingItems
+# verifies each blob's hash, and ingests each into CAS. Inline blob content is stored directly in
+# CAS rather than being written to a temporary file. Returns the PreparedStagingItems
 # (in input order) so the caller can materialize them later, after every blob for a job has been verified.
 export def rscApiGetBlobsToCas (entries: List (Pair CacheSearchBlob (Pair String Integer))): Result (List PreparedStagingItem) Error =
     def blobs =
         entries
         | map getPairFirst
 
-    require Pass resolved = resolveBlobsToPaths blobs
+    require Pass resolved = resolveBlobsToPathsOrStrings blobs
 
-    def pathById =
+    def contentById =
         resolved
         | listToMap scmp
 
     def prepareOne ((Pair (CacheSearchBlob blobId _uri contentHash) (Pair path mode)): Pair CacheSearchBlob (Pair String Integer)): Result PreparedStagingItem Error =
-        require Some blobPath = mlookup blobId pathById
+        require Some resolvedContent = mlookup blobId contentById
         else failWithError "rsc: no downloaded bytes found for blob {blobId}"
 
-        def actualHash = blobPath.getPathHash
+        def Pair actualHash stagingPath = match resolvedContent
+            Left downloadedPath -> Pair downloadedPath.getPathHash downloadedPath.getPathName
+            Right inlineContent -> Pair (hashString inlineContent) path
 
         require Pass _ = verifyBlobHash blobId actualHash contentHash
 
-        # Build a synthetic PreparedStagingItem from the staging path under ".build/wake-{pid}/...".
-        # That path will be ingested and reflink/copy'd into CAS.
+        # Use 0 for mtime; set to the current time on materialization. Inline blobs have no staging
+        # file, so they use their destination as the staging path (ignored by CAS materialization).
         def preparedItem =
-            PreparedStagingItem
-            (StagingFile (StagingFileOutput path blobPath.getPathName mode 0 0)) # use 0 for mtime; This will be set to the current time on materialization.
-            contentHash
+            PreparedStagingItem (StagingFile (StagingFileOutput path stagingPath mode 0 0)) contentHash
 
         require Pass _ =
-            ingestPreparedStagingItemIntoCas preparedItem
+            match resolvedContent
+                Left _ -> ingestPreparedStagingItemIntoCas preparedItem
+                Right inlineContent -> ingestStringIntoCas path inlineContent actualHash
             | addErrorContext "rsc: Failed to ingest blob {blobId} into CAS for {path}"
 
         Pass preparedItem
@@ -1289,4 +1299,3 @@ def mkCacheSearchResponse (json: JValue): Result CacheSearchResponse Error =
     obytes
     | Match
     | Pass
-

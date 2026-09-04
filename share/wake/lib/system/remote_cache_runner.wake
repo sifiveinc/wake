@@ -294,7 +294,10 @@ export def mkRemoteCacheRunner (rscApi: RemoteCacheApi) (hashFn: RunnerInput => 
                 Pass x -> x
                 # Otherwise if hydration fails for any reason just run the job as normal.
                 # There is no point in attempting to push since the server just said its cached
-                Fail _ -> baseDoIt job input
+                Fail err ->
+                    def _ = breadcrumb "{label}: Failed to rehydrate cached job: {format err}"
+
+                    baseDoIt job input
 
         # Search the remote cache for the job
         match (rscApi | rscApiFindMatchingJob (mkSearchRequest input hashKey))
