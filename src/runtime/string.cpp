@@ -78,6 +78,31 @@ static PRIMFN(prim_strlen) {
   RETURN(Integer::alloc(runtime.heap, out));
 }
 
+static PRIMTYPE(type_split_once) {
+  TypeVar list;
+  Data::typeList.clone(list);
+  list[0].unify(Data::typeString);
+  return args.size() == 2 && args[0]->unify(Data::typeString) && args[1]->unify(Data::typeString) &&
+         out->unify(list);
+}
+
+static PRIMFN(prim_split_once) {
+  EXPECT(2);
+  STRING(separator, 0);
+  STRING(string, 1);
+
+  size_t match = string->as_sv().find(separator->as_sv());
+  if (match == std::string_view::npos) RETURN(alloc_nil(runtime.heap));
+
+  size_t suffix_offset = match + separator->size();
+  size_t suffix_size = string->size() - suffix_offset;
+  runtime.heap.reserve(reserve_list(2) + String::reserve(match) + String::reserve(suffix_size));
+  const char *begin = string->c_str();
+  Value *parts[] = {String::claim(runtime.heap, begin, match),
+                    String::claim(runtime.heap, begin + suffix_offset, suffix_size)};
+  RETURN(claim_list(runtime.heap, 2, parts));
+}
+
 static PRIMTYPE(type_lcat) {
   TypeVar list;
   Data::typeList.clone(list);
@@ -838,6 +863,7 @@ static PRIMFN(prim_to_lower) {
 
 void prim_register_string(PrimMap &pmap, StringInfo *info) {
   prim_register(pmap, "strlen", prim_strlen, type_strlen, PRIM_PURE);
+  prim_register(pmap, "split_once", prim_split_once, type_split_once, PRIM_PURE);
   prim_register(pmap, "vcat", prim_vcat, type_vcat, PRIM_PURE);
   prim_register(pmap, "lcat", prim_lcat, type_lcat, PRIM_PURE);
   prim_register(pmap, "explode", prim_explode, type_explode, PRIM_PURE);

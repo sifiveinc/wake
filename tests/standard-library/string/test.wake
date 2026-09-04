@@ -23,3 +23,29 @@ export def testEquality _ =
 
     True
 
+export def testSplitOnce _ =
+    require Some (Pair "key" "value0:value1") = splitOnce ":" "key:value0:value1"
+    else False
+
+    require Some (Pair "" "value") = splitOnce ":" ":value"
+    else False
+
+    require Some (Pair "key" "") = splitOnce ":" "key:"
+    else False
+
+    require None = splitOnce ":" "key"
+    else False
+
+    require Some (Pair "a" "bcc") = splitOnce "ab" "aabbcc"
+    else False
+
+    require Some (Pair "key:value0:" "") = splitOnce "value1" "key:value0:value1"
+    else False
+
+    require Some (Pair "" "key") = splitOnce "" "key"
+    else False
+
+    require Some (Pair "" "") = splitOnce "" ""
+    else False
+
+    True

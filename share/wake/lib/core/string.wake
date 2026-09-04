@@ -26,6 +26,22 @@ export def strlen (string: String): Integer =
 
     p string
 
+# splitOnce: split a String at the first literal occurrence of a separator.
+# Returns None when the separator does not occur. The separator is not included in either result.
+# An empty separator matches at the start of the String.
+#
+#   splitOnce "://" "file:///tmp/input" = Some (Pair "file" "/tmp/input")
+#   splitOnce ":" "a:b:c"                = Some (Pair "a" "b:c")
+#   splitOnce ":" "abc"                  = None
+#   splitOnce "" "abc"                   = Some (Pair "" "abc")
+export def splitOnce (separator: String) (string: String): Option (Pair String String) =
+    def p separator string = prim "split_once"
+
+    match (p separator string)
+        (prefix, suffix, Nil) -> Some (Pair prefix suffix)
+        Nil -> None
+        _ -> unreachable "split_once primitive bug"
+
 # cat: concatenate a List of Strings into a String.
 # If you have a finite list of terms, consider using String interpolation.
 #
