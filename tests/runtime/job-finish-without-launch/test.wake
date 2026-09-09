@@ -1,0 +1,61 @@
+package cli
+
+from wake import _
+
+export def testPassLaunch _ =
+    def job =
+        makeExecPlan ("echo", "ping", Nil) Nil
+        | setPlanPersistence ReRun
+        | runJobWith defaultRunner
+
+    require True = job.isJobOk
+    else failWithError "Expected job to succeed."
+
+    Pass "Good launch test passed."
+
+def failLaunchRunner =
+    def run (job: Job) (input: RunnerInput): Result RunnerOutput Error =
+        def err = makeError "Intentional launch failure."
+        def _ = primJobFailLaunch job err
+
+        failWithError "Intentional launch failure."
+
+    makeRunner "fail-launch-runner" run
+
+export def testFailLaunch _ =
+    def job =
+        makeExecPlan ("echo", "ping", Nil) Nil
+        | setPlanPersistence ReRun
+        | runJobWith failLaunchRunner
+
+    require False = job.isJobOk
+    else failWithError "Expected job to fail due to a (purposefully) bad runner, but it succeeded."
+
+    Pass "Properly-handled launch-failure test safely caught the bad job."
+
+def abruptLaunchRunner =
+    def run (job: Job) (input: RunnerInput): Result RunnerOutput Error =
+        failWithError "Intentional launch failure."
+
+    makeRunner "fail-launch-runner" run
+
+export def testAbruptLaunch _ =
+    def job =
+        makeExecPlan ("echo", "ping", Nil) Nil
+        | setPlanPersistence ReRun
+        | runJobWith abruptLaunchRunner
+
+    # Implicit return category: The issue with the runner ordering (`primJobLaunch`+`primJobFinish`)
+    # addressed in #1670 would cause a panic and the remainder of the test would not run.
+
+    require False = job.isJobOk
+    else failWithError "Expected job to fail due to a (purposefully) bad runner, but it succeeded."
+
+    Pass "Out-of-order launch-failure test passed."
+
+export def test _ =
+    require Pass _ = testPassLaunch Nil
+    require Pass _ = testFailLaunch Nil
+    require Pass _ = testAbruptLaunch Nil
+
+    Pass "All launch tests passed."
