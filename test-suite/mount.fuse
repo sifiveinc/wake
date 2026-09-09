@@ -1,0 +1,232 @@
+#!/bin/sh
+set -eu
+
+# Adapter from mount(8)'s FUSE helper interface to Wake's userspace FUSE
+# daemon. Test suites can issue a normal `mount -t fuse ...` command and this
+# script will:
+# - start fuse-waked on a hidden staging mount
+# - create a per-mount job view inside that daemon
+# - seed that view with the current backing-tree contents
+# - bind-mount the job view onto the requested mountpoint
+#
+# This keeps the caller-facing interface looking like a regular mounted
+# filesystem even though fuse-waked internally exposes per-job subdirectories.
+
+usage() {
+  echo "usage: mount.fuse <source> <mountpoint> [options]" >&2
+  exit 1
+}
+
+cleanup_state() {
+  if [ -n "${keeper:-}" ]; then
+    kill "$keeper" >/dev/null 2>&1 || true
+    wait "$keeper" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${base:-}" ]; then
+    umount "$base" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${state:-}" ]; then
+    rm -rf "$state"
+  fi
+}
+
+fail() {
+  if [ "$#" -gt 0 ] && [ -n "$1" ]; then
+    echo "$1" >&2
+  fi
+  cleanup_state
+  exit 1
+}
+
+flatten_mount_options() {
+  opts=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -o)
+        [ "$#" -ge 2 ] || usage
+        opts="${opts}${opts:+,}$2"
+        shift 2
+        ;;
+      -o*)
+        opts="${opts}${opts:+,}${1#-o}"
+        shift
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  printf '%s' "$opts"
+}
+
+extract_backing_dir() {
+  opts=$1
+  backing=""
+  old_ifs=$IFS
+  IFS=,
+  set -- $opts
+  IFS=$old_ifs
+  for opt in "$@"; do
+    case "$opt" in
+      source=*)
+        backing="${opt#source=}"
+        ;;
+    esac
+  done
+
+  if [ -n "$backing" ]; then
+    printf '%s' "$backing"
+  else
+    printf '%s' "$src"
+  fi
+}
+
+extract_daemon_mount_options() {
+  opts=$1
+  daemon_opts=""
+  old_ifs=$IFS
+  IFS=,
+  set -- $opts
+  IFS=$old_ifs
+  for opt in "$@"; do
+    case "$opt" in
+      source=*)
+        ;;
+      "")
+        ;;
+      *)
+        daemon_opts="${daemon_opts}${daemon_opts:+,}$opt"
+        ;;
+    esac
+  done
+
+  printf '%s' "$daemon_opts"
+}
+
+wait_for_path() {
+  path=$1
+  message=$2
+  attempts=0
+  while [ ! -e "$path" ]; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 100 ]; then
+      fail "$message"
+    fi
+    sleep 0.1
+  done
+}
+
+wait_for_job_view() {
+  attempts=0
+  while [ ! -f "$ready" ] || [ ! -d "$base/$jobid" ]; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 100 ]; then
+      fail "Timed out preparing wakefs mount state at $base/$jobid"
+    fi
+    sleep 0.1
+  done
+}
+
+mount_exists() {
+  target=$1
+  mounted=$(findmnt -rn -o TARGET --target "$target" 2>/dev/null || true)
+  [ "$mounted" = "$target" ]
+}
+
+start_job_keeper() {
+  (
+    # Keep the job alive by holding .l.<jobid> open, and seed .i.<jobid> with
+    # every existing path under the backing tree so a later mount can still see
+    # files created during an earlier mount.
+    exec 3<> "$base/.l.$jobid"
+    exec 4<> "$base/.i.$jobid"
+
+    python3 /usr/local/libexec/wake/wakefs_visible.py "$backing" > "$state/visible.json"
+    cat "$state/visible.json" >&4
+    exec 4>&-
+    : > "$ready"
+
+    # Wait for the bind mount to appear and later disappear. Once the caller
+    # unmounts the visible target, release the live fd and clean up the staging
+    # area from the background.
+    while ! mount_exists "$mountpoint"; do
+      sleep 0.1
+    done
+
+    while mount_exists "$mountpoint"; do
+      sleep 1
+    done
+
+    exec 3>&-
+    umount "$base" >/dev/null 2>&1 || true
+    rm -rf "$state"
+  ) &
+  keeper=$!
+}
+
+# mount(8) invokes /sbin/mount.fuse for FUSE filesystem mounts. This helper
+# adapts that call into a wakefs mount backed by fuse-waked.
+if [ "$#" -lt 2 ]; then
+  usage
+fi
+
+# Callers typically pass a synthetic device name as "source" and a normal
+# mountpoint path. Any remaining -o flags are forwarded to us as mount options.
+src="$1"
+mountpoint="$2"
+shift 2
+
+# Flatten repeated -o arguments into a single comma-separated option string so
+# we can extract the wake-specific "source=<backing-dir>" argument below.
+opts=$(flatten_mount_options "$@")
+
+# The real backing directory is passed via a "source=" mount option. If it is
+# absent, fall back to the original source argument.
+backing=$(extract_backing_dir "$opts")
+
+# Forward the remaining mount options to fuse-waked so kernel-side permission
+# checks (for example allow_other/default_permissions) apply to the real FUSE
+# mount instead of being silently dropped by this helper.
+daemon_mount_opts=$(extract_daemon_mount_options "$opts")
+
+# Each mount gets an isolated temporary staging area:
+# - base: hidden fuse-waked mount root
+# - jobid: per-client subdirectory inside that mount
+# - ready: marker used to signal the job is initialized
+state="$(mktemp -d /tmp/wakefs-helper.XXXXXX)"
+base="$state/base"
+jobid="mount.$$"
+ready="$state/ready"
+
+# fuse-waked operates relative to the backing directory, so cd there first.
+# The backing dir is made writable for callers that exercise non-root access.
+mkdir -p "$backing" "$mountpoint" "$base"
+chmod 0777 "$backing"
+cd "$backing"
+if [ -n "$daemon_mount_opts" ]; then
+  /usr/local/libexec/wake/fuse-waked "$base" 30 "-ofsname=$src" "-o$daemon_mount_opts"
+else
+  /usr/local/libexec/wake/fuse-waked "$base" 30 "-ofsname=$src"
+fi
+
+# Wait for the daemon to publish its liveness marker before trying to create a
+# per-job view under the staging mount.
+wait_for_path "$base/.f.fuse-waked" "Timed out waiting for fuse-waked at $base"
+
+start_job_keeper
+
+# Wait for fuse-waked to materialize the per-job subdirectory before exposing
+# it at the user-visible mountpoint.
+wait_for_job_view
+
+# Bind-mount the per-job subdirectory, not the daemon root. This makes the
+# mounted tree look like a normal filesystem rooted at the job view.
+if ! mount --bind "$base/$jobid" "$mountpoint"; then
+  fail ""
+fi
+
+# Hide the internal staging mount from ordinary mount enumeration. The bind
+# mount keeps the visible filesystem alive while the background keeper process
+# retains the job handle and eventually cleans up the detached staging mount.
+umount -l "$base"
