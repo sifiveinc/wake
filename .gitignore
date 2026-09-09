@@ -51,3 +51,4 @@ compile_commands.json
 /rust/entity/target/*
 /rust/log_viewer/target/*
 /rust/rsc/target/*
+/rust/test-lsp-wake/target/*
