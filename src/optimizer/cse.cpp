@@ -23,6 +23,7 @@
 #include <unordered_map>
 
 #include "runtime/runtime.h"
+#include "runtime/value.h"
 #include "ssa.h"
 
 namespace std {
@@ -87,8 +88,11 @@ void RArg::pass_cse(PassCSE &p, std::unique_ptr<Term> self) { p.stream.transfer(
 
 void RLit::pass_cse(PassCSE &p, std::unique_ptr<Term> self) {
   HeapObject *obj = value->get();
-  Hash h = Hash(typeid(RLit).hash_code(), typeid(*obj).hash_code()) +
-           (*value)->deep_hash(p.runtime.heap);
+  // Tagged small-Integer pointers carry no object to dispatch on; tag both
+  // representations as Integer so the CSE bucket is consistent.
+  std::size_t type_code =
+      is_small_int(obj) ? typeid(Integer).hash_code() : typeid(*obj).hash_code();
+  Hash h = Hash(typeid(RLit).hash_code(), type_code) + (*value)->deep_hash(p.runtime.heap);
   cse_reduce(p, h, std::move(self));
 }
 
