@@ -735,9 +735,23 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                         content // `staging_root`
                         | getJString
 
+                    def recoveryManifest =
+                        content // `recovery_manifest`
+                        | getJString
+
+                    # Only remove the handoff record after job.wake has materialized every staged item.
+                    def cleanupRecoveryManifest _ =
+                        def unlink _ = prim "unlink"
+
+                        match recoveryManifest
+                            # A user may have recovered the record while Wake was
+                            # finalizing. unlink intentionally treats ENOENT as success.
+                            Some manifest -> unlink manifest
+                            None -> Unit
+
                     Pass (
                         Pair
-                        (StagedOutputs filteredOutputPaths True stagingItems jsonStagingRoot (\_ Unit))
+                        (StagedOutputs filteredOutputPaths True stagingItems jsonStagingRoot cleanupRecoveryManifest)
                         (specFile, resultFile, stagedOutputPaths)
                     )
             Fail err -> Fail err
