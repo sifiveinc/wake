@@ -295,6 +295,72 @@ TEST(cas_store_materialize_blob, "cas") {
   fs::remove_all(store_path);
 }
 
+// A missing blob must report *why* it failed, not just fail.
+TEST(cas_materialize_blob_missing_reports_detail, "cas") {
+  std::string store_path = "cas_test_store_detail";
+  std::string output_file = "cas_test_detail_output.txt";
+  fs::remove_all(store_path);
+  fs::remove(output_file);
+
+  auto store_result = Cas::open(store_path);
+  ASSERT_TRUE((bool)store_result);
+  auto& store = *store_result;
+
+  // A well-formed hash that was never stored.
+  auto hash = ContentHash::from_string("never stored in this store");
+
+  std::string detail;
+  auto result = store.materialize_blob(hash, output_file, 0644, 0, 0, &detail);
+  EXPECT_FALSE((bool)result);
+  EXPECT_TRUE(result.error() == CASError::NotFound);
+  // The reason must be populated and must name the blob path we looked for.
+  EXPECT_FALSE(detail.empty());
+  EXPECT_TRUE(detail.find(store.blob_path(hash)) != std::string::npos);
+
+  fs::remove(output_file);
+  fs::remove_all(store_path);
+}
+
+// A stale temp from a killed wake with a recycled PID must not wedge the destination.
+// The PID-only temp path failed EEXIST, which is not fallback-eligible.
+TEST(cas_materialize_blob_survives_stale_temp, "cas") {
+  std::string store_path = "cas_test_store_stale";
+  std::string output_file = "cas_test_stale_output.txt";
+  fs::remove_all(store_path);
+  fs::remove(output_file);
+
+  auto store_result = Cas::open(store_path);
+  ASSERT_TRUE((bool)store_result);
+  auto& store = *store_result;
+
+  std::string content = "content behind a stale temp";
+  auto hash_result = store.store_blob(content);
+  ASSERT_TRUE((bool)hash_result);
+
+  // Simulate the leftover temp from a previous process at the exact PID-based path.
+  std::string stale_temp = output_file + "." + std::to_string(getpid());
+  {
+    std::ofstream ofs(stale_temp);
+    ofs << "stale garbage";
+  }
+  ASSERT_TRUE(fs::exists(stale_temp));
+
+  std::string detail;
+  auto result = store.materialize_blob(*hash_result, output_file, 0644, 0, 0, &detail);
+  EXPECT_TRUE((bool)result);
+
+  {
+    std::ifstream ifs(output_file);
+    std::string read_content((std::istreambuf_iterator<char>(ifs)),
+                             std::istreambuf_iterator<char>());
+    EXPECT_EQUAL(read_content, content);
+  }
+
+  fs::remove(stale_temp);
+  fs::remove(output_file);
+  fs::remove_all(store_path);
+}
+
 TEST(cas_store_deduplication, "cas") {
   std::string store_path = "cas_test_store6";
   fs::remove_all(store_path);

@@ -76,8 +76,11 @@ static std::optional<std::string> atomic_replace(const std::string& temp, const 
   std::filesystem::rename(temp, dest, ec);
   if (!ec) return std::nullopt;
 
-  std::filesystem::remove(temp, ec);
-  return "Failed to place " + label + " " + dest + ": " + ec.message();
+  std::string reason = ec.message();
+
+  std::error_code cleanup_ec;
+  std::filesystem::remove(temp, cleanup_ec);
+  return "Failed to place " + label + " " + dest + ": " + reason;
 }
 
 // Set mtime on path. Returns false on failure; symlink callers may ignore the return value.
@@ -198,9 +201,12 @@ static PRIMFN(prim_cas_materialize_item) {
     long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
 
     // Materialize from CAS to workspace with timestamps
-    auto mat_result = store->materialize_blob(hash, dest_str.c_str(), mode, mtime_sec, mtime_nsec);
+    std::string detail;
+    auto mat_result =
+        store->materialize_blob(hash, dest_str.c_str(), mode, mtime_sec, mtime_nsec, &detail);
     if (!mat_result) {
       std::string msg = "Failed to materialize blob " + hash_str_val + " to " + dest_str;
+      if (!detail.empty()) msg += ": " + detail;
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));
@@ -218,7 +224,8 @@ static PRIMFN(prim_cas_materialize_item) {
     auto target_result = store->read_blob(hash);
     if (!target_result) {
       std::string msg = "Failed to materialize symlink " + std::string(hash_or_target->c_str()) +
-                        " to " + dest_str;
+                        " to " + dest_str + ": " + cas::cas_error_to_string(target_result.error()) +
+                        " reading target blob " + store->blob_path(hash);
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));

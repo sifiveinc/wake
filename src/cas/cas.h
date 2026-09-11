@@ -80,7 +80,8 @@ class Cas {
   // Materialize a blob to a file path (uses reflink if possible)
   wcl::result<bool, CASError> materialize_blob(const ContentHash& hash,
                                                const std::string& dest_path, mode_t mode,
-                                               time_t mtime_sec, long mtime_nsec) const;
+                                               time_t mtime_sec, long mtime_nsec,
+                                               std::string* detail = nullptr) const;
 
   // Enumerate all blobs present in the store.  Best-effort / ignores problems.
   std::vector<std::string> enumerate_blobs_strings() const;

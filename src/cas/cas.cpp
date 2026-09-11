@@ -21,6 +21,7 @@
 #include "cas.h"
 
 #include <fcntl.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -42,6 +43,12 @@ static_assert(SHARD_LEN < HASH_HEX_LEN, "hash length must be longer than shard l
 // Global counter for unique temp file names when ingesting files.
 static std::atomic<uint64_t> g_store_counter{0};
 static std::atomic<uint64_t> g_alloc_staging_counter{0};
+static std::atomic<uint64_t> g_materialize_counter{0};
+
+static std::string make_materialize_temp_path(const std::string& dest) {
+  return dest + "." + std::to_string(getpid()) + "." +
+         std::to_string(g_materialize_counter.fetch_add(1));
+}
 
 static std::string sanitize_staging_prefix(const std::string& prefix) {
   static constexpr size_t kMaxPrefixLen = 64;
@@ -276,10 +283,16 @@ wcl::result<std::string, CASError> Cas::read_blob(const ContentHash& hash) const
 
 wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
                                                   const std::string& dest_path, mode_t mode,
-                                                  time_t mtime_sec, long mtime_nsec) const {
+                                                  time_t mtime_sec, long mtime_nsec,
+                                                  std::string* detail) const {
+  auto set_detail = [detail](const std::string& msg) {
+    if (detail) *detail = msg;
+  };
+
   std::string src_path = blob_path(hash);
 
   if (!fs::exists(src_path)) {
+    set_detail("blob missing from CAS at " + src_path);
     return wcl::make_error<bool, CASError>(CASError::NotFound);
   }
 
@@ -289,14 +302,17 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
   if (dest_fs_path.has_parent_path()) {
     fs::create_directories(dest_fs_path.parent_path(), ec);
     if (ec) {
+      set_detail("failed to create parent directories for " + dest_path + ": " + ec.message());
       return wcl::make_error<bool, CASError>(CASError::IOError);
     }
   }
 
   // Copy to temp file first, then atomically rename to destination.
-  std::string temp_path = dest_path + "." + std::to_string(getpid());
+  std::string temp_path = make_materialize_temp_path(dest_path);
   auto copy_result = wcl::reflink_or_copy_file(src_path, temp_path, mode, reflink_supported_);
   if (!copy_result) {
+    set_detail("failed to copy blob to temp file " + temp_path + ": " +
+               std::string(strerror(copy_result.error())));
     fs::remove(temp_path, ec);
     return wcl::make_error<bool, CASError>(CASError::IOError);
   }
@@ -315,6 +331,7 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
     times[1].tv_nsec = mtime_nsec;
 
     if (utimensat(AT_FDCWD, temp_path.c_str(), times, 0) != 0) {
+      set_detail("failed to set mtime on " + temp_path + ": " + std::string(strerror(errno)));
       fs::remove(temp_path, ec);
       return wcl::make_error<bool, CASError>(CASError::IOError);
     }
@@ -323,6 +340,8 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
   // Atomically rename over destination - last one wins
   fs::rename(temp_path, dest_path, ec);
   if (ec) {
+    // Capture before the cleanup remove() overwrites `ec`.
+    set_detail("failed to rename " + temp_path + " to " + dest_path + ": " + ec.message());
     fs::remove(temp_path, ec);
     return wcl::make_error<bool, CASError>(CASError::IOError);
   }
