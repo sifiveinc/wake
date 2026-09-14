@@ -41,31 +41,53 @@
 #endif
 #endif
 
-namespace fs = std::filesystem;
-
 namespace wcl {
 
-result<bool, posix_error_t> try_reflink(const std::string& src, const std::string& dst,
-                                        mode_t mode) {
+result<CopyResult, posix_error_t> reflink_or_copy_fd(int src_fd, int dst_fd, bool attempt_reflink) {
+#ifdef HAS_FICLONE
+  if (attempt_reflink && ioctl(dst_fd, FICLONE, src_fd) == 0)
+    return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Reflink, 0});
+  if (attempt_reflink && errno != EOPNOTSUPP && errno != ENOTTY && errno != EINVAL && errno != EXDEV)
+    return make_errno<CopyResult>();
+#else
+  (void)attempt_reflink;
+#endif
+  char buffer[64 * 1024];
+  size_t copied = 0;
+  for (;;) {
+    ssize_t read_bytes = read(src_fd, buffer, sizeof(buffer));
+    if (read_bytes == 0) break;
+    if (read_bytes < 0) {
+      if (errno == EINTR) continue;
+      return make_errno<CopyResult>();
+    }
+    ssize_t offset = 0;
+    while (offset < read_bytes) {
+      ssize_t written = write(dst_fd, buffer + offset, static_cast<size_t>(read_bytes - offset));
+      if (written < 0) {
+        if (errno == EINTR) continue;
+        return make_errno<CopyResult>();
+      }
+      offset += written;
+    }
+    copied += static_cast<size_t>(read_bytes);
+  }
+  return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Copy, copied});
+}
+
+result<bool, posix_error_t> try_reflink(const std::string& src, const std::string& dst, mode_t mode) {
 #ifdef HAS_FICLONE
   auto src_fd = unique_fd::open(src.c_str(), O_RDONLY);
-  if (!src_fd) {
-    return make_error<bool, posix_error_t>(src_fd.error());
-  }
-
+  if (!src_fd) return make_error<bool, posix_error_t>(src_fd.error());
   auto dst_fd = unique_fd::open(dst.c_str(), O_WRONLY | O_CREAT | O_EXCL, mode);
-  if (!dst_fd) {
-    return make_error<bool, posix_error_t>(dst_fd.error());
-  }
-
+  if (!dst_fd) return make_error<bool, posix_error_t>(dst_fd.error());
   if (ioctl(dst_fd->get(), FICLONE, src_fd->get()) < 0) {
-    int saved_errno = errno;
+    const int saved = errno;
     dst_fd->close();
-    std::error_code ec;
-    fs::remove(dst, ec);  // Ignore error
-    return make_error<bool, posix_error_t>(saved_errno);
+    std::error_code ignored;
+    std::filesystem::remove(dst, ignored);
+    return make_error<bool, posix_error_t>(saved);
   }
-
   return make_result<bool, posix_error_t>(true);
 #else
   (void)src;
@@ -75,49 +97,32 @@ result<bool, posix_error_t> try_reflink(const std::string& src, const std::strin
 #endif
 }
 
-result<CopyResult, posix_error_t> reflink_or_copy_file(const std::string& src,
-                                                       const std::string& dst, mode_t mode,
-                                                       bool attempt_reflink) {
-  // Try reflink first (if requested)
+result<CopyResult, posix_error_t> reflink_or_copy_file(const std::string& src, const std::string& dst,
+                                                        mode_t mode, bool attempt_reflink) {
   if (attempt_reflink) {
-    auto reflink_result = try_reflink(src, dst, mode);
-    if (reflink_result) {
-      return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Reflink, 0});
-    }
-
-    // Only fall back if reflink is not supported
-    int reflink_err = reflink_result.error();
-    if (reflink_err != EOPNOTSUPP && reflink_err != ENOTTY && reflink_err != EINVAL &&
-        reflink_err != EXDEV) {
-      return make_error<CopyResult, posix_error_t>(reflink_err);
-    }
+    auto reflink = try_reflink(src, dst, mode);
+    if (reflink) return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Reflink, 0});
+    const int error = reflink.error();
+    if (error != EOPNOTSUPP && error != ENOTTY && error != EINVAL && error != EXDEV)
+      return make_error<CopyResult, posix_error_t>(error);
   }
-
-  // Fall back to std::filesystem::copy_file
-  std::error_code ec;
-  fs::copy_file(src, dst, ec);
-  if (ec) {
-    return make_error<CopyResult, posix_error_t>(ec.value());
+  std::error_code error;
+  std::filesystem::copy_file(src, dst, error);
+  if (error) return make_error<CopyResult, posix_error_t>(error.value());
+  std::filesystem::permissions(dst, static_cast<std::filesystem::perms>(mode), error);
+  if (error) {
+    const int saved = error.value();
+    std::filesystem::remove(dst, error);
+    return make_error<CopyResult, posix_error_t>(saved);
   }
-
-  // Set the file permissions (copy_file preserves source permissions, but we want explicit mode)
-  fs::permissions(dst, static_cast<fs::perms>(mode), ec);
-  if (ec) {
-    int orig_err = ec.value();
-    fs::remove(dst, ec);  // Ignore error
-    return make_error<CopyResult, posix_error_t>(orig_err);
+  const auto size = std::filesystem::file_size(dst, error);
+  if (error) {
+    const int saved = error.value();
+    std::filesystem::remove(dst, error);
+    return make_error<CopyResult, posix_error_t>(saved);
   }
-
-  // Get file size for the result
-  auto file_size = fs::file_size(dst, ec);
-  if (ec) {
-    int orig_err = ec.value();
-    fs::remove(dst, ec);
-    return make_error<CopyResult, posix_error_t>(orig_err);
-  }
-
   return make_result<CopyResult, posix_error_t>(
-      CopyResult{CopyStrategy::Copy, static_cast<size_t>(file_size)});
+      CopyResult{CopyStrategy::Copy, static_cast<size_t>(size)});
 }
 
 }  // namespace wcl
