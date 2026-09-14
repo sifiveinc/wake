@@ -18,4 +18,4 @@ package build_wake
 from wake import _
 
 target wakefs variant =
-    src @here variant (json, util, Nil) Nil Nil
+    src @here variant (json, util, wcl, Nil) Nil Nil
