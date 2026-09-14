@@ -36,7 +36,7 @@
 #include "types/primfn.h"
 #include "util/mkdir_parents.h"
 #include "value.h"
-#include "wcl/file_ops.h"
+#include "wcl/materialize.h"
 
 namespace fs = std::filesystem;
 
