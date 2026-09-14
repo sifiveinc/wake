@@ -108,8 +108,8 @@ jobs:
             #   test_cmd: tar xvJf wake-*/wake-static_* && cd tests && ../wake-*/bin/wake -x Unit
             #   install_src_glob: build/wake-*/wake-static_*
 
-            - target: debian_bullseye
-              dockerfile: debian-bullseye
+            - target: debian_trixie
+              dockerfile: debian-trixie
               extra_docker_build_args: ''
               extra_docker_run_args: -w /$(ls -d build/wake-*)
               build_cmd: debuild -us -uc
@@ -301,11 +301,11 @@ jobs:
         #     name: release_alpine
         #     path: alpine
 
-        - name: Download Debian Bullseye
+        - name: Download Debian Trixie
           uses: actions/download-artifact@v4
           with:
-            name: release_debian_bullseye
-            path: debian_bullseye
+            name: release_debian_trixie
+            path: debian_trixie
 
         - name: Download Rocky 8
           uses: actions/download-artifact@v4
@@ -337,7 +337,7 @@ jobs:
             VERSION="${TAG:1}"
             cp rocky_8/wake-*-1.x86_64.rpm rocky_8-wake-${VERSION}-1.x86_64.rpm
             cp rocky_9/wake-*-1.x86_64.rpm rocky_9-wake-${VERSION}-1.x86_64.rpm
-            cp debian_bullseye/wake_*-1_amd64.deb debian-bullseye-wake_${VERSION}-1_amd64.deb
+            cp debian_trixie/wake_*-1_amd64.deb debian-trixie-wake_${VERSION}-1_amd64.deb
             cp ubuntu_22_04/wake_*-1_amd64.deb ubuntu-22-04-wake_${VERSION}-1_amd64.deb
             cp fedora_38/wake-*-1.x86_64.rpm fedora_38-wake-${VERSION}-1.x86_64.rpm
 
@@ -352,7 +352,7 @@ jobs:
               vscode/wake-*.vsix
               rocky_8-wake-*-1.x86_64.rpm
               rocky_9-wake-*-1.x86_64.rpm
-              debian-bullseye-wake_*-1_amd64.deb
+              debian-trixie-wake_*-1_amd64.deb
               ubuntu-22-04-wake_*-1_amd64.deb
               fedora_38-wake-*-1.x86_64.rpm
 
