@@ -56,6 +56,7 @@
 #include "util/mkdir_parents.h"
 #include "util/unlink.h"
 #include "wcl/file_ops.h"
+#include "wakefs/materialize_staging.h"
 
 #define MAX_JSON (128 * 1024 * 1024)
 
@@ -450,45 +451,6 @@ void Job::parse() {
   }
 }
 
-static bool write_all(int fd, const std::string &data) {
-  size_t offset = 0;
-  while (offset < data.size()) {
-    ssize_t wrote = write(fd, data.data() + offset, data.size() - offset);
-    if (wrote < 0) {
-      if (errno == EINTR) continue;
-      return false;
-    }
-    offset += static_cast<size_t>(wrote);
-  }
-  return true;
-}
-
-// Publish a complete file without exposing a partial final pathname.
-static bool atomic_write_file(const std::string &temporary_path, const std::string &final_path,
-                              const std::string &data) {
-  int fd = open(temporary_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-  if (fd < 0) return false;
-
-  int failure = 0;
-  if (!write_all(fd, data)) {
-    failure = errno;
-  }
-  if (close(fd) != 0 && failure == 0) failure = errno;
-  if (failure != 0) {
-    (void)unlink(temporary_path.c_str());
-    errno = failure;
-    return false;
-  }
-  if (rename(temporary_path.c_str(), final_path.c_str()) != 0) {
-    failure = errno;
-    (void)unlink(temporary_path.c_str());
-    errno = failure;
-    return false;
-  }
-
-  return true;
-}
-
 // Persist the final output map before in-memory job state disappears:
 // {"version":1,"workspace_root":"...","cas_staging_root":"...","job_key":"...",
 //  "entries":[{"destination":"...","type":"file|symlink|directory",...}]}
@@ -509,17 +471,12 @@ bool Job::snapshot_recovery_manifest(const std::string &job_id) {
   const std::string name = std::to_string(getpid()) + "-" + job_id + "-" +
                            std::to_string(now.tv_sec) + "-" + std::to_string(now.tv_nsec) + ".json";
   const std::string final_path = recovery_dir + "/" + name;
-  const std::string temporary_path = recovery_dir + "/." + name + ".tmp";
-
-  JAST manifest(JSON_OBJECT);
-  // Increment this for incompatible manifest schema changes; materializers must reject unknown versions.
-  manifest.add("version", 1);
-  manifest.add("workspace_root", g_workspace_root);
-  manifest.add("cas_staging_root", g_staging_dir);
-  manifest.add("job_key", job_id);
-  manifest.add("daemon_pid", static_cast<long>(getpid()));
-  manifest.add("created_at_ns", static_cast<long long>(now.tv_sec) * 1000000000LL + now.tv_nsec);
-  JAST& entries = manifest.add("entries", JSON_ARRAY);
+  wakefs::StagingManifest manifest;
+  manifest.workspace_root = g_workspace_root;
+  manifest.cas_staging_root = g_staging_dir;
+  manifest.job_key = job_id;
+  manifest.daemon_pid = getpid();
+  manifest.created_at_ns = static_cast<long long>(now.tv_sec) * 1000000000LL + now.tv_nsec;
   if (auto *job_staged = g_staged_files.get_job(job_id)) {
     for (const auto &entry : *job_staged) {
       const StagedItem &sf = entry.second;
@@ -535,44 +492,34 @@ bool Job::snapshot_recovery_manifest(const std::string &job_id) {
           continue;
         }
       }
-      JAST& manifest_entry = entries.add("", JSON_OBJECT);
-      manifest_entry.add("destination", sf.dest_path);
       std::visit(overloaded{
-                     [&manifest_entry](const StagedFileData &file) {
+                     [&manifest, &sf](const StagedFileData &file) {
                        struct stat st;
                        int result = stat(file.staging_path.c_str(), &st);
                        assert(result == 0);
                        std::filesystem::path relative =
                            std::filesystem::path(file.staging_path).lexically_relative(g_staging_dir);
-                       manifest_entry.add("type", "file");
-                       manifest_entry.add("staging_path", relative.string());
-                       manifest_entry.add("mode", static_cast<long>(*file.mode & 07777));
-                       manifest_entry.add("mtime_sec", static_cast<long>(st.st_mtim.tv_sec));
-                       manifest_entry.add("mtime_nsec", static_cast<long>(st.st_mtim.tv_nsec));
+                       manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::File,
+                                                   relative.string(), "", *file.mode & 07777,
+                                                   st.st_mtim.tv_sec, st.st_mtim.tv_nsec});
                      },
-                     [&manifest_entry](const StagedSymlinkData &link) {
-                       manifest_entry.add("type", "symlink");
-                       manifest_entry.add("target", link.target);
-                       manifest_entry.add("mtime_sec", static_cast<long>(link.mtime.tv_sec));
-                       manifest_entry.add("mtime_nsec", static_cast<long>(link.mtime.tv_nsec));
+                     [&manifest, &sf](const StagedSymlinkData &link) {
+                       manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::Symlink, "",
+                                                   link.target, 0, link.mtime.tv_sec, link.mtime.tv_nsec});
                      },
-                     [&manifest_entry](const StagedDirectoryData &directory) {
-                       manifest_entry.add("type", "directory");
-                       manifest_entry.add("mode", static_cast<long>(directory.mode & 07777));
-                       manifest_entry.add("mtime_sec", static_cast<long>(directory.mtime.tv_sec));
-                       manifest_entry.add("mtime_nsec", static_cast<long>(directory.mtime.tv_nsec));
+                     [&manifest, &sf](const StagedDirectoryData &directory) {
+                       manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::Directory, "", "",
+                                                   directory.mode & 07777, directory.mtime.tv_sec,
+                                                   directory.mtime.tv_nsec});
                      },
                      [](const StagedSpecialData &) {},
                   },
                   sf.data);
     }
   }
-  std::stringstream serialized_manifest;
-  serialized_manifest << manifest << "\n";
-  const std::string data = serialized_manifest.str();
-  if (!atomic_write_file(temporary_path, final_path, data)) {
-    fprintf(stderr, "fuse-waked: write recovery manifest '%s': %s\n", final_path.c_str(),
-            strerror(errno));
+  std::string error;
+  if (!wakefs::write_staging_manifest_atomic(final_path, manifest, &error)) {
+    fprintf(stderr, "fuse-waked: write recovery manifest '%s': %s\n", final_path.c_str(), error.c_str());
     return false;
   }
   recovery_manifest = final_path;
