@@ -21,7 +21,7 @@
 
 // File tree access types (from database.cpp)
 #define VISIBLE 0
-#define INPUT 1
+// INPUT previously 1; now deprecated
 #define OUTPUT 2
 
 #include <fcntl.h>

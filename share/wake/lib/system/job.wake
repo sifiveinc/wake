@@ -109,12 +109,11 @@ export def markJobSetupFailure job err =
     Fail err
 
 # Complete a job successfully by providing to the runtime the outputs/usage of the job
-export def primJobFinish (job: Job) (inputs: String) (outputs: String) (all_outputs: String) (usage: Usage): Unit =
+export def primJobFinish (job: Job) (outputs: String) (all_outputs: String) (usage: Usage): Unit =
     def Usage jobStatus runtime cputime membytes ibytes obytes = usage
 
-    (\_ \_ \_ \_ \_ \_ \_ \_ \_ \_ prim "job_finish")
+    (\_ \_ \_ \_ \_ \_ \_ \_ \_ prim "job_finish")
     job
-    inputs
     outputs
     all_outputs
     jobStatus
@@ -261,8 +260,7 @@ def finalizeJob job outputs cleanable reality runnerError =
     def preparedOutputStrings = map pstr preparedOutputStagingItems
 
     wait
-    # TODO: The empty inputs argument is vestigial; remove it in the C++ stage.
-    (\_ primJobFinish job "" preparedOutputStrings.implode cleanable.implode reality)
+    (\_ primJobFinish job preparedOutputStrings.implode cleanable.implode reality)
     clResult
 
 def isSourceOrClaimJob (cmd: List String): Boolean = match cmd

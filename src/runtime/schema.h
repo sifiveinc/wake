@@ -66,7 +66,7 @@ inline const char *getWakeSchemaSQLTxn() {
          "  commandline blob    not null,"
          "  environment blob    not null,"
          "  stdin       text    not null,"  // might point outside the workspace
-         "  signature   integer not null,"  // hash(FnInputs, FnOutputs, Resources, Keep)
+         "  signature   integer not null,"  // hash(FnOutputs, Resources, Keep)
          "  stack       blob    not null,"
          "  stat_id     integer references stats(stat_id),"  // null if unmerged
          "  starttime   integer not null default 0,"
@@ -81,7 +81,7 @@ inline const char *getWakeSchemaSQLTxn() {
          "create index if not exists jobstats on jobs(stat_id);"
          "create table if not exists filetree("
          "  tree_id  integer primary key autoincrement,"
-         "  access   integer not null,"  // 0=visible, 1=input, 2=output
+         "  access   integer not null,"  // 0=visible, 1=DEPRECATED, 2=output
          "  job_id   integer not null references jobs(job_id) on delete cascade,"
          "  file_id  integer not null references files(file_id),"
          "  modified integer not null,"
