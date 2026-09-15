@@ -25,16 +25,22 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "gopt/gopt-arg.h"
 #include "gopt/gopt.h"
+#include "json/json5.h"
 #include "util/execpath.h"
 #include "util/shell.h"
 #include "wakefs/fuse.h"
+#include "wakefs/materialize_staging.h"
+
+namespace fs = std::filesystem;
 
 void print_help() {
   const std::string interactive =
@@ -68,6 +74,10 @@ void print_help() {
 #endif
       "    -I --isolate-retcode     Don't allow COMMAND's return code to impact wakebox's return \n"
       "                             code.                                                        \n"
+      "    --materialize-staging    Materialize staging outputs.                                 \n"
+      "                             With --params, materialize that job's outputs when it exits. \n"
+      "                             Otherwise scan the current directory for completed recovery  \n"
+      "                             records to materialize.                                      \n"
       "                                                                                          \n"
       "Other options                                                                             \n"
       "    -h --help                Print usage                                                  \n"
@@ -83,6 +93,141 @@ void print_help() {
       << "      will be ignored.\n\n"
       << batch_and_help;
 #endif
+}
+
+// Use the directory where wakebox was invoked as the recovery workspace.
+bool resolve_workspace(std::string* workspace, std::string* error) {
+  std::error_code ec;
+  const fs::path current = fs::canonical(fs::current_path(), ec);
+  if (ec) {
+    *error = "canonicalize workspace: " + ec.message();
+    return false;
+  }
+  if (!fs::is_directory(current, ec)) {
+    *error = ec ? "inspect workspace: " + ec.message()
+                : "workspace is not a directory: " + current.string();
+    return false;
+  }
+  *workspace = current.string();
+  return true;
+}
+
+bool discover_completed_manifests(const std::string& workspace,
+                                  std::vector<wakefs::CompletedStagingManifest>* manifests,
+                                  std::string* error) {
+  const fs::path recovery = fs::path(workspace) / ".build" / "cas" / "staging" / "recovery";
+  return wakefs::discover_completed_staging_manifests(recovery.string(), manifests, error);
+}
+
+int materialize_completed_workspace() {
+  std::string workspace;
+  std::string error;
+  if (!resolve_workspace(&workspace, &error)) {
+    std::cerr << error << std::endl;
+    return 1;
+  }
+
+  std::vector<wakefs::CompletedStagingManifest> manifests;
+  if (!discover_completed_manifests(workspace, &manifests, &error)) {
+    std::cerr << error << std::endl;
+    return 1;
+  }
+  if (manifests.empty()) {
+    std::cout << "No completed staging manifests found in " << workspace << std::endl;
+    return 0;
+  }
+
+  bool success = true;
+  for (const wakefs::CompletedStagingManifest& manifest : manifests) {
+    if (manifest.manifest.workspace_root != workspace) {
+      std::cerr << manifest.path << ": recorded workspace " << manifest.manifest.workspace_root
+                << " does not match selected workspace " << workspace << std::endl;
+      success = false;
+      continue;
+    }
+    wakefs::StagingMaterializationSummary summary;
+    std::string materialize_error;
+    if (!wakefs::materialize_completed_workspace(manifest.path, manifest.manifest, &summary,
+                                                  &materialize_error)) {
+      success = false;
+      std::cerr << manifest.path << ": "
+                << (materialize_error.empty() ? "one or more entries failed" : materialize_error)
+                << std::endl;
+    }
+    std::cout << manifest.path << ": materialized " << summary.materialized << ", consumed "
+              << summary.consumed << ", failed " << summary.failed << std::endl;
+  }
+  return success ? 0 : 1;
+}
+
+struct ImmediateMaterialization {
+  bool success = false;
+  size_t materialized = 0;
+  size_t consumed = 0;
+  size_t failed = 0;
+  std::string manifest_path;
+  std::string error;
+};
+
+ImmediateMaterialization materialize_returned_manifest(const fuse_args& args,
+                                                       const std::string& result_json) {
+  ImmediateMaterialization result;
+  std::stringstream parse_errors;
+  JAST metadata;
+  if (!JAST::parse(result_json, parse_errors, metadata) || metadata.kind != JSON_OBJECT) {
+    result.error = "parse wakebox result metadata";
+    return result;
+  }
+  auto manifest_field = metadata.get_opt("recovery_manifest");
+  if (!manifest_field || (*manifest_field)->kind != JSON_STR || (*manifest_field)->value.empty()) {
+    result.error = "wakebox result does not contain a recovery manifest";
+    return result;
+  }
+  result.manifest_path = (*manifest_field)->value;
+
+  std::error_code ec;
+  const fs::path workspace = fs::canonical(args.working_dir, ec);
+  if (ec) {
+    result.error = "canonicalize workspace: " + ec.message();
+    return result;
+  }
+  fs::path cas_root = args.cas_dir;
+  if (cas_root.is_relative()) cas_root = workspace / cas_root;
+  cas_root = fs::canonical(cas_root, ec);
+  if (ec) {
+    result.error = "canonicalize CAS root: " + ec.message();
+    return result;
+  }
+  const fs::path recovery_dir = cas_root / "staging" / "recovery";
+  const fs::path manifest = fs::path(result.manifest_path);
+  const fs::file_status status = fs::symlink_status(manifest, ec);
+  if (ec || !fs::is_regular_file(status)) {
+    result.error = ec ? "inspect recovery manifest: " + ec.message()
+                      : "recovery manifest is not a regular file";
+    return result;
+  }
+  const fs::path manifest_parent = fs::canonical(manifest.parent_path(), ec);
+  if (ec || manifest_parent != recovery_dir) {
+    result.error = ec ? "canonicalize recovery manifest directory: " + ec.message()
+                      : "recovery manifest is outside the recovery directory";
+    return result;
+  }
+
+  wakefs::StagingManifest parsed;
+  if (!wakefs::read_staging_manifest(result.manifest_path, &parsed, &result.error)) return result;
+  if (parsed.workspace_root != workspace.string() ||
+      parsed.cas_staging_root != (cas_root / "staging").string()) {
+    result.error = "recovery manifest roots do not match this wakebox invocation";
+    return result;
+  }
+
+  wakefs::StagingMaterializationSummary summary;
+  result.success =
+      wakefs::materialize_completed_workspace(result.manifest_path, parsed, &summary, &result.error);
+  result.materialized = summary.materialized;
+  result.consumed = summary.consumed;
+  result.failed = summary.failed;
+  return result;
 }
 
 // Decide the default working directory for the new process.
@@ -147,7 +292,8 @@ int run_interactive(const std::string &rootfs, const std::vector<std::string> &t
 }
 
 int run_batch(const char *params_path, bool has_output, bool use_stdin_file, bool use_shell,
-              bool isolate_retcode, const char *result_path, const std::vector<mount_op> &binds) {
+              bool isolate_retcode, bool materialize_staging, const char *result_path,
+              const std::vector<mount_op> &binds) {
   // Read the params file
   std::ifstream ifs(params_path);
   const std::string json((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
@@ -190,6 +336,11 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
   std::string result;
   if (!has_output) {
     if (!run_in_fuse(args, retcode, result)) return 1;
+    if (materialize_staging) {
+      const ImmediateMaterialization materialization = materialize_returned_manifest(args, result);
+      if (!materialization.success)
+        std::cerr << "materialize staging: " << materialization.error << std::endl;
+    }
 
     if (isolate_retcode)
       return 0;
@@ -205,6 +356,13 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
   }
 
   if (!run_in_fuse(args, retcode, result)) return 1;
+
+  ImmediateMaterialization materialization;
+  if (materialize_staging) {
+    materialization = materialize_returned_manifest(args, result);
+    if (!materialization.success)
+      std::cerr << "materialize staging: " << materialization.error << std::endl;
+  }
 
   // write output stats as json
   ssize_t wrote = write(out_fd, result.c_str(), result.length());
@@ -233,6 +391,7 @@ int main(int argc, char *argv[]) {
         {'s', "force-shell", GOPT_ARGUMENT_FORBIDDEN},
         {'i', "interactive", GOPT_ARGUMENT_FORBIDDEN},
         {'I', "isolate-retcode", GOPT_ARGUMENT_FORBIDDEN},
+        {0, "materialize-staging", GOPT_ARGUMENT_FORBIDDEN},
 
         {'h', "help", GOPT_ARGUMENT_FORBIDDEN}, {
       0, 0, GOPT_LAST
@@ -246,10 +405,22 @@ int main(int argc, char *argv[]) {
   bool has_params_file = arg(options, "params")->count > 0;
   bool has_positional_cmd = argc > 1;
   bool isolate_retcode = arg(options, "isolate-retcode")->count > 0;
+  bool materialize_staging = arg(options, "materialize-staging")->count > 0;
 
   if (has_help) {
     print_help();
     return 1;
+  }
+
+  if (materialize_staging && !has_params_file) {
+    if (has_positional_cmd || arg(options, "output-stats")->count > 0 || isolate_retcode ||
+        arg(options, "force-shell")->count > 0 || arg(options, "interactive")->count > 0) {
+      std::cerr << "--materialize-staging without --params cannot be combined with a command or"
+                   " execution options."
+                << std::endl;
+      return 1;
+    }
+    return materialize_completed_workspace();
   }
 
   if (has_positional_cmd && has_params_file) {
@@ -300,8 +471,8 @@ int main(int argc, char *argv[]) {
     bool use_stdin_file = arg(options, "interactive")->count == 0;
     bool use_shell = arg(options, "force-shell")->count > 0;
     const char *result_path = arg(options, "output-stats")->argument;
-    return run_batch(params, has_output, use_stdin_file, use_shell, isolate_retcode, result_path,
-                     bind_ops);
+    return run_batch(params, has_output, use_stdin_file, use_shell, isolate_retcode,
+                     materialize_staging, result_path, bind_ops);
   }
   print_help();
   return 1;
