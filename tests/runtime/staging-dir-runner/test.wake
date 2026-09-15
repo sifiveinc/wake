@@ -7,7 +7,6 @@
 #  - symlink output staging
 #  - directory input round-trip
 #  - isolation: files not declared `Visible` are not observable by the job
-#  - `FnInputs` filtering is honored (only reported inputs affect rerun tracking)
 #  - outputs are staged even when the job itself fails (getJobFailedOutputs)
 #  - a declared output that the job never produces is a hard failure
 #  - a job with no declared outputs and `getJobOutputs`/`getJobOutput` fail as expected
@@ -93,27 +92,6 @@ export def testIsolation _: Result Unit Error =
     else failWithError "expected job to not see undeclared file, got '{content}'"
     Pass Unit
     | addErrorContext "isolation"
-
-# --- FnInputs filtering must be honored by the wrapper ---
-
-export def filterInputs Unit =
-    require Pass a = writeContent "filter-a.txt" "aaa"
-    require Pass b = writeContent "filter-b.txt" "bbb"
-    makeExecPlan ("sh", "-c", "cat filter-a.txt filter-b.txt > filter-out.txt", Nil) (a, b, Nil)
-    | setPlanLabel "staging-dir-runner: filter-inputs"
-    | editPlanFnInputs (\_ (\files filter (matches `.*filter-a\.txt` _) files))
-    | setPlanFnOutputs (\_ "filter-out.txt", Nil)
-    | runJobWith stagingDirRunner
-    | getJobInputs
-
-export def testFilterInputs _: Result Unit Error =
-    require Pass inputs = filterInputs Unit
-    require i, Nil = inputs
-    else failWithError "expected exactly one reported input, got {format inputs}"
-    require True = i.getPathName ==* "filter-a.txt"
-    else failWithError "expected reported input 'filter-a.txt', got '{i.getPathName}'"
-    Pass Unit
-    | addErrorContext "filter-inputs"
 
 # --- outputs are staged even when the job fails, and are reachable via getJobFailedOutputs ---
 
@@ -253,7 +231,6 @@ export def test _ =
     require Pass Unit = testSymlinkOutput Unit
     require Pass Unit = testNestedOutput Unit
     require Pass Unit = testIsolation Unit
-    require Pass Unit = testFilterInputs Unit
     require Pass Unit = testFailingJobOutputStillStaged Unit
     require Pass Unit = testMissingDeclaredOutput Unit
     require Pass Unit = testNoOutputs Unit

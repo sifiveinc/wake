@@ -108,7 +108,7 @@ export def markJobSetupFailure job err =
 
     Fail err
 
-# Complete a job successfully by providing to the runtime the inputs/outputs/usage of the job
+# Complete a job successfully by providing to the runtime the outputs/usage of the job
 export def primJobFinish (job: Job) (inputs: String) (outputs: String) (all_outputs: String) (usage: Usage): Unit =
     def Usage jobStatus runtime cputime membytes ibytes obytes = usage
 
@@ -132,9 +132,9 @@ export def primJobCache (jobKey: JobKey): Pair (List Job) (List (Pair String (Pa
 
     (\_ \_ \_ \_ \_ \_ \_ prim "job_cache") dir stdin env cmd signature visible isatty
 
-# Creates a hash of 5 elements
-export def primHash5 a b c d e: Integer =
-    (\_ \_ \_ \_ \_ prim "hash") a b c d e
+# Creates a hash of 4 elements
+export def primHash4 a b c d: Integer =
+    (\_ \_ \_ \_ prim "hash") a b c d
 
 # Helper function similar to cat with that adds a null byte after each string then combines them.
 # Leaves a null byte as the last character of the string
@@ -142,8 +142,8 @@ def implode strings =
     cat (foldr (_, "\0", _) Nil strings)
 
 # Helper function that hashs the signature parts of a job
-def jobSignature cmd res fni fno keep =
-    primHash5 cmd res fni fno keep
+def jobSignature cmd res fno keep =
+    primHash4 cmd res fno keep
 
 # Process staged outputs: partition into published/unpublished, prepare hashes, store in the DB,
 # ingest published items into CAS, and materialize all items to the workspace.
@@ -203,7 +203,7 @@ def materializeJobOutputs (prefix: String) (outputs: StagedOutputs): Result (Lis
 
 # Finalize a completed job: collect any runner/output errors, invoke the post-finalize callback,
 # clean up the staging root, and call primJobFinish to publish the job's outputs.
-def finalizeJob job inputs outputs cleanable reality runnerError =
+def finalizeJob job outputs cleanable reality runnerError =
     def workspaceOutputsReadyResult = materializeJobOutputs (str (getJobId job)) outputs
 
     def finalRunnerError: Option Error =
@@ -261,7 +261,8 @@ def finalizeJob job inputs outputs cleanable reality runnerError =
     def preparedOutputStrings = map pstr preparedOutputStagingItems
 
     wait
-    (\_ primJobFinish job inputs.implode preparedOutputStrings.implode cleanable.implode reality)
+    # TODO: The empty inputs argument is vestigial; remove it in the C++ stage.
+    (\_ primJobFinish job "" preparedOutputStrings.implode cleanable.implode reality)
     clResult
 
 def isSourceOrClaimJob (cmd: List String): Boolean = match cmd
@@ -269,8 +270,8 @@ def isSourceOrClaimJob (cmd: List String): Boolean = match cmd
     prefix, _ if prefix ==* claimJobCommandPrefix -> True
     _ -> False
 
-def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo stdout stderr label isatty: Job =
-    def hash = jobSignature cmd res finputs foutputs keep
+def runAlways cmd env dir stdin res uusage foutputs vis keep run echo stdout stderr label isatty: Job =
+    def hash = jobSignature cmd res foutputs keep
 
     def pstr p =
         catWith
@@ -303,10 +304,10 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
             getJobRecord job
             | getOrElse uusage
 
-        def RunnerOutput inputs outputs cleanable reality runnerError =
-            run job (RunnerInput label cmd vis env dir stdin res prefix usage isatty finputs foutputs)
+        def RunnerOutput outputs cleanable reality runnerError =
+            run job (RunnerInput label cmd vis env dir stdin res prefix usage isatty foutputs)
 
-        def final _ = finalizeJob job inputs outputs cleanable reality runnerError
+        def final _ = finalizeJob job outputs cleanable reality runnerError
 
         # Make sure we don't hash files before the job has stopped running
         def _ = waitJobMerged final job
@@ -348,49 +349,17 @@ def runAlways cmd env dir stdin res uusage finputs foutputs vis keep run echo st
         Pair Nil _ -> build Unit
 
 # Only run if the first four arguments differ
-target runOnce cmd env dir stdin vis isatty run \ res usage finputs foutputs keep echo stdout stderr label =
-    runAlways cmd env dir stdin res usage finputs foutputs vis keep run echo stdout stderr label isatty
+target runOnce cmd env dir stdin vis isatty run \ res usage foutputs keep echo stdout stderr label =
+    runAlways cmd env dir stdin res usage foutputs vis keep run echo stdout stderr label isatty
 
-export def runJobImp label cmd env dir stdin res usage finputs foutputs vis pers run (LogLevel echo) (LogLevel stdout) (LogLevel stderr) isatty =
+export def runJobImp label cmd env dir stdin res usage foutputs vis pers run (LogLevel echo) (LogLevel stdout) (LogLevel stderr) isatty =
     if isOnce pers then
-        runOnce
-        cmd
-        env
-        dir
-        stdin
-        vis
-        isatty
-        run
-        res
-        usage
-        finputs
-        foutputs
-        (isKeep pers)
-        echo
-        stdout
-        stderr
-        label
+        runOnce cmd env dir stdin vis isatty run res usage foutputs (isKeep pers) echo stdout stderr label
     else
-        runAlways
-        cmd
-        env
-        dir
-        stdin
-        res
-        usage
-        finputs
-        foutputs
-        vis
-        (isKeep pers)
-        run
-        echo
-        stdout
-        stderr
-        label
-        isatty
+        runAlways cmd env dir stdin res usage foutputs vis (isKeep pers) run echo stdout stderr label isatty
 
-export def runJobWith (Runner _ run) (Plan label cmd vis env dir stdin stdout stderr echo pers res usage finputs foutputs isatty) =
-    runJobImp label cmd env dir stdin res usage finputs foutputs vis pers run echo stdout stderr isatty
+export def runJobWith (Runner _ run) (Plan label cmd vis env dir stdin stdout stderr echo pers res usage foutputs isatty) =
+    runJobImp label cmd env dir stdin res usage foutputs vis pers run echo stdout stderr isatty
 
 # Set the value of a tag on a Job
 # This is useful for post-build reflection into the database
@@ -439,7 +408,7 @@ def stdio job fd =
     prim "job_output" # 1=stdout, 2=stderr; blocks till closed
 
 def tree job typ =
-    prim "job_tree" # 0=visible, 1=input, 2=output; blocks till finished
+    prim "job_tree" # 0=visible, 1=DEPRECATED, 2=output; blocks till finished
 
 def treeOk file =
     def Pair f detail = file
@@ -602,16 +571,16 @@ export def unsafe_getJobRunnerStatusMessage (job: Job): Result (Option String) E
     raw job
     | rmap getFail
 
-export def getJobInputs (job: Job): Result (List Path) Error =
-    tree job 1
+export def getJobVisible (job: Job): Result (List Path) Error =
+    tree job 0
     | guardPath job
 
 export def getJobOutputs (job: Job): Result (List Path) Error =
     tree job 2
     | guardPath job
 
-export def getJobFailedInputs (job: Job): Result (List Path) Error =
-    tree job 1
+export def getJobFailedVisible (job: Job): Result (List Path) Error =
+    tree job 0
     | mapPath
 
 export def getJobFailedOutputs (job: Job): Result (List Path) Error =
