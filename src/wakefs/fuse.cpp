@@ -207,6 +207,10 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
     result_jast.add("staging_files", JSON_OBJECT).children =
         std::move((*staging_files_opt)->children);
   }
+  auto recovery_manifest_opt = from_daemon.get_opt("recovery_manifest");
+  if (recovery_manifest_opt && (*recovery_manifest_opt)->kind == JSON_STR) {
+    result_jast.add("recovery_manifest", (*recovery_manifest_opt)->value);
+  }
 
   char hostname[HOST_NAME_MAX + 1];
   if (0 == gethostname(hostname, sizeof(hostname))) result_jast.add("run-host", hostname);
