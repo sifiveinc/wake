@@ -187,3 +187,29 @@ TEST(staging_manifest_materializes_symlink_with_mtime, "cas") {
   EXPECT_FALSE(fs::exists(path));
   fs::remove_all(root);
 }
+
+TEST(staging_manifest_discovery_orders_completed_records, "cas") {
+  const std::string root = test_root("discovery");
+  fs::create_directories(root + "/workspace");
+  fs::create_directories(root + "/staging/recovery/nested");
+  std::string error;
+  wakefs::StagingManifest older = basic_manifest(root);
+  older.job_key = "older";
+  older.created_at_ns = 10;
+  wakefs::StagingManifest newer = basic_manifest(root);
+  newer.job_key = "newer";
+  newer.created_at_ns = 20;
+  ASSERT_TRUE(wakefs::write_staging_manifest_atomic(root + "/staging/recovery/z.json", newer, &error));
+  ASSERT_TRUE(wakefs::write_staging_manifest_atomic(root + "/staging/recovery/a.json", older, &error));
+  ASSERT_TRUE(wakefs::write_staging_manifest_atomic(root + "/staging/recovery/nested/ignored.json", older,
+                                                    &error));
+
+  std::vector<wakefs::CompletedStagingManifest> manifests;
+  ASSERT_TRUE(wakefs::discover_completed_staging_manifests(root + "/staging/recovery", &manifests, &error));
+  EXPECT_EQUAL(manifests.size(), 2U);
+  EXPECT_EQUAL(fs::path(manifests[0].path).filename().string(), std::string("a.json"));
+  EXPECT_EQUAL(manifests[0].manifest.job_key, std::string("older"));
+  EXPECT_EQUAL(fs::path(manifests[1].path).filename().string(), std::string("z.json"));
+  EXPECT_EQUAL(manifests[1].manifest.job_key, std::string("newer"));
+  fs::remove_all(root);
+}
