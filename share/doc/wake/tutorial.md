@@ -19,7 +19,7 @@ shouldn't be too difficult to guess.
     - [Result](#result)
   - [Executing shell jobs](#executing-shell-jobs)
     - [Customizing job invocation](#customizing-job-invocation)
-  - [Build rules with file inputs](#build-rules-with-file-inputs)
+  - [Build rules with file visibility](#build-rules-with-file-visibility)
   - [Building targets from multiple files](#building-targets-from-multiple-files)
     - [Map and partial function evaluation](#map-and-partial-function-evaluation)
   - [Supplemental file visibility](#supplemental-file-visibility)
@@ -582,7 +582,7 @@ use with jobs.
 
 `makePlan` is the main method wake uses to set up calls to external shell
 scripts or tools.  It takes three arguments: a readable name for what the job is
-doing, a list of paths of legal inputs, and a string for the
+doing, a list of paths visible to the job, and a string for the
 command-line.  We will go into more detail on that and `runJob` (which is where
 the command is actually invoked) in the next section.
 
@@ -693,7 +693,7 @@ be forewarned that the execution order of wake is not sequential!
 This can result in `print` output that does not appear to follow the
 definition order of your build program.
 
-## Build rules with file inputs
+## Build rules with file visibility
 
 To illustrate wake's use as a build system, we'll use a few simple programs
 written in C++.  This is certainly not the only language which wake can be used
@@ -987,7 +987,7 @@ $ wake buildAll
 Pass (Path "all.native-cpp11-release", Nil)
 $ wake --last
 ...
-Inputs:
+Visible:
   60cde6e2 help.native-cpp11-release.o
   31745228 main.native-cpp11-release.o
 Outputs:
@@ -1009,11 +1009,10 @@ files are added.
 
 ## Supplemental file visibility
 
-Recall that the third argument to `compileC` is a list of additional legal input
+Recall that the third argument to `compileC` is a list of additional visible
 files.  Wake forbids jobs from reading files in the workspace that are not
-declared inputs.  This means that if you include header files, they must be
-declared in the list of legal inputs passed to compileC or the compile
-will fail.
+visible to the job.  This means that if you include header files, they must be
+listed in the files passed to compileC or the compile will fail.
 
 ```wake
 export def buildHeaders _ =
@@ -1056,8 +1055,6 @@ $ wake -v --failed
 ...
 Visible:
   0b10435dd8947e57cbad4f4326d65dd0909c026b8e2bcaa2f87c9e6018507451 main.cpp
-Inputs:
-  0b10435dd8947e57cbad4f4326d65dd0909c026b8e2bcaa2f87c9e6018507451 main.cpp
 Outputs:
 Stderr:
   main.cpp:1:10: fatal error: help.h: No such file or directory
@@ -1067,7 +1064,7 @@ Stderr:
 ```
 
 In `buildHeaders`, we've used the `sources` command to find all the header
-files in the same directory and pass them as legal inputs to gcc -- the
+files in the same directory and pass them as visible files to gcc -- the
 keyword `@here` expands to the directory of the `.wake` file.  The second
 argument to `sources` is a regular expression to select which files to
 return. We've used ``` `` ```s (backticks) here which define regular expression literals
@@ -1102,7 +1099,7 @@ headers in directories that are interesting to the cpp files.
 ```console
 $ wake -o main.native-cpp11-release.o
 ...
-Inputs:
+Visible:
   d2a7bfde help.h
   9d220741 main.cpp
 Outputs:
@@ -1114,7 +1111,7 @@ For this file, wake recorded that it needed both `main.cpp` and `help.h`.
 ```console
 $ wake -o help.native-cpp11-release.o
 ...
-Inputs:
+Visible:
   5b8beead help.cpp
 Outputs:
   13350319 help.native-cpp11-release.o

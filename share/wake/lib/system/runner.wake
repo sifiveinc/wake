@@ -50,20 +50,6 @@ export tuple RunnerInput =
     export Record: Usage
     # Determines if job should run in psuedoterminal
     export IsAtty: Boolean
-    # Modify the Runner's reported inputs (files read).
-    # Must be called exactly once for a given job.
-    #
-    # FnInputs may only be called once as the user provided function may not be idempotent.
-    # Ex: FnInputs = tail being called multiple times would drop an extra file each time its called
-    #     while the user only intentded for the very first file to be dropped
-    #
-    # Note for wrapping runners:
-    #     It is expected that a wrapping runner maintain this invariant. What that looks like will
-    #     depend heavily on the wrapper and requires due diligence. A cache wrapper for example
-    #     should pass it along unmodified since it doesn't care about the actual inputs while
-    #     a smart wrapper tracking file reads must pass a no-op function to the inner runner
-    #     so that it can apply filtering after collecting the files read.
-    export FnInputs: (List String => List String)
     # Modify the Runner's reported outputs (files created).
     # Must be called exactly once for a given job.
     #
@@ -108,8 +94,6 @@ export def emptyStagedOutputs: StagedOutputs =
 
 # The result returned by a Runner after running a job
 export tuple RunnerOutput =
-    # The filtered list of files actually read by the job. It can be used for more precise reruns
-    export Inputs: List String
     # The filtered list of staged outputs returned by the runner. job.wake hashes and stores the
     # FilteredOutputPaths subset, ingesting it into CAS when enabled and materializing it directly
     # otherwise. Non-published staged items are materialized directly to the workspace and only
@@ -149,19 +133,13 @@ export def makeRunner (name: String) (run: Job => RunnerInput => RunnerOutput): 
 
 # localRunner: A runner that provides no sandboxing protections and no file tracking.
 #
-# You must use FnInputs to fill in input tracking. localRunner itself never publishes outputs;
-# wrappers such as workspaceRunner and makeJSONRunner are responsible for staging and reporting them.
+# localRunner itself never publishes outputs; wrappers such as workspaceRunner and makeJSONRunner
+# are responsible for staging and reporting them.
 # Advanced usage only, proceed with caution
 export def localRunner: Runner =
-    def run (job: Job) ((RunnerInput _ cmd vis env dir stdin _ _ predict isAtty fnInputs _): RunnerInput): RunnerOutput =
+    def run (job: Job) ((RunnerInput _ cmd _ env dir stdin _ _ predict isAtty _): RunnerInput): RunnerOutput =
         def jobKey = JobKey dir stdin env.implode cmd.implode 0 "" isAtty.booleanToInteger
         def _ = primJobLaunch job jobKey predict
-
-        def fileInputs =
-            vis
-            | map getPathName
-            | fnInputs
-
         def cleanable = Nil
 
         def Pair usage runnerError = match job.getJobReality
@@ -171,7 +149,7 @@ export def localRunner: Runner =
             Pass reality -> Pair reality None
 
         # Wait for the job to complete
-        def return _ = RunnerOutput fileInputs emptyStagedOutputs cleanable usage runnerError
+        def return _ = RunnerOutput emptyStagedOutputs cleanable usage runnerError
 
         waitJobMerged return job
 
@@ -261,45 +239,31 @@ export def stageWorkspaceOutputs (allOutputPaths: List String) (filteredOutputPa
 # per-invocation staging root for job finalization. Staging isolates outputs so they cannot
 # be modified between hash calculation/CAS insertion.
 export def workspaceRunner: Runner =
-    def run (job: Job) ((RunnerInput label command visible environment directory stdin res prefix record isAtty fnInputs fnOutputs): RunnerInput): RunnerOutput =
-        def publishedOutputPaths = fnOutputs Nil
-
+    def run (job: Job) ((RunnerInput label command visible environment directory stdin res prefix record isAtty fnOutputs): RunnerInput): RunnerOutput =
         # Run the underlying workspace command exactly once, but suppress direct output reporting.
         # workspaceRunner will report outputs only after the staging prim snapshots them.
         def localInput =
-            RunnerInput
-            label
-            command
-            visible
-            environment
-            directory
-            stdin
-            res
-            prefix
-            record
-            isAtty
-            fnInputs
-            (\_ Nil)
+            RunnerInput label command visible environment directory stdin res prefix record isAtty (\_ Nil)
 
         def (Runner _ localRun) = localRunner
         def localOutput = localRun job localInput
-        def filteredInputs = localOutput.getRunnerOutputInputs
         def runnerUsage = localOutput.getRunnerOutputUsage
         def baseRunnerError = localOutput.getRunnerOutputRunnerError
 
         # Preserve the base command's status. Stage outputs regardless of exit code so that
         # getJobFailedOutputs can access them.
         match baseRunnerError
-            Some err -> RunnerOutput filteredInputs emptyStagedOutputs Nil runnerUsage (Some err)
+            Some err -> RunnerOutput emptyStagedOutputs Nil runnerUsage (Some err)
             None ->
+                def publishedOutputPaths = fnOutputs Nil
+
                 def stagingResult =
                     stageWorkspaceOutputs publishedOutputPaths publishedOutputPaths publishedOutputPaths
 
                 match stagingResult
-                    Fail err ->
-                        RunnerOutput filteredInputs emptyStagedOutputs Nil runnerUsage (Some err)
+                    Fail err -> RunnerOutput emptyStagedOutputs Nil runnerUsage (Some err)
                     Pass (Pair stagedOutputs cleanableOutputs) ->
-                        RunnerOutput filteredInputs stagedOutputs cleanableOutputs runnerUsage None
+                        RunnerOutput stagedOutputs cleanableOutputs runnerUsage None
 
     makeRunner "workspace" run
 
@@ -307,13 +271,8 @@ export def workspaceRunner: Runner =
 #
 # This runner is useful for tracking a unit of work that is job like but not launched as a process
 export def virtualRunner: Runner =
-    def run (job: Job) ((RunnerInput _ _ vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
+    def run (job: Job) ((RunnerInput _ _ _ _ _ _ _ _ predict _ fnOutputs): RunnerInput): RunnerOutput =
         def _ = primJobVirtual job "" "" predict
-
-        def fileInputs =
-            vis
-            | map getPathName
-            | fnInputs
 
         # Caller needs to fill this in from nothing
         def cleanable = Nil
@@ -331,10 +290,10 @@ export def virtualRunner: Runner =
 
         # Wait for the job to complete
         def return _ = match (runnerError; stagedOutputSetResult)
-            Some err; _ -> RunnerOutput fileInputs emptyStagedOutputs cleanable usage (Some err)
-            None; Fail err -> RunnerOutput fileInputs emptyStagedOutputs cleanable usage (Some err)
+            Some err; _ -> RunnerOutput emptyStagedOutputs cleanable usage (Some err)
+            None; Fail err -> RunnerOutput emptyStagedOutputs cleanable usage (Some err)
             None; Pass (Pair stagedOutputs cleanableOutputs) ->
-                RunnerOutput fileInputs stagedOutputs cleanableOutputs usage None
+                RunnerOutput stagedOutputs cleanableOutputs usage None
 
         waitJobMerged return job
 
@@ -446,7 +405,7 @@ export def stagingDirRunner: Runner =
         def setupFailure err =
             def _ = markJobSetupFailure job err
 
-            RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some err)
+            RunnerOutput emptyStagedOutputs Nil emptyUsage (Some err)
 
         def stagingDirResult = casAllocStagingDir "job-{input.getRunnerInputPrefix}"
 
@@ -466,31 +425,18 @@ export def stagingDirRunner: Runner =
 
             setupFailure (getFailure stageResult)
 
-        # This runner disables FUSE tracking, so `jsonInputs` is always empty; conservatively
-        # report every visible as an input instead (like `localRunner`) to avoid unconditional
-        # cache hits. Pass `identity` inward as `FnInputs` (no-op) and call the caller's real
-        # `FnInputs` exactly once out here against the full visible set.
-        def visiblePaths =
-            input.getRunnerInputVisible
-            | map getPathName
-
         def declaredOutputs = input.getRunnerInputFnOutputs Nil
 
         def innerInput =
             input
             | setRunnerInputFnOutputs (\_ Nil)
-            | setRunnerInputFnInputs identity
 
         def plan =
             makeJSONRunnerPlan wakebox
             | setJSONRunnerPlanMkMountOps (stagingMountOps stagingDir)
 
         def (Runner _ innerRun) = makeJSONRunner plan
-        def reportedInputs = input.getRunnerInputFnInputs visiblePaths
-
-        def innerOutput =
-            innerRun job innerInput
-            | setRunnerOutputInputs reportedInputs
+        def innerOutput = innerRun job innerInput
 
         require None = innerOutput.getRunnerOutputRunnerError
         else
@@ -548,30 +494,16 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
     def script = which (simplify rawScript)
     def executeOk = access script xOK
 
-    def run (job: Job) ((RunnerInput label command visible environment directory stdin res prefix record isatty fnInputs fnOutputs): RunnerInput): RunnerOutput =
+    def run (job: Job) ((RunnerInput label command visible environment directory stdin res prefix record isatty fnOutputs): RunnerInput): RunnerOutput =
         require True = executeOk
         else
             def runnerError = "Runner {script} is not executable".makeError
             def _ = markJobSetupFailure job runnerError
 
-            RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some runnerError)
+            RunnerOutput emptyStagedOutputs Nil emptyUsage (Some runnerError)
 
         def mountOpsResult =
-            mkMountOps (
-                RunnerInput
-                label
-                command
-                visible
-                environment
-                directory
-                stdin
-                res
-                prefix
-                record
-                isatty
-                fnInputs
-                fnOutputs
-            )
+            mkMountOps (RunnerInput label command visible environment directory stdin res prefix record isatty fnOutputs)
 
         require Pass mountOps = mountOpsResult
         else
@@ -581,7 +513,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
 
             def _ = markJobSetupFailure job runnerError
 
-            RunnerOutput Nil emptyStagedOutputs Nil emptyUsage (Some runnerError)
+            RunnerOutput emptyStagedOutputs Nil emptyUsage (Some runnerError)
 
         def buildDirName = ".build"
         def specFile = "{buildDirName}/spec-{prefix}.json"
@@ -613,7 +545,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             | rmapFail (markJobSetupFailure job)
 
         require Pass _ = writeResult
-        else RunnerOutput Nil emptyStagedOutputs Nil emptyUsage writeResult.getFail
+        else RunnerOutput emptyStagedOutputs Nil emptyUsage writeResult.getFail
 
         def cmd = script, "-I", "-p", specFile, "-o", resultFile, extraArgs
 
@@ -632,7 +564,6 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             (estimate record)
             isatty
             identity
-            identity
 
         # Dispatch to the local runner via composition and get the outputs
         def (Runner _ localRun) = localRunner
@@ -648,19 +579,19 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         require 0 = runnerStatusCode
         else
             Some "Non-zero exit status ({str runnerStatusCode}) for JSON runner on {specFile}".makeError
-            | RunnerOutput Nil emptyStagedOutputs (specFile, Nil) runnerUsage
+            | RunnerOutput emptyStagedOutputs (specFile, Nil) runnerUsage
 
         def claimResult =
             claim resultFile
             | addErrorContext "Failed to claim {resultFile} for JSON runner: "
 
         require Pass resultPath = claimResult
-        else RunnerOutput Nil emptyStagedOutputs (specFile, Nil) runnerUsage claimResult.getFail
+        else RunnerOutput emptyStagedOutputs (specFile, Nil) runnerUsage claimResult.getFail
 
         require Pass content = parseJSONFile resultPath
         else
             Some "Failed to parse output {resultFile} for JSON runner".makeError
-            | RunnerOutput Nil emptyStagedOutputs (specFile, Nil) runnerUsage
+            | RunnerOutput emptyStagedOutputs (specFile, Nil) runnerUsage
 
         def field name = match _ _
             _ (Fail f) -> Fail f
@@ -688,12 +619,6 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
                     None -> None
             _ -> None
 
-        def getK exp =
-            content // exp
-            | getJArray
-            | getOrElse Nil
-            | mapPartial getJString
-
         # Get outputs with support for both old (string) and new (object) formats
         def getOutputPaths =
             content // `outputs`
@@ -701,9 +626,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             | getOrElse Nil
             | mapPartial extractPath
 
-        def jsonInputs = getK `inputs`
         def jsonOutputs = getOutputPaths
-        def filteredInputs = fnInputs jsonInputs
         def filteredOutputPaths = fnOutputs jsonOutputs
         def defaultCleanableOutputs = specFile, resultFile, jsonOutputs
 
@@ -745,12 +668,12 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         match (jobUsageResult; outputSetResult)
             Pass jobUsage; Pass (Pair stagedOutputs cleanableOutputs) ->
                 None
-                | RunnerOutput filteredInputs stagedOutputs cleanableOutputs jobUsage
+                | RunnerOutput stagedOutputs cleanableOutputs jobUsage
             Pass jobUsage; Fail err ->
                 Some err
-                | RunnerOutput filteredInputs emptyStagedOutputs defaultCleanableOutputs jobUsage
+                | RunnerOutput emptyStagedOutputs defaultCleanableOutputs jobUsage
             Fail msg; _ ->
                 Some msg.makeError
-                | RunnerOutput filteredInputs emptyStagedOutputs defaultCleanableOutputs runnerUsage
+                | RunnerOutput emptyStagedOutputs defaultCleanableOutputs runnerUsage
 
     makeRunner "json-{script}" run

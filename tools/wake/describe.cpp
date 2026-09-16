@@ -99,10 +99,6 @@ static void describe_metadata(const std::vector<JobReflection> &jobs, bool debug
         out << "  " << describe_hash(in.hash, verbose) << " " << in.path << std::endl;
     }
     if (files) {
-      out << "Inputs:" << std::endl;
-      for (auto &in : job.inputs) {
-        out << "  " << describe_hash(in.hash, verbose) << " " << in.path << std::endl;
-      }
       out << "Outputs:" << std::endl;
       for (auto &output : job.outputs) {
         out << "  " << describe_hash(output.hash, verbose) << " " << output.path << std::endl;
@@ -208,9 +204,6 @@ static void describe_shell(const std::vector<JobReflection> &jobs, bool debug, b
       for (auto &in : job.visible)
         out << "#  " << describe_hash(in.hash, verbose) << " " << in.path << std::endl;
     }
-    out << "# Inputs:" << std::endl;
-    for (auto &in : job.inputs)
-      out << "#  " << describe_hash(in.hash, verbose) << " " << in.path << std::endl;
     out << "# Outputs:" << std::endl;
     for (auto &output : job.outputs)
       out << "#  " << describe_hash(output.hash, verbose) << " " << output.path << std::endl;
