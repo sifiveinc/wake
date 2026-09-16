@@ -492,7 +492,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_setcrit_path =
       "update stats set pathtime=runtime+("
       "  select coalesce(max(s.pathtime),0) from filetree f1, filetree f2, jobs j, stats s"
-      "  where f1.job_id=?1 and f1.access=2 and f1.file_id=f2.file_id and f2.access=1 and "
+      "  where f1.job_id=?1 and f1.access=2 and f1.file_id=f2.file_id and f2.access=0 and "
       "f2.job_id=j.job_id and j.stat_id=s.stat_id and f1.modified=f2.modified"
       ") where stat_id=(select stat_id from jobs where job_id=?1)";
   const char *sql_tag_job = "insert into tags(job_id, uri, content) values(?, ?, ?)";
@@ -503,7 +503,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_get_edges =
       "select distinct user.job_id as user, used.job_id as used"
       "  from filetree user, filetree used"
-      "   where user.access=1 and user.file_id=used.file_id and used.access=2";
+      "   where user.access=0 and user.file_id=used.file_id and used.access=2";
   const char *sql_get_file_dependency =
       "SELECT l.job_id, r.job_id"
       " FROM filetree l"

@@ -8,4 +8,4 @@ WAKE="${WAKE:-wake}"
 "${WAKE}" --input visible.txt --label '*' --simple-metadata \
     | grep -v 'Built\|Runtime\|CPUtime\|Mem bytes'
 "${WAKE}" --input visible.txt --label '*' --verbose \
-    | grep -v 'Built\|Runtime\|CPUtime\|Mem bytes'
+    | grep -v 'Built\|Runtime\|CPUtime\|Mem bytes\|Wake run'

@@ -66,7 +66,7 @@ inline const char *getWakeSchemaSQLTxn() {
          "  commandline blob    not null,"
          "  environment blob    not null,"
          "  stdin       text    not null,"  // might point outside the workspace
-         "  signature   integer not null,"  // hash(FnOutputs, Resources, Keep)
+         "  signature   integer not null,"  // hash(Command, Resources, FnOutputs, Keep)
          "  stack       blob    not null,"
          "  stat_id     integer references stats(stat_id),"  // null if unmerged
          "  starttime   integer not null default 0,"
