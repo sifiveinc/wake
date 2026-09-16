@@ -352,9 +352,39 @@ target runOnce cmd env dir stdin vis isatty run \ res usage foutputs keep echo s
 
 export def runJobImp label cmd env dir stdin res usage foutputs vis pers run (LogLevel echo) (LogLevel stdout) (LogLevel stderr) isatty =
     if isOnce pers then
-        runOnce cmd env dir stdin vis isatty run res usage foutputs (isKeep pers) echo stdout stderr label
+        runOnce
+        cmd
+        env
+        dir
+        stdin
+        vis
+        isatty
+        run
+        res
+        usage
+        foutputs
+        (isKeep pers)
+        echo
+        stdout
+        stderr
+        label
     else
-        runAlways cmd env dir stdin res usage foutputs vis (isKeep pers) run echo stdout stderr label isatty
+        runAlways
+        cmd
+        env
+        dir
+        stdin
+        res
+        usage
+        foutputs
+        vis
+        (isKeep pers)
+        run
+        echo
+        stdout
+        stderr
+        label
+        isatty
 
 export def runJobWith (Runner _ run) (Plan label cmd vis env dir stdin stdout stderr echo pers res usage foutputs isatty) =
     runJobImp label cmd env dir stdin res usage foutputs vis pers run echo stdout stderr isatty
