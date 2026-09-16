@@ -213,7 +213,7 @@ int materialize_manifest(const char *path) {
   return success ? 0 : 1;
 }
 
-struct ImmediateMaterialization {
+struct StagingManifestResult {
   bool success = false;
   bool manifest_removed = false;
   size_t materialized = 0;
@@ -223,8 +223,8 @@ struct ImmediateMaterialization {
   std::string error;
 };
 
-ImmediateMaterialization materialize_returned_manifest(const std::string &result_json) {
-  ImmediateMaterialization result;
+StagingManifestResult materialize_returned_manifest(const std::string &result_json) {
+  StagingManifestResult result;
   std::stringstream parse_errors;
   JAST metadata;
   if (!JAST::parse(result_json, parse_errors, metadata) || metadata.kind != JSON_OBJECT) {
@@ -337,7 +337,8 @@ int run_interactive(const std::string &rootfs, const std::vector<std::string> &t
 
   int retcode;
   std::string result;
-  if (!run_in_fuse(fa, retcode, result)) return 1;
+  FuseRunOutcome outcome;
+  if (!run_in_fuse(fa, retcode, result, outcome)) return 1;
   return retcode;
 }
 
@@ -385,12 +386,15 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
   int retcode;
   std::string result;
   if (!has_output) {
-    if (!run_in_fuse(args, retcode, result)) return 1;
-    if (materialize_staging) {
-      const ImmediateMaterialization materialization = materialize_returned_manifest(result);
+    FuseRunOutcome outcome;
+    if (!run_in_fuse(args, retcode, result, outcome)) return 1;
+    const bool canceled = outcome == FuseRunOutcome::Canceled;
+    StagingManifestResult materialization;
+    if (materialize_staging || canceled) {
+      materialization = materialize_returned_manifest(result);
       if (!materialization.success) {
         std::cerr << "materialize staging: " << materialization.error << std::endl;
-        if (retcode == 0) return 1;
+        return 1;
       } else {
         wakefs::StagingMaterializationSummary summary;
         summary.materialized = materialization.materialized;
@@ -401,10 +405,9 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
       }
     }
 
-    if (isolate_retcode)
+    if (isolate_retcode && !canceled)
       return 0;
-    else
-      return retcode;
+    return canceled && retcode == 0 ? 1 : retcode;
   }
 
   // Open the output file
@@ -414,10 +417,12 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
     return 1;
   }
 
-  if (!run_in_fuse(args, retcode, result)) return 1;
+  FuseRunOutcome outcome;
+  if (!run_in_fuse(args, retcode, result, outcome)) return 1;
 
-  ImmediateMaterialization materialization;
-  if (materialize_staging) {
+  StagingManifestResult materialization;
+  const bool canceled = outcome == FuseRunOutcome::Canceled;
+  if (materialize_staging || canceled) {
     materialization = materialize_returned_manifest(result);
     if (!materialization.success) {
       std::cerr << "materialize staging: " << materialization.error << std::endl;
@@ -436,12 +441,11 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
   if (wrote == -1) return errno;
   if (0 != close(out_fd)) return errno;
 
-  if (materialize_staging && !materialization.success && retcode == 0)
+  if ((materialize_staging || canceled) && !materialization.success)
     return 1;
-  else if (isolate_retcode)
+  else if (isolate_retcode && !canceled)
     return 0;
-  else
-    return retcode;
+  return canceled && retcode == 0 ? 1 : retcode;
 }
 
 int main(int argc, char *argv[]) {
