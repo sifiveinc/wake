@@ -352,13 +352,15 @@ target runOnce cmd env dir stdin vis isatty run \ res usage finputs foutputs kee
     runAlways cmd env dir stdin res usage finputs foutputs vis keep run echo stdout stderr label isatty
 
 export def runJobImp label cmd env dir stdin res usage finputs foutputs vis pers run (LogLevel echo) (LogLevel stdout) (LogLevel stderr) isatty =
+    def sortedVis = sortPaths vis
+
     if isOnce pers then
         runOnce
         cmd
         env
         dir
         stdin
-        vis
+        sortedVis
         isatty
         run
         res
@@ -380,7 +382,7 @@ export def runJobImp label cmd env dir stdin res usage finputs foutputs vis pers
         usage
         finputs
         foutputs
-        vis
+        sortedVis
         (isKeep pers)
         run
         echo
