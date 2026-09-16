@@ -86,6 +86,11 @@ bool discover_completed_staging_manifests(const std::string& recovery_dir,
                                            std::vector<CompletedStagingManifest>* manifests,
                                            std::string* error);
 
+// Project outputs to their recorded workspace and durably record their placed
+// state, retaining the final manifest and all regular staging sources.
+bool project_completed_workspace(const std::string& manifest_path, const StagingManifest& manifest,
+                                 StagingMaterializationSummary* summary, std::string* error);
+
 // Restore outputs to their recorded workspace, then remove their staging sources
 // and completed manifest entries.
 bool materialize_completed_workspace(const std::string& manifest_path, const StagingManifest& manifest,

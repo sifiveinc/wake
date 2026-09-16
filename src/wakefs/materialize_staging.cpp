@@ -366,7 +366,7 @@ bool open_roots(const std::string& staging, const std::string& destination, int*
 }
 
 StagingEntrySummary* find_summary(StagingMaterializationSummary* summary,
-                                  const std::string& destination) {
+                                   const std::string& destination) {
   for (StagingEntrySummary& entry : summary->entries) {
     if (entry.destination == destination) return &entry;
   }
@@ -381,12 +381,12 @@ bool parse_staging_manifest(const std::string& text, StagingManifest* manifest, 
   JAST root;
   if (!JAST::parse(text, parse_errors, root) || root.kind != JSON_OBJECT)
     return fail(error, "invalid staging manifest: " + parse_errors.str());
-  if (!has_only_fields(root, {"version", "workspace_root", "cas_staging_root", "job_key", "daemon_pid",
-                              "created_at_ns", "entries"}, error))
-    return false;
   int64_t version;
   if (!required_integer(root, "version", &version, error)) return false;
   if (version != 1) return fail(error, "unsupported staging manifest version");
+  if (!has_only_fields(root, {"version", "workspace_root", "cas_staging_root", "job_key", "daemon_pid",
+                               "created_at_ns", "entries"}, error))
+    return false;
   StagingManifest parsed;
   if (!required_string(root, "workspace_root", &parsed.workspace_root, error) ||
       !required_string(root, "cas_staging_root", &parsed.cas_staging_root, error) ||
@@ -542,6 +542,70 @@ bool write_staging_manifest_atomic(const std::string& path, const StagingManifes
   return true;
 }
 
+// Project a final manifest while retaining its sources for later materialization.
+bool project_completed_workspace(const std::string& manifest_path, const StagingManifest& parsed_manifest,
+                                 StagingMaterializationSummary* summary, std::string* error) {
+  if (!summary) return fail(error, "materialization summary is required");
+  *summary = {};
+  StagingManifest manifest = parsed_manifest;
+  for (const StagingEntry& entry : manifest.entries)
+    summary->entries.push_back({entry.destination, entry.placed, false, ""});
+  if (manifest.entries.empty()) return true;
+
+  std::string canonical_staging, canonical_workspace;
+  if (!validate_roots(manifest, &canonical_staging, &canonical_workspace, error)) return false;
+  int source_root = -1;
+  int workspace_root = -1;
+  if (!open_roots(canonical_staging, canonical_workspace, &source_root, &workspace_root, error)) return false;
+
+  auto record_failure = [&](const std::string& destination, const std::string& message) {
+    StagingEntrySummary* entry = find_summary(summary, destination);
+    if (entry && entry->error.empty()) entry->error = message;
+    ++summary->failed;
+  };
+  std::vector<StagingEntry> pending = manifest.entries;
+  std::stable_sort(pending.begin(), pending.end(), [](const StagingEntry& left, const StagingEntry& right) {
+    const bool left_directory = entry_is_directory(left);
+    const bool right_directory = entry_is_directory(right);
+    if (left_directory != right_directory) return left_directory;
+    return entry_before(left, right);
+  });
+  for (const StagingEntry& entry : pending) {
+    if (entry.type == StagingEntryType::Directory) continue;
+    std::string placement_error;
+    bool placed = entry.type == StagingEntryType::File
+                      ? materialize_file(source_root, workspace_root, entry, &placement_error)
+                      : materialize_symlink(workspace_root, entry, &placement_error);
+    if (!placed) {
+      record_failure(entry.destination, placement_error);
+      continue;
+    }
+    StagingEntrySummary* result = find_summary(summary, entry.destination);
+    if (result) result->materialized = true;
+    ++summary->materialized;
+  }
+
+  pending = manifest.entries;
+  std::stable_sort(pending.begin(), pending.end(),
+                   [](const StagingEntry& left, const StagingEntry& right) { return entry_before(right, left); });
+  for (const StagingEntry& entry : pending) {
+    if (entry.type != StagingEntryType::Directory) continue;
+    std::string placement_error;
+    if (!materialize_directory(workspace_root, entry, true, &placement_error)) {
+      record_failure(entry.destination, placement_error);
+      continue;
+    }
+    StagingEntrySummary* result = find_summary(summary, entry.destination);
+    if (result) result->materialized = true;
+    ++summary->materialized;
+  }
+
+  close(source_root);
+  close(workspace_root);
+  if (!summary->success()) return false;
+  return summary->success();
+}
+
 // Recover one completed manifest into its recorded workspace and consume its staging sources.
 bool materialize_completed_workspace(const std::string& manifest_path,
                                       StagingMaterializationSummary* summary, std::string* error) {
@@ -551,7 +615,7 @@ bool materialize_completed_workspace(const std::string& manifest_path,
 }
 
 bool materialize_completed_workspace(const std::string& manifest_path, const StagingManifest& parsed_manifest,
-                                      StagingMaterializationSummary* summary, std::string* error) {
+                                       StagingMaterializationSummary* summary, std::string* error) {
   if (!summary) return fail(error, "materialization summary is required");
   *summary = {};
   StagingManifest manifest = parsed_manifest;
@@ -580,20 +644,23 @@ bool materialize_completed_workspace(const std::string& manifest_path, const Sta
     if (entry && entry->error.empty()) entry->error = message;
     ++summary->failed;
   };
-  // A placed file no longer needs its source. Delete it, then persist removal of
+  // A placed regular file no longer needs its source. Delete it, then persist removal of
   // the entry; ENOENT means a prior interrupted cleanup already deleted it.
   auto consume_placed = [&](const StagingEntry& entry) {
     std::string parent_path, leaf, cleanup_error;
     split_parent(entry.staging_path, &parent_path, &leaf);
     int parent = -1;
-    if (!open_relative_directory(source_root, parent_path, false, &parent, &cleanup_error) ||
-        (unlinkat(parent, leaf.c_str(), 0) != 0 && errno != ENOENT)) {
+    if (!open_relative_directory(source_root, parent_path, false, &parent, &cleanup_error)) {
+      if (errno != ENOENT) {
+        record_failure(entry.destination, cleanup_error);
+        return;
+      }
+    } else if (unlinkat(parent, leaf.c_str(), 0) != 0 && errno != ENOENT) {
       if (parent >= 0) close(parent);
-      record_failure(entry.destination,
-                     cleanup_error.empty() ? errno_message("consume staging source") : cleanup_error);
+      record_failure(entry.destination, errno_message("consume staging source"));
       return;
     }
-    close(parent);
+    if (parent >= 0) close(parent);
     if (!remove_entry_and_write(manifest_path, &manifest, entry.destination, &cleanup_error)) {
       record_failure(entry.destination, cleanup_error);
       return;
