@@ -27,8 +27,8 @@ the wake.db directory and below.
     1. Getting information about jobs. For all these commands, adding `-v` will
        include the jobs' stdout/stderr, and adding `-d` will include the Wake
        stack trace of when the job was run.
-        1. `wake -o <file>` to get dependency information for job which write `file`
-        1. `wake -i <file>` to get dependency information for job which read `file`
+        1. `wake -o <file>` to get dependency information for jobs which write `file`
+        1. `wake -i <file>` to get dependency information for jobs whose visible files include `file`
         1. `wake -g` to get a list of all global symbols
         1. `wake --failed` to get a list of failed jobs
         1. `wake --last` to get a list of the most recent jobs, regardless of status
@@ -248,7 +248,7 @@ global def runit _ =
 
 Note: all definitions and functions referenced in this section can be found in [this directory](https://github.com/sifive/wake/blob/master/share/wake/lib/system).
 
-Runners are responsible for executing a Plan to run an external program. There are two built-in base runners: `localRunner` and `defaultRunner`. `defaultRunner` creates a sandbox for jobs to run in while `localRunner` runs jobs in the actual workspace. An additional distinction is `localRunner` does not detect inputs/outputs by itself. 
+Runners are responsible for executing a Plan to run an external program. There are two built-in base runners: `localRunner` and `defaultRunner`. `defaultRunner` creates a sandbox for jobs to run in while `localRunner` runs jobs in the actual workspace. An additional distinction is `localRunner` does not detect output files by itself, instead requiring that list be populated manually.
 
 Runners are chosen for a given Plan based on the value returned by their `score` function and the plan's `RunnerFilter` field. Multiple runners may be able to run a given Plan, so the `score` function selects the most appropriate one. 
 
@@ -261,7 +261,7 @@ Runners are created using `makeRunner`. `makeRunner` is defined as follows:
 
 * The `score` argument is of type `Plan → Result Double String` and is called by `runJob` to produce a score representing the priority of a runner with respect to the given Plan. For example, if `plan.getPlanResources` returns list `("python/3.7.1", Nil)` then the RISC-V runner probably cannot provide that resource and should return something like `Fail RISCVRunner: cannot provide resource: python/3.7.1`. If the plan resources is `("riscv-tools/2019.02.0", Nil)` then the `score` function should return `Pass 1.0` or some other positive number.
 * The `pre` argument is of type `Result RunnerInput Error → Pair (Result RunnerInput Error) a`. The `RunnerInput` tuple is a subset of the Plan tuple, serving to restrict the fields that the runner can access. The `pre` function is called before the job is run, allowing the runner to modify the input to provide the requested resources. For example, the RISC-V runner would run `runnerInput | editRunnerInputEnvironment addRISCVEnvironment` where `addRISCVEnvironment` is a function that sets the RISCV environment variable. The return value of `pre` is the modified `RunnerInput` paired with a free `a` type that can contain any sideband data that the `pre` function needs to provide to the `post` function.
-* The `post` argument is of type `Pair (Result RunnerOutput Error) a → Result RunnerOutput Error` and is similar to the `pre` function but is called after the job has run. `post` is for editing the reported outputs/inputs/usage of the job. For example, the fuse runner uses the `post` hook to set the output and input files reported by the FUSE filesystem. 
+* The `post` argument is of type `Pair (Result RunnerOutput Error) a → Result RunnerOutput Error` and is similar to the `pre` function but is called after the job has run. `post` is for editing the reported outputs/usage of the job. For example, the fuse runner uses the `post` hook to set the output files reported by the FUSE filesystem.
 * The last argument is the base runner that the current runner is built on top of. This is because all runners must be built on top of a preexisting runner. For example, in environment-example-sifive, localRISCVRunner and defaultRISCVRunner are built on top of localRunner and defaultRunner respectively.
 * `publish runner` must be executed for Wake to recognize a runner
 
