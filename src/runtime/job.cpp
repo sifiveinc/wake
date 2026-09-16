@@ -85,7 +85,7 @@
 #define STATE_RUNNER_OUT 8   // runner_out has been closed and in database
 #define STATE_RUNNER_ERR 16  // runner_err has been closed and in database
 #define STATE_MERGED 32      // exit status in struct
-#define STATE_FINISHED 64    // inputs+outputs+status+runtime in database
+#define STATE_FINISHED 64    // visible+outputs+status+runtime in database
 
 // Can be queried at multiple stages of the job's lifetime
 struct Job final : public GCObject<Job, Value> {
@@ -119,9 +119,9 @@ struct Job final : public GCObject<Job, Value> {
   HeapPointer<Continuation> q_runner_out;  // waken once runner output available
   HeapPointer<Continuation> q_runner_err;  // waken once runner error available
   HeapPointer<Continuation> q_reality;     // waken once job merged (reality available)
-  HeapPointer<Continuation> q_inputs;   // waken once job finished (inputs+outputs+report available)
-  HeapPointer<Continuation> q_outputs;  // waken once job finished (inputs+outputs+report available)
-  HeapPointer<Continuation> q_report;   // waken once job finished (inputs+outputs+report available)
+  HeapPointer<Continuation> q_inputs;      // waken once job finished (vis+outputs+report available)
+  HeapPointer<Continuation> q_outputs;     // waken once job finished (vis+outputs+report available)
+  HeapPointer<Continuation> q_report;      // waken once job finished (vis+outputs+report available)
 
   Job(Database *db_, String *label_, String *dir_, String *stdin_file_, String *environ,
       String *cmdline_, bool keep, const char *echo, const char *stream_out, const char *stream_err,
@@ -2082,7 +2082,7 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   // the created job.
   prim_register(pmap, "job_virtual", prim_job_virtual, type_job_virtual, PRIM_IMPURE, jobtable);
 
-  // This is where you "finish" a job by explaining what its inputs, outputs, usage etc...
+  // This is where you "finish" a job by explaining what its outputs, usage etc...
   // are. This call unblocks things like `job_output` for instance.
   prim_register(pmap, "job_finish", prim_job_finish, type_job_finish, PRIM_IMPURE);
 

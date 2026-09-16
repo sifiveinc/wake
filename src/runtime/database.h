@@ -118,7 +118,6 @@ struct JobReflection {
   std::vector<std::pair<std::string, int>> std_writes;
   Usage usage;
   std::vector<FileReflection> visible;
-  std::vector<FileReflection> inputs;
   std::vector<FileReflection> outputs;
   std::vector<JobTag> tags;
   std::pair<bool, std::string> runner_status;  // bool=true if error present, false if NULL

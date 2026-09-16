@@ -1,4 +1,4 @@
-/* Wake FUSE driver to capture inputs/outputs
+/* Wake FUSE driver to capture file access and outputs
  *
  * Copyright 2019 SiFive, Inc.
  * Copyright 2001-2007  Miklos Szeredi <miklos@szeredi.hu>
@@ -469,17 +469,7 @@ void Job::dump(const std::string &job_id) {
   bool first;
   std::stringstream s;
 
-  s << "{\"ibytes\":" << ibytes << ",\"obytes\":" << obytes << ",\"inputs\":[";
-
-  for (auto &x : files_wrote) files_read.erase(x);
-
-  first = true;
-  for (auto &x : files_read) {
-    s << (first ? "" : ",") << "\"" << json_escape(x) << "\"";
-    first = false;
-  }
-
-  s << "],\"outputs\":[";
+  s << "{\"ibytes\":" << ibytes << ",\"obytes\":" << obytes << ",\"outputs\":[";
 
   first = true;
   const std::string prefix = ".fuse_hidden";

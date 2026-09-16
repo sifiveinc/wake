@@ -54,7 +54,7 @@
 #include "wcl/iterator.h"
 
 #define VISIBLE 0
-#define INPUT 1
+// INPUT previously 1; now deprecated
 #define OUTPUT 2
 #define INDEXES 3
 
@@ -1863,11 +1863,6 @@ JAST JobReflection::to_structured_json() const {
     visible_json.add("", visible_file.path);
   }
 
-  JAST &input_json = json.add("input_files", JSON_ARRAY);
-  for (const auto &input : inputs) {
-    input_json.add("", input.path);
-  }
-
   JAST &output_json = json.add("output_files", JSON_ARRAY);
   for (const auto &output : outputs) {
     output_json.add("", output.path);
@@ -1940,12 +1935,6 @@ JAST JobReflection::to_json() const {
     visible_stream << visible_file.path << "<br>";
   }
   json.add("visible", visible_stream.str());
-
-  std::stringstream inputs_stream;
-  for (const auto &input : inputs) {
-    inputs_stream << input.path << "<br>";
-  }
-  json.add("inputs", inputs_stream.str());
 
   std::stringstream outputs_stream;
   for (const auto &output : outputs) {
@@ -2040,19 +2029,6 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
     desc.tags.emplace_back(sqlite3_column_int64(db->imp->get_tags, 0),
                            rip_column(db->imp->get_tags, 1), rip_column(db->imp->get_tags, 2));
   finish_stmt(why, db->imp->get_tags, db->imp->debugdb);
-
-  // inputs
-  bind_integer(why, db->imp->get_tree, 1, desc.job);
-  bind_integer(why, db->imp->get_tree, 2, 1);
-  while (sqlite3_step(db->imp->get_tree) == SQLITE_ROW) {
-    std::string path = rip_column(db->imp->get_tree, 0);
-    std::string hash = rip_column(db->imp->get_tree, 1);
-    std::string type = rip_column(db->imp->get_tree, 2);
-    long mode = sqlite3_column_int64(db->imp->get_tree, 3);
-    long modified = sqlite3_column_int64(db->imp->get_tree, 4);
-    desc.inputs.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
-  }
-  finish_stmt(why, db->imp->get_tree, db->imp->debugdb);
 
   // outputs
   bind_integer(why, db->imp->get_tree, 1, desc.job);
@@ -2526,7 +2502,7 @@ std::string collapse_and(const std::vector<std::vector<std::string>> &ands, int 
 static std::string build_matching_id_query(MatchingQueryFilters filters) {
   std::string input_file_join = "";
   if (!filters.input_file_filters.empty()) {
-    filters.input_file_filters.push_back({"access = 1"});
+    filters.input_file_filters.push_back({"access = 0"});
     std::string conds = collapse_and(filters.input_file_filters, 3);
     input_file_join =
         "        INNER JOIN (\n"
