@@ -9,5 +9,5 @@ rm -f overlap.txt wake.db wake.log
 
 # Clean up
 err=$?
-rm -f .wake-build-lock overlap.txt
+rm -f .wake/locks/* overlap.txt
 exit $err

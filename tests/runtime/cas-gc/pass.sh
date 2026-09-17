@@ -19,3 +19,6 @@ rm wake.db*
 echo "After nuking DB and running job1"
 [ ! -e .build/cas/blobs/28/c2c99e8f8894c4d70f5d202056d9f3dc8bc920348137ab957eaa0e5e5cd79e ]
 [ -e .build/cas/blobs/4a/89eb54e03e4e519e659ac83101df1e9773409425193964610cc52bee4fd06f ]
+
+# Clean up
+rm -f shared.txt
