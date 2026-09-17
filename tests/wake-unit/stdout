@@ -90,11 +90,12 @@ PASSED:
   shell_escape_nominal
   shell_escape_spaces
   shell_escape_special
+  staging_manifest_batches_large_recovery
   staging_manifest_blocks_destination_symlinks
   staging_manifest_discovery_orders_completed_records
   staging_manifest_materializes_symlink_with_mtime
   staging_manifest_partial_projection_remains_recoverable
-  staging_manifest_projection_is_rematerialized_and_consumed
+  staging_manifest_projection_is_consumed_without_replacement
   staging_manifest_projection_retains_sources
   staging_manifest_rejects_unsafe_input
   staging_manifest_removes_empty_manifest

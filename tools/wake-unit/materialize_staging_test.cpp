@@ -188,7 +188,7 @@ TEST(staging_manifest_projection_retains_sources, "cas") {
   EXPECT_TRUE(fs::exists(path));
   wakefs::StagingManifest projected;
   ASSERT_TRUE(wakefs::read_staging_manifest(path, &projected, &error));
-  EXPECT_FALSE(projected.entries[0].placed);
+  EXPECT_TRUE(projected.entries[0].placed);
   fs::remove_all(root);
 }
 
@@ -208,7 +208,7 @@ TEST(staging_manifest_partial_projection_remains_recoverable, "cas") {
   EXPECT_FALSE(wakefs::project_completed_workspace(path, manifest, &projection, &error));
   wakefs::StagingManifest partial;
   ASSERT_TRUE(wakefs::read_staging_manifest(path, &partial, &error));
-  EXPECT_FALSE(partial.entries[0].placed);
+  EXPECT_TRUE(partial.entries[0].placed);
   EXPECT_FALSE(partial.entries[1].placed);
 
   write_file(root + "/staging/two", "second");
@@ -220,7 +220,7 @@ TEST(staging_manifest_partial_projection_remains_recoverable, "cas") {
   fs::remove_all(root);
 }
 
-TEST(staging_manifest_projection_is_rematerialized_and_consumed, "cas") {
+TEST(staging_manifest_projection_is_consumed_without_replacement, "cas") {
   const std::string root = test_root("deferred_projection");
   fs::create_directories(root + "/workspace");
   fs::create_directories(root + "/staging");
@@ -236,9 +236,34 @@ TEST(staging_manifest_projection_is_rematerialized_and_consumed, "cas") {
   wakefs::StagingMaterializationSummary recovery;
   ASSERT_TRUE(wakefs::materialize_completed_workspace(path, &recovery, &error));
   EXPECT_EQUAL(read_file(root + "/workspace/output"), std::string("retained"));
-  EXPECT_EQUAL(recovery.materialized, 1U);
+  EXPECT_EQUAL(recovery.consumed, 1U);
   EXPECT_FALSE(fs::exists(root + "/staging/source"));
   EXPECT_FALSE(fs::exists(path));
+  fs::remove_all(root);
+}
+
+TEST(staging_manifest_batches_large_recovery, "cas") {
+  const std::string root = test_root("batched");
+  fs::create_directories(root + "/workspace");
+  fs::create_directories(root + "/staging");
+  wakefs::StagingManifest manifest = basic_manifest(root);
+  for (size_t index = 0; index < 300; ++index) {
+    const std::string name = "output-" + std::to_string(index);
+    write_file(root + "/staging/" + name, std::to_string(index));
+    manifest.entries.push_back(
+        {name, wakefs::StagingEntryType::File, name, "", 0644, 1, 2});
+  }
+  const std::string path = root + "/staging/recovery.json";
+  std::string error;
+  ASSERT_TRUE(wakefs::write_staging_manifest_atomic(path, manifest, &error));
+
+  wakefs::StagingMaterializationSummary summary;
+  ASSERT_TRUE(wakefs::materialize_completed_workspace(path, &summary, &error));
+  EXPECT_EQUAL(summary.materialized, 300U);
+  EXPECT_EQUAL(summary.consumed, 300U);
+  EXPECT_EQUAL(read_file(root + "/workspace/output-299"), std::string("299"));
+  EXPECT_FALSE(fs::exists(path));
+  EXPECT_FALSE(fs::exists(root + "/staging/output-299"));
   fs::remove_all(root);
 }
 

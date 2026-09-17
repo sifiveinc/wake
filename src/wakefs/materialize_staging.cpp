@@ -23,6 +23,7 @@
 #include <climits>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <limits>
 #include <set>
@@ -43,6 +44,7 @@ bool write_staging_manifest_atomic(const std::string& path, const StagingManifes
 namespace {
 
 std::atomic<uint64_t> manifest_counter{0};
+constexpr size_t materialization_batch_size = 256;
 
 bool fail(std::string* error, const std::string& message) {
   if (error) *error = message;
@@ -154,21 +156,29 @@ bool validate_metadata(const StagingManifest& manifest, std::string* error) {
   return true;
 }
 
-// Persist one fully consumed entry's removal, deleting the manifest when it is empty.
-bool remove_entry_and_write(const std::string& manifest_path, StagingManifest* manifest,
-                            const std::string& destination, std::string* error) {
-  auto entry = std::find_if(manifest->entries.begin(), manifest->entries.end(),
-                            [&destination](const StagingEntry& candidate) {
-                              return candidate.destination == destination;
-                            });
-  if (entry == manifest->entries.end()) return fail(error, "manifest entry disappeared during recovery");
-  manifest->entries.erase(entry);
-  if (manifest->entries.empty()) {
+// Persist a fully consumed batch's removal, deleting the manifest when it is empty.
+bool remove_entries_and_write(const std::string& manifest_path, StagingManifest* manifest,
+                              const std::set<std::string>& destinations, std::string* error) {
+  if (destinations.empty()) return true;
+  StagingManifest updated = *manifest;
+  const size_t original_size = updated.entries.size();
+  updated.entries.erase(
+      std::remove_if(updated.entries.begin(), updated.entries.end(),
+                     [&destinations](const StagingEntry& entry) {
+                       return destinations.find(entry.destination) != destinations.end();
+                     }),
+      updated.entries.end());
+  if (updated.entries.size() + destinations.size() != original_size)
+    return fail(error, "manifest entry disappeared during recovery");
+  if (updated.entries.empty()) {
     if (unlink(manifest_path.c_str()) != 0 && errno != ENOENT)
       return fail(error, errno_message("remove completed manifest"));
+    *manifest = std::move(updated);
     return true;
   }
-  return write_staging_manifest_atomic(manifest_path, *manifest, error);
+  if (!write_staging_manifest_atomic(manifest_path, updated, error)) return false;
+  *manifest = std::move(updated);
+  return true;
 }
 
 bool write_all(int fd, const std::string& data) {
@@ -366,11 +376,58 @@ bool open_roots(const std::string& staging, const std::string& destination, int*
 }
 
 StagingEntrySummary* find_summary(StagingMaterializationSummary* summary,
-                                   const std::string& destination) {
+                                    const std::string& destination) {
   for (StagingEntrySummary& entry : summary->entries) {
     if (entry.destination == destination) return &entry;
   }
   return nullptr;
+}
+
+bool mark_entries_placed_and_write(const std::string& manifest_path, StagingManifest* manifest,
+                                   const std::set<std::string>& destinations, std::string* error) {
+  StagingManifest updated = *manifest;
+  for (StagingEntry& entry : updated.entries) {
+    if (destinations.find(entry.destination) != destinations.end()) entry.placed = true;
+  }
+  if (!write_staging_manifest_atomic(manifest_path, updated, error)) return false;
+  *manifest = std::move(updated);
+  return true;
+}
+
+void mark_materialized(StagingMaterializationSummary* summary, const std::string& destination) {
+  StagingEntrySummary* result = find_summary(summary, destination);
+  if (result) result->materialized = true;
+  ++summary->materialized;
+}
+
+void mark_consumed(StagingMaterializationSummary* summary, const std::string& destination) {
+  StagingEntrySummary* result = find_summary(summary, destination);
+  if (result) result->consumed = true;
+  ++summary->consumed;
+}
+
+using StagingFailureRecorder = std::function<void(const std::string&, const std::string&)>;
+
+// Place one regular-file batch, then durably record every successful destination as placed.
+std::set<std::string> place_file_batch(int source_root, int workspace_root,
+                                       const std::vector<StagingEntry>& entries,
+                                       const std::string& manifest_path, StagingManifest* manifest,
+                                       const StagingFailureRecorder& record_failure) {
+  std::set<std::string> placed;
+  for (const StagingEntry& entry : entries) {
+    if (entry.type != StagingEntryType::File || entry.placed) continue;
+    std::string placement_error;
+    if (!materialize_file(source_root, workspace_root, entry, &placement_error)) {
+      record_failure(entry.destination, placement_error);
+      continue;
+    }
+    placed.insert(entry.destination);
+  }
+  if (placed.empty()) return placed;
+  std::string checkpoint_error;
+  if (mark_entries_placed_and_write(manifest_path, manifest, placed, &checkpoint_error)) return placed;
+  for (const std::string& destination : placed) record_failure(destination, checkpoint_error);
+  return {};
 }
 
 }  // namespace
@@ -570,19 +627,31 @@ bool project_completed_workspace(const std::string& manifest_path, const Staging
     if (left_directory != right_directory) return left_directory;
     return entry_before(left, right);
   });
+  std::vector<StagingEntry> files;
+  std::vector<StagingEntry> symlinks;
   for (const StagingEntry& entry : pending) {
-    if (entry.type == StagingEntryType::Directory) continue;
+    if (entry.type == StagingEntryType::File)
+      files.push_back(entry);
+    else if (entry.type == StagingEntryType::Symlink)
+      symlinks.push_back(entry);
+  }
+  for (size_t begin = 0; begin < files.size(); begin += materialization_batch_size) {
+    const size_t end = std::min(begin + materialization_batch_size, files.size());
+    const std::vector<StagingEntry> batch(files.begin() + begin, files.begin() + end);
+    const std::set<std::string> placed_files =
+        place_file_batch(source_root, workspace_root, batch, manifest_path, &manifest, record_failure);
+    for (const std::string& destination : placed_files) {
+      mark_materialized(summary, destination);
+    }
+  }
+
+  for (const StagingEntry& entry : symlinks) {
     std::string placement_error;
-    bool placed = entry.type == StagingEntryType::File
-                      ? materialize_file(source_root, workspace_root, entry, &placement_error)
-                      : materialize_symlink(workspace_root, entry, &placement_error);
-    if (!placed) {
+    if (!materialize_symlink(workspace_root, entry, &placement_error)) {
       record_failure(entry.destination, placement_error);
       continue;
     }
-    StagingEntrySummary* result = find_summary(summary, entry.destination);
-    if (result) result->materialized = true;
-    ++summary->materialized;
+    mark_materialized(summary, entry.destination);
   }
 
   pending = manifest.entries;
@@ -595,9 +664,7 @@ bool project_completed_workspace(const std::string& manifest_path, const Staging
       record_failure(entry.destination, placement_error);
       continue;
     }
-    StagingEntrySummary* result = find_summary(summary, entry.destination);
-    if (result) result->materialized = true;
-    ++summary->materialized;
+    mark_materialized(summary, entry.destination);
   }
 
   close(source_root);
@@ -644,116 +711,130 @@ bool materialize_completed_workspace(const std::string& manifest_path, const Sta
     if (entry && entry->error.empty()) entry->error = message;
     ++summary->failed;
   };
-  // A placed regular file no longer needs its source. Delete it, then persist removal of
-  // the entry; ENOENT means a prior interrupted cleanup already deleted it.
-  auto consume_placed = [&](const StagingEntry& entry) {
-    std::string parent_path, leaf, cleanup_error;
-    split_parent(entry.staging_path, &parent_path, &leaf);
-    int parent = -1;
-    if (!open_relative_directory(source_root, parent_path, false, &parent, &cleanup_error)) {
-      if (errno != ENOENT) {
-        record_failure(entry.destination, cleanup_error);
-        return;
+  // Delete an already placed batch, then atomically remove all successfully consumed entries.
+  auto consume_placed_batch = [&](const std::vector<StagingEntry>& entries) {
+    std::set<std::string> consumed;
+    for (const StagingEntry& entry : entries) {
+      std::string parent_path, leaf, cleanup_error;
+      split_parent(entry.staging_path, &parent_path, &leaf);
+      int parent = -1;
+      if (!open_relative_directory(source_root, parent_path, false, &parent, &cleanup_error)) {
+        if (errno != ENOENT) {
+          record_failure(entry.destination, cleanup_error);
+          continue;
+        }
+      } else if (unlinkat(parent, leaf.c_str(), 0) != 0 && errno != ENOENT) {
+        close(parent);
+        record_failure(entry.destination, errno_message("consume staging source"));
+        continue;
       }
-    } else if (unlinkat(parent, leaf.c_str(), 0) != 0 && errno != ENOENT) {
       if (parent >= 0) close(parent);
-      record_failure(entry.destination, errno_message("consume staging source"));
-      return;
+      consumed.insert(entry.destination);
     }
-    if (parent >= 0) close(parent);
-    if (!remove_entry_and_write(manifest_path, &manifest, entry.destination, &cleanup_error)) {
-      record_failure(entry.destination, cleanup_error);
-      return;
+    if (consumed.empty()) return size_t{0};
+    std::string cleanup_error;
+    if (!remove_entries_and_write(manifest_path, &manifest, consumed, &cleanup_error)) {
+      for (const std::string& destination : consumed) record_failure(destination, cleanup_error);
+      return size_t{0};
     }
-    StagingEntrySummary* result = find_summary(summary, entry.destination);
-    if (result) result->consumed = true;
-    ++summary->consumed;
+    for (const std::string& destination : consumed) {
+      mark_consumed(summary, destination);
+    }
+    return consumed.size();
+  };
+
+  auto materialize_directories = [&](const std::vector<StagingEntry>& entries, bool apply_metadata,
+                                     std::set<std::string>* completed_directories) {
+    for (const StagingEntry& entry : entries) {
+      if (entry.type != StagingEntryType::Directory) continue;
+      StagingEntrySummary* result = find_summary(summary, entry.destination);
+      if (apply_metadata && (!result || !result->materialized)) continue;
+      std::string placement_error;
+      if (!materialize_directory(workspace_root, entry, apply_metadata, &placement_error)) {
+        record_failure(entry.destination, placement_error);
+        continue;
+      }
+      if (!apply_metadata) {
+        mark_materialized(summary, entry.destination);
+      }
+      if (completed_directories) completed_directories->insert(entry.destination);
+    }
   };
 
   std::vector<StagingEntry> pending = manifest.entries;
   // A prior attempt committed these destinations; finish source cleanup without
   // reopening a source that may already have been removed.
-  for (const StagingEntry& entry : pending) {
-    if (entry.placed) consume_placed(entry);
+  for (size_t begin = 0; begin < pending.size(); begin += materialization_batch_size) {
+    const size_t end = std::min(begin + materialization_batch_size, pending.size());
+    std::vector<StagingEntry> placed;
+    for (size_t index = begin; index < end; ++index) {
+      if (pending[index].placed) placed.push_back(pending[index]);
+    }
+    consume_placed_batch(placed);
   }
 
   pending = manifest.entries;
-  // Create parent directories before their children; final directory metadata
-  // waits until every child has been placed.
-  std::stable_sort(pending.begin(), pending.end(), [](const StagingEntry& left, const StagingEntry& right) {
-    const bool left_directory = entry_is_directory(left);
-    const bool right_directory = entry_is_directory(right);
-    if (left_directory != right_directory) return left_directory;
-    return entry_before(left, right);
-  });
+  std::vector<StagingEntry> directories;
+  std::vector<StagingEntry> files;
+  std::vector<StagingEntry> symlinks;
   for (const StagingEntry& entry : pending) {
-    if (entry.type != StagingEntryType::Directory && entry.placed) continue;
-    if (entry.type == StagingEntryType::Directory) {
-      // Create/reuse the directory now, but retain its entry for final metadata
-      // after all children have been materialized.
-      std::string placement_error;
-      if (materialize_directory(workspace_root, entry, false, &placement_error)) {
-        StagingEntrySummary* result = find_summary(summary, entry.destination);
-        if (result) result->materialized = true;
-        ++summary->materialized;
-      } else {
-        record_failure(entry.destination, placement_error);
-      }
-      continue;
+    if (entry.type == StagingEntryType::Directory)
+      directories.push_back(entry);
+    else if (entry.type == StagingEntryType::File)
+      files.push_back(entry);
+    else
+      symlinks.push_back(entry);
+  }
+  std::stable_sort(directories.begin(), directories.end(), entry_before);
+  // Create every directory before placing a regular file or symlink. Directory
+  // metadata waits until all children have been placed.
+  materialize_directories(directories, false, nullptr);
+  for (size_t begin = 0; begin < files.size(); begin += materialization_batch_size) {
+    const size_t end = std::min(begin + materialization_batch_size, files.size());
+    const std::vector<StagingEntry> batch(files.begin() + begin, files.begin() + end);
+    const std::set<std::string> placed_files =
+        place_file_batch(source_root, workspace_root, batch, manifest_path, &manifest, record_failure);
+    for (const std::string& destination : placed_files) {
+      mark_materialized(summary, destination);
     }
-    if (entry.type == StagingEntryType::Symlink) {
-      // Symlinks have no separate staging source, so successful placement fully
-      // completes the entry and it can be removed immediately.
+    std::vector<StagingEntry> placed_entries;
+    for (const StagingEntry& entry : batch) {
+      if (placed_files.find(entry.destination) != placed_files.end()) placed_entries.push_back(entry);
+    }
+    consume_placed_batch(placed_entries);
+  }
+
+  for (size_t begin = 0; begin < symlinks.size(); begin += materialization_batch_size) {
+    const size_t end = std::min(begin + materialization_batch_size, symlinks.size());
+    std::set<std::string> completed_symlinks;
+    for (size_t index = begin; index < end; ++index) {
+      const StagingEntry& entry = symlinks[index];
       std::string placement_error;
       if (!materialize_symlink(workspace_root, entry, &placement_error)) {
         record_failure(entry.destination, placement_error);
         continue;
       }
-      if (!remove_entry_and_write(manifest_path, &manifest, entry.destination, &placement_error)) {
-        record_failure(entry.destination, placement_error);
-        continue;
-      }
-      StagingEntrySummary* result = find_summary(summary, entry.destination);
-      if (result) result->materialized = true;
-      ++summary->materialized;
-      continue;
+      completed_symlinks.insert(entry.destination);
     }
-    std::string placement_error;
-    if (!materialize_file(source_root, workspace_root, entry, &placement_error)) {
-      record_failure(entry.destination, placement_error);
-      continue;
+    std::string removal_error;
+    if (!completed_symlinks.empty() &&
+        !remove_entries_and_write(manifest_path, &manifest, completed_symlinks, &removal_error)) {
+      for (const std::string& destination : completed_symlinks) record_failure(destination, removal_error);
+      completed_symlinks.clear();
     }
-    // Persist the placement before consuming the only recoverable source.
-    auto current = std::find_if(manifest.entries.begin(), manifest.entries.end(),
-                                [&entry](const StagingEntry& candidate) {
-                                  return candidate.destination == entry.destination;
-                                });
-    current->placed = true;
-    if (!write_staging_manifest_atomic(manifest_path, manifest, &placement_error)) {
-      record_failure(entry.destination, placement_error);
-      continue;
-    }
-    StagingEntrySummary* result = find_summary(summary, entry.destination);
-    if (result) result->materialized = true;
-    ++summary->materialized;
-    // The manifest now records that the destination is committed, so cleanup can
-    // safely remove the source even if a later recovery is interrupted.
-    consume_placed(*current);
+    for (const std::string& destination : completed_symlinks) mark_materialized(summary, destination);
   }
 
-  pending = manifest.entries;
   // Apply parent metadata last so restrictive final modes cannot block child placement.
-  std::stable_sort(pending.begin(), pending.end(),
+  std::stable_sort(directories.begin(), directories.end(),
                    [](const StagingEntry& left, const StagingEntry& right) { return entry_before(right, left); });
-  for (const StagingEntry& entry : pending) {
-    if (entry.type != StagingEntryType::Directory) continue;
-    StagingEntrySummary* result = find_summary(summary, entry.destination);
-    if (!result || !result->materialized) continue;
-    std::string metadata_error;
-    if (!materialize_directory(workspace_root, entry, true, &metadata_error) ||
-        !remove_entry_and_write(manifest_path, &manifest, entry.destination, &metadata_error)) {
-      record_failure(entry.destination, metadata_error);
-    }
+  std::set<std::string> completed_directories;
+  materialize_directories(directories, true, &completed_directories);
+  std::string metadata_error;
+  if (!completed_directories.empty() &&
+      !remove_entries_and_write(manifest_path, &manifest, completed_directories, &metadata_error)) {
+    for (const std::string& destination : completed_directories) record_failure(destination, metadata_error);
+    completed_directories.clear();
   }
   summary->manifest_removed = manifest.entries.empty();
   close(source_root);
