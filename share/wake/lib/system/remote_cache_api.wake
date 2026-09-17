@@ -416,13 +416,13 @@ export def rscApiPostJob (req: CachePostRequest) (api: RemoteCacheApi): Result U
 
         def _ =
             writeTempFile
-            "remote.cache.api.postJob.res.{response.getHttpResponseStatusCode | format}"
+            "remote.cache.api.postJob.res.{formatHttpResponseStatusCode response}"
             "label: {req.getCachePostRequestLabel}\nres: {response | format}"
 
         True
 
     require (Some 200) = response.getHttpResponseStatusCode
-    else failWithError "rsc: post job failed with code {response.getHttpResponseStatusCode | format}"
+    else failWithError "rsc: post job failed with code {formatHttpResponseStatusCode response}"
 
     Pass Unit
 
@@ -468,7 +468,7 @@ export def rscApiCheckJobAllowed (req: CacheAllowedRequest) (api: RemoteCacheApi
 
         def _ =
             writeTempFile
-            "remote.cache.api.allowedJob.res.{response.getHttpResponseStatusCode | format}"
+            "remote.cache.api.allowedJob.res.{formatHttpResponseStatusCode response}"
             "label: {req.getCacheAllowedRequestLabel}\nres: {response | format}"
 
         True
@@ -532,7 +532,7 @@ export def rscApiFindMatchingJob (req: CacheSearchRequest) (api: RemoteCacheApi)
 
         def _ =
             writeTempFile
-            "remote.cache.api.findJob.res.{response.getHttpResponseStatusCode | format}"
+            "remote.cache.api.findJob.res.{formatHttpResponseStatusCode response}"
             "label: {req.getCacheSearchRequestLabel}\nres: {response | format}"
 
         True
@@ -940,6 +940,12 @@ export def guardRemoteCacheDisabled Unit: Result Unit Error =
 def contentTypeFromSize size =
     if size < 95 then Some "blob/small" else None
 
+# Formats HTTP status code
+def formatHttpResponseStatusCode (response: HttpResponse): String =
+    response.getHttpResponseStatusCode
+    | omap format
+    | getOrElse "NA"
+
 # TODO: Delete these once new json API is added to wake repo
 def jField (jvalue: JValue) (key: String) =
     require JObject obj = jvalue
@@ -1005,7 +1011,7 @@ def uploadBlobRequest (api: RemoteCacheApi) (setBlob: HttpRequest => HttpRequest
     require (Some 200) = response.getHttpResponseStatusCode
     else
         failWithError
-        "rsc: failed to upload string as blob with code {response.getHttpResponseStatusCode | format}"
+        "rsc: failed to upload string as blob with code {formatHttpResponseStatusCode response}"
 
     require Pass json = response.getHttpResponseBody.parseJSONBody
 
