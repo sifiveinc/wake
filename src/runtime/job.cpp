@@ -67,9 +67,9 @@
 #include "wcl/defer.h"
 
 // How many times to SIGTERM a process before SIGKILL
-#define TERM_ATTEMPTS 6
+#define TERM_ATTEMPTS 1
 // How long between first and second SIGTERM attempt (exponentially increasing)
-#define TERM_BASE_GAP_MS 100
+#define TERM_BASE_GAP_MS 30000
 // The most file descriptors used by wake for itself (database/stdio/etc)
 #define MAX_SELF_FDS 24
 // The default memory to provision for jobs (2MB)
@@ -648,8 +648,8 @@ JobTable::~JobTable() {
       sigprocmask(SIG_BLOCK, &imp->block, &saved);
       sigdelset(&saved, SIGCHLD);
 
-      // Continue waiting for the full second
-      timeout.tv_sec = 0;
+      // Continue waiting for the full grace period
+      timeout.tv_sec = remain.tv_sec;
       timeout.tv_nsec = remain.tv_nsec;
 
       // Sleep until timeout or a signal arrives

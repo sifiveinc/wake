@@ -69,6 +69,7 @@ PASSED:
   iterator_split_by_no_delim
   iterator_split_by_nominal
   iterator_split_by_only_delim
+  materialize_directory_replaces_file_and_preserves_children
   reflink_or_copy_file_basic
   reflink_or_copy_file_src_not_found
   result_assign1
@@ -89,6 +90,18 @@ PASSED:
   shell_escape_nominal
   shell_escape_spaces
   shell_escape_special
+  staging_manifest_batches_large_recovery
+  staging_manifest_blocks_destination_symlinks
+  staging_manifest_discovery_orders_completed_records
+  staging_manifest_materializes_symlink_with_mtime
+  staging_manifest_partial_projection_remains_recoverable
+  staging_manifest_projection_is_consumed_without_replacement
+  staging_manifest_projection_retains_sources
+  staging_manifest_rejects_unsafe_input
+  staging_manifest_removes_empty_manifest
+  staging_manifest_retries_placed_source_cleanup
+  staging_manifest_round_trip
+  staging_manifest_workspace_materialization_retries
   term_basic_background_colors
   term_basic_background_colors_dumb
   term_basic_bold_background_colors

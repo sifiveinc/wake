@@ -160,7 +160,7 @@ int materialize_completed_workspace() {
   return success ? 0 : 1;
 }
 
-struct ImmediateMaterialization {
+struct StagingManifestResult {
   bool success = false;
   size_t materialized = 0;
   size_t consumed = 0;
@@ -169,9 +169,9 @@ struct ImmediateMaterialization {
   std::string error;
 };
 
-ImmediateMaterialization materialize_returned_manifest(const fuse_args& args,
-                                                       const std::string& result_json) {
-  ImmediateMaterialization result;
+StagingManifestResult read_returned_manifest(const fuse_args& args, const std::string& result_json,
+                                             wakefs::StagingManifest* manifest) {
+  StagingManifestResult result;
   std::stringstream parse_errors;
   JAST metadata;
   if (!JAST::parse(result_json, parse_errors, metadata) || metadata.kind != JSON_OBJECT) {
@@ -199,31 +199,53 @@ ImmediateMaterialization materialize_returned_manifest(const fuse_args& args,
     return result;
   }
   const fs::path recovery_dir = cas_root / "staging" / "recovery";
-  const fs::path manifest = fs::path(result.manifest_path);
-  const fs::file_status status = fs::symlink_status(manifest, ec);
+  const fs::path manifest_path = fs::path(result.manifest_path);
+  const fs::file_status status = fs::symlink_status(manifest_path, ec);
   if (ec || !fs::is_regular_file(status)) {
     result.error = ec ? "inspect recovery manifest: " + ec.message()
                       : "recovery manifest is not a regular file";
     return result;
   }
-  const fs::path manifest_parent = fs::canonical(manifest.parent_path(), ec);
+  const fs::path manifest_parent = fs::canonical(manifest_path.parent_path(), ec);
   if (ec || manifest_parent != recovery_dir) {
     result.error = ec ? "canonicalize recovery manifest directory: " + ec.message()
                       : "recovery manifest is outside the recovery directory";
     return result;
   }
 
-  wakefs::StagingManifest parsed;
-  if (!wakefs::read_staging_manifest(result.manifest_path, &parsed, &result.error)) return result;
-  if (parsed.workspace_root != workspace.string() ||
-      parsed.cas_staging_root != (cas_root / "staging").string()) {
+  if (!wakefs::read_staging_manifest(result.manifest_path, manifest, &result.error)) return result;
+  if (manifest->workspace_root != workspace.string() ||
+      manifest->cas_staging_root != (cas_root / "staging").string()) {
     result.error = "recovery manifest roots do not match this wakebox invocation";
     return result;
   }
 
+  result.success = true;
+  return result;
+}
+
+StagingManifestResult materialize_returned_manifest(const fuse_args& args,
+                                                     const std::string& result_json) {
+  wakefs::StagingManifest manifest;
+  StagingManifestResult result = read_returned_manifest(args, result_json, &manifest);
+  if (!result.success) return result;
   wakefs::StagingMaterializationSummary summary;
-  result.success =
-      wakefs::materialize_completed_workspace(result.manifest_path, parsed, &summary, &result.error);
+  result.success = wakefs::materialize_completed_workspace(result.manifest_path, manifest, &summary,
+                                                            &result.error);
+  result.materialized = summary.materialized;
+  result.consumed = summary.consumed;
+  result.failed = summary.failed;
+  return result;
+}
+
+StagingManifestResult project_canceled_manifest(const fuse_args& args,
+                                                 const std::string& result_json) {
+  wakefs::StagingManifest manifest;
+  StagingManifestResult result = read_returned_manifest(args, result_json, &manifest);
+  if (!result.success) return result;
+  wakefs::StagingMaterializationSummary summary;
+  result.success = wakefs::project_completed_workspace(result.manifest_path, manifest, &summary,
+                                                        &result.error);
   result.materialized = summary.materialized;
   result.consumed = summary.consumed;
   result.failed = summary.failed;
@@ -287,7 +309,15 @@ int run_interactive(const std::string &rootfs, const std::vector<std::string> &t
 
   int retcode;
   std::string result;
-  if (!run_in_fuse(fa, retcode, result)) return 1;
+  FuseRunOutcome outcome;
+  if (!run_in_fuse(fa, retcode, result, outcome)) return 1;
+  if (outcome == FuseRunOutcome::Canceled) {
+    const StagingManifestResult projection = project_canceled_manifest(fa, result);
+    if (!projection.success) {
+      std::cerr << "project staging: " << projection.error << std::endl;
+      return 1;
+    }
+  }
   return retcode;
 }
 
@@ -335,17 +365,22 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
   int retcode;
   std::string result;
   if (!has_output) {
-    if (!run_in_fuse(args, retcode, result)) return 1;
-    if (materialize_staging) {
-      const ImmediateMaterialization materialization = materialize_returned_manifest(args, result);
+    FuseRunOutcome outcome;
+    if (!run_in_fuse(args, retcode, result, outcome)) return 1;
+    if (materialize_staging || outcome == FuseRunOutcome::Canceled) {
+      const bool canceled = outcome == FuseRunOutcome::Canceled;
+      const StagingManifestResult materialization =
+          canceled ? project_canceled_manifest(args, result) : materialize_returned_manifest(args, result);
       if (!materialization.success)
-        std::cerr << "materialize staging: " << materialization.error << std::endl;
+        std::cerr << (canceled ? "project staging: " : "materialize staging: ")
+                  << materialization.error << std::endl;
+      if (!materialization.success) return 1;
     }
 
-    if (isolate_retcode)
+    if (isolate_retcode && outcome != FuseRunOutcome::Canceled)
       return 0;
     else
-      return retcode;
+      return outcome == FuseRunOutcome::Canceled && retcode == 0 ? 1 : retcode;
   }
 
   // Open the output file
@@ -355,13 +390,17 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
     return 1;
   }
 
-  if (!run_in_fuse(args, retcode, result)) return 1;
+  FuseRunOutcome outcome;
+  if (!run_in_fuse(args, retcode, result, outcome)) return 1;
 
-  ImmediateMaterialization materialization;
-  if (materialize_staging) {
-    materialization = materialize_returned_manifest(args, result);
+  StagingManifestResult materialization;
+  const bool canceled = outcome == FuseRunOutcome::Canceled;
+  if (materialize_staging || canceled) {
+    materialization = canceled ? project_canceled_manifest(args, result)
+                               : materialize_returned_manifest(args, result);
     if (!materialization.success)
-      std::cerr << "materialize staging: " << materialization.error << std::endl;
+      std::cerr << (canceled ? "project staging: " : "materialize staging: ")
+                << materialization.error << std::endl;
   }
 
   // write output stats as json
@@ -369,10 +408,9 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
   if (wrote == -1) return errno;
   if (0 != close(out_fd)) return errno;
 
-  if (isolate_retcode)
-    return 0;
-  else
-    return retcode;
+  if ((materialize_staging || canceled) && !materialization.success) return 1;
+  if (isolate_retcode && !canceled) return 0;
+  return canceled && retcode == 0 ? 1 : retcode;
 }
 
 int main(int argc, char *argv[]) {
