@@ -56,11 +56,11 @@ export def c11Flags =
 export def debugCFlags =
     ("-Wall", "-Wextra", "-Wno-format-security", "-O0", "-g", "-pg", Nil)
 
-export def debugLFlags Unit =
-    ("-lpthread", "-g", "-pg", "-Wl,--build-id", Nil) ++ filesystemLFlag Unit
-
 export def releaseCFlags =
     ("-Wall", "-Wno-format-security", "-g", "-O2", Nil)
+
+export def debugLFlags Unit =
+    ("-lpthread", "-g", "-pg", "-Wl,--build-id", Nil) ++ filesystemLFlag Unit
 
 export def releaseLFlags Unit =
     ("-lpthread", "-Wl,--build-id", Nil) ++ filesystemLFlag Unit

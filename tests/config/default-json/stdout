@@ -8,3 +8,5 @@ Wake config:
   log_header_align = 'false' (Default)
   bulk_logging_dir = '' (Default)
   interpreter_runtime_warning_s = '0' (Default)
+  heap_factor = '4' (Default)
+  heap_pivot_mb = '64' (Default)

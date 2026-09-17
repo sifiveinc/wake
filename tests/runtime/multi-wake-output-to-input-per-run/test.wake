@@ -1,0 +1,31 @@
+
+# Producer A: creates output.txt with "A"
+export def producerA Unit =
+    makeExecPlan ("sh", "-c", "sleep 3 && echo A > output.txt", Nil) Nil
+    | setPlanLabel "producer-A"
+    | setPlanFnOutputs (\_ "output.txt", Nil)
+    | runJobWith fuseRunner
+    | getJobOutput
+# Producer B: creates output.txt with "B"
+export def producerB Unit =
+    makeExecPlan ("sh", "-c", "sleep 3 && echo B > output.txt", Nil) Nil
+    | setPlanLabel "producer-B"
+    | setPlanFnOutputs (\_ "output.txt", Nil)
+    | runJobWith fuseRunner
+    | getJobOutput
+# Consumer A: reads the Path from producerA
+export def consumerA Unit =
+    require Pass input = producerA Unit
+    makeExecPlan ("sh", "-c", "echo 'producerA started!'; cat output.txt > result-a.txt", Nil) (input, Nil)
+    | setPlanLabel "consumer-A"
+    | setPlanFnOutputs (\_ "result-a.txt", Nil)
+    | runJobWith fuseRunner
+    | getJobOutput
+# Consumer B: reads the Path from producerB
+export def consumerB Unit =
+    require Pass input = producerB Unit
+    makeExecPlan ("sh", "-c", "echo 'producerB started!'; cat output.txt > result-b.txt", Nil) (input, Nil)
+    | setPlanLabel "consumer-B"
+    | setPlanFnOutputs (\_ "result-b.txt", Nil)
+    | runJobWith fuseRunner
+    | getJobOutput

@@ -277,7 +277,7 @@ struct GCNeededException {
 };
 
 struct Heap {
-  Heap(int profile_heap_, double heap_factor_);
+  Heap(int profile_heap_, double heap_factor_, double heap_pivot_mb_);
   ~Heap();
 
   // Call this from main loop (no pointers on stack) when GCNeededException

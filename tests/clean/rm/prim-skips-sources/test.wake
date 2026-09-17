@@ -1,0 +1,19 @@
+# Test: unsafe_removeFiles skips files published to wake's source topic
+
+from wake import _
+
+# This test's workspace has its own isolated .wakeroot with no nested .git, so
+# `sources` (which normally shells out to `git ls-files`) would never find
+# anything here. Publish our fixture files directly to the `source` topic
+# instead, so source-skipping can be exercised deterministically without git.
+publish source = "pass.sh", "test.wake", "stdout", "stderr", Nil
+
+export def initTest _: Result Unit Error =
+    write "generated.txt" "content"
+    | rmap (\_ Unit)
+
+# Case 1: request removal of the source together with a generated file in the
+# same call. The source should be skipped even though it's named explicitly,
+# while the generated file is removed.
+export def runTest args: Result Unit Error =
+    unsafe_removeFiles False args

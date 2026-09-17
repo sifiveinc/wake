@@ -1,0 +1,36 @@
+# Test: unsafe_removeFiles skips paths that are still claimed via run_files by
+# other active runs (multi-wake safety), leaving both the workspace file and
+# its CAS blob intact.
+
+from wake import _
+
+def sharedPath = "shared.txt"
+
+# Run A: create a shared output that is stored in CAS, record its CAS path on disk
+# so the shell driver can check it, then sleep to keep the run active while another
+# Wake process attempts removal.
+export def createShared _: Result Unit Error =
+    require Pass shared = write sharedPath "shared content"
+
+    require Pass _casPath =
+        primCasBlobAbsPathStr shared.getPathHash
+        |> write "shared.caspath"
+
+    # Keep this run active long enough for another Wake process to run
+    # rmPrim-style cleanup concurrently. The job's report is forced (even though we
+    # don't care about its outputs) so that laziness doesn't skip launching it entirely.
+    def _ =
+        makeExecPlan ("sleep", "10", Nil) Nil
+        | setPlanLabel "multi-wake-safety database hold"
+        | setPlanPersistence ReRun
+        | runJobWith fuseRunner
+        | isJobOk
+
+    Pass Unit
+
+# Run B: while createShared's run is still active, attempt to remove the workspace
+# file via unsafe_removeFiles. Both the workspace file and its CAS blob should
+# remain, protected by the live-run guard; the shell driver checks their state
+# before and after.
+export def tryRmWhileActive _: Result Unit Error =
+    unsafe_removeFiles False (sharedPath, Nil)

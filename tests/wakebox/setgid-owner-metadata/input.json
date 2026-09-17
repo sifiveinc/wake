@@ -1,0 +1,23 @@
+{
+  "command": [
+    "/bin/sh",
+    "-c",
+    "set -eu\nprintf contents > output.txt\nstat -c '%u:%g' output.txt\n"
+  ],
+  "environment": [
+    "USER=root",
+    "HOME=/root",
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  ],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "mount-ops": [
+    {
+      "type": "workspace",
+      "destination": "."
+    }
+  ],
+  "visible": []
+}

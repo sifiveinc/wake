@@ -1,0 +1,8 @@
+# Test: CAS blob removed when last reference is removed
+
+export def makeUnique (args: List String) =
+    def content = "unique"
+
+    map (write _ content) args
+    | findFail
+    | rmap (\_ Unit)

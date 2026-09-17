@@ -1,0 +1,14 @@
+# Test: rm_generated removes CAS blobs when only the current run references them.
+
+from wake import _
+
+export def runTest _: Result Unit Error =
+    require Pass p = write "file.txt" "content"
+
+    require Pass _ =
+        primCasBlobAbsPathStr p.getPathHash
+        |> write "file.caspath"
+
+    # While this run is still active, remove the workspace file via the prim wrapper.
+    # Since no other runs reference this blob, both the file and its CAS entry should be deleted.
+    unsafe_removeFiles False ("file.txt", Nil)

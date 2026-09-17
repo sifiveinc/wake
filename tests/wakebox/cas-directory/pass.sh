@@ -8,7 +8,6 @@
 set -eu
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
-export WAKE_CAS=1
 
 STATS_FILE=$(mktemp)
 trap 'rm -rf output_dir "$STATS_FILE"' EXIT

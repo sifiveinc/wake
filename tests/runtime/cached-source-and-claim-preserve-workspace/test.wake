@@ -1,0 +1,23 @@
+# Tell Wake that `src.txt` is a source file for this test.
+publish source =
+    "src.txt", Nil
+
+# Reads the source file. Exercised twice per invocation to prove it still deduplicates multiple
+# uses of the same source within a single build.
+export def useSource Unit =
+    require Pass a = source "src.txt"
+    require Pass b = source "src.txt"
+
+    def dedup = a.getPathHash ==* b.getPathHash
+
+    Pass "{a.getPathName}={read a | getWhenFail "ERROR"} dedup={format dedup}"
+
+# Claims a workspace-local file that was produced by a previous (untracked-by-this-run) step.
+# Exercised twice per invocation to prove it still deduplicates within a single build.
+export def useClaim Unit =
+    require Pass a = claim "claimed.txt"
+    require Pass b = claim "claimed.txt"
+
+    def dedup = a.getPathHash ==* b.getPathHash
+
+    Pass "{a.getPathName}={read a | getWhenFail "ERROR"} dedup={format dedup}"

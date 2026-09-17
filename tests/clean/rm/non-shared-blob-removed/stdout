@@ -1,0 +1,2 @@
+# write: unique.txt 0644 (2) [inspect.visibility=hidden,]
+$ <write> -m 0644 unique.txt

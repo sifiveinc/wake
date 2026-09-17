@@ -57,7 +57,7 @@ TEST(content_hash_from_string_empty, "cas") {
   auto hash = ContentHash::from_string("");
 
   // Empty string should still produce a valid hash
-  EXPECT_EQUAL(hash.to_hex().length(), 64u);
+  EXPECT_EQUAL(hash.to_hex().length(), HASH_HEX_LEN);
 }
 
 TEST(content_hash_hex_roundtrip, "cas") {
@@ -73,8 +73,8 @@ TEST(content_hash_to_hex_length, "cas") {
   auto hash = ContentHash::from_string("test");
   std::string hex = hash.to_hex();
 
-  // BLAKE2b-256 produces 64 hex characters
-  EXPECT_EQUAL(hex.length(), 64u);
+  // BLAKE2b-256 produces 64 (HASH_HEX_LEN) hex characters
+  EXPECT_EQUAL(hex.length(), HASH_HEX_LEN);
 }
 
 TEST(content_hash_to_hex_valid_chars, "cas") {
@@ -387,5 +387,50 @@ TEST(cas_store_file_and_symlink_same_payload_same_hash, "cas") {
   EXPECT_EQUAL(file_hash->to_hex(), symlink_hash->to_hex());
 
   fs::remove(input_file);
+  fs::remove_all(store_path);
+}
+
+TEST(cas_store_enumerate, "cas") {
+  std::string store_path = "cas_test_store10";
+  fs::remove_all(store_path);
+
+  auto store_result = Cas::open(store_path);
+  ASSERT_TRUE((bool)store_result);
+  auto& store = *store_result;
+
+  auto hash_result = store.store_blob("foo");
+  ASSERT_TRUE((bool)hash_result);
+
+  auto hash2_result = store.store_blob("bar");
+  ASSERT_TRUE((bool)hash2_result);
+
+  auto blobs = store.enumerate_blobs_strings();
+  ASSERT_EQUAL(blobs.size(), 2U);
+
+  // Ordering may be reliable, sort both before checking.
+  std::vector<std::string> hashes;
+  hashes.push_back(hash_result->to_hex());
+  hashes.push_back(hash2_result->to_hex());
+
+  std::sort(hashes.begin(), hashes.end());
+  std::sort(blobs.begin(), blobs.end());
+
+  EXPECT_EQUAL(blobs[0], hashes[0]);
+  EXPECT_EQUAL(blobs[1], hashes[1]);
+
+  fs::remove_all(store_path);
+}
+
+TEST(cas_store_enumerate_empty, "cas") {
+  std::string store_path = "cas_test_store11";
+  fs::remove_all(store_path);
+
+  auto store_result = Cas::open(store_path);
+  ASSERT_TRUE((bool)store_result);
+  auto& store = *store_result;
+
+  auto blobs = store.enumerate_blobs_strings();
+  EXPECT_TRUE(blobs.empty());
+
   fs::remove_all(store_path);
 }

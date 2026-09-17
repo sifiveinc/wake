@@ -1,0 +1,30 @@
+{
+  "command": [
+    "/bin/sh",
+    "-c",
+    "test -w foo && echo WRITABLE || echo NOTWRITABLE\necho hi > foo/new.txt && echo CREATE_OK\ncat foo/new.txt"
+  ],
+  "environment": [
+    "USER=root",
+    "HOME=/root",
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  ],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "mount-ops": [
+    {
+      "type": "workspace",
+      "destination": "."
+    }
+  ],
+  "visible": [
+    {
+      "path": "foo",
+      "type": "directory",
+      "mode": 493,
+      "mtime": 0
+    }
+  ]
+}

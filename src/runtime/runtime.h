@@ -51,7 +51,7 @@ struct Runtime {
   RootPointer<HeapObject> output;
   RootPointer<Record> sources;  // Vector String
 
-  Runtime(Profile *profile_, int profile_heap, double heap_factor);
+  Runtime(Profile *profile_, int profile_heap, double heap_factor, double heap_pivot_mb);
   ~Runtime();
   void run();
 

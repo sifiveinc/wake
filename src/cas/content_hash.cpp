@@ -24,6 +24,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
+
+#include "blake3/blake3.h"
 #include "wcl/unique_fd.h"
 
 namespace cas {
@@ -41,10 +44,10 @@ static uint8_t hex_to_nibble(char hex) {
 
 ContentHash ContentHash::from_bytes(const uint8_t* bytes, size_t len) {
   ContentHash hash;
-  blake2b_state state;
-  blake2b_init(&state, sizeof(hash.data));
-  blake2b_update(&state, bytes, len);
-  blake2b_final(&state, reinterpret_cast<uint8_t*>(hash.data), sizeof(hash.data));
+  blake3_hasher state;
+  blake3_hasher_init(&state);
+  blake3_hasher_update(&state, bytes, len);
+  blake3_hasher_finalize(&state, reinterpret_cast<uint8_t*>(hash.data), sizeof(hash.data));
   return hash;
 }
 
@@ -59,31 +62,31 @@ wcl::result<ContentHash, wcl::posix_error_t> ContentHash::from_file(const std::s
   }
 
   ContentHash hash;
-  blake2b_state state;
-  blake2b_init(&state, sizeof(hash.data));
+  blake3_hasher state;
+  blake3_hasher_init(&state);
 
   static thread_local uint8_t buffer[8192];
   ssize_t bytes_read;
   while ((bytes_read = read(fd->get(), buffer, sizeof(buffer))) > 0) {
-    blake2b_update(&state, buffer, bytes_read);
+    blake3_hasher_update(&state, buffer, bytes_read);
   }
 
   if (bytes_read < 0) {
     return wcl::make_errno<ContentHash>();
   }
 
-  blake2b_final(&state, reinterpret_cast<uint8_t*>(hash.data), sizeof(hash.data));
+  blake3_hasher_finalize(&state, reinterpret_cast<uint8_t*>(hash.data), sizeof(hash.data));
   return wcl::make_result<ContentHash, wcl::posix_error_t>(hash);
 }
 
 wcl::result<ContentHash, ContentHashError> ContentHash::from_hex(const std::string& hex) {
-  if (hex.size() != 64) {
+  if (hex.size() != HASH_HEX_LEN) {
     return wcl::make_error<ContentHash, ContentHashError>(ContentHashError::InvalidHexLength);
   }
 
   ContentHash hash;
   uint8_t* bytes = reinterpret_cast<uint8_t*>(hash.data);
-  for (size_t i = 0; i < 32; ++i) {
+  for (size_t i = 0; i < (HASH_HEX_LEN >> 1U); ++i) {
     uint8_t high = hex_to_nibble(hex[i * 2]);
     uint8_t low = hex_to_nibble(hex[i * 2 + 1]);
     if (high == 0xFF || low == 0xFF) {
@@ -96,9 +99,9 @@ wcl::result<ContentHash, ContentHashError> ContentHash::from_hex(const std::stri
 
 std::string ContentHash::to_hex() const {
   std::string result;
-  result.reserve(64);
+  result.reserve(HASH_HEX_LEN);
   const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
-  for (size_t i = 0; i < 32; ++i) {
+  for (size_t i = 0; i < (HASH_HEX_LEN >> 1U); ++i) {
     // Extract high nibble (upper 4 bits) and convert to hex
     result += nibble_to_hex((bytes[i] >> 4) & 0x0F);
     // Extract low nibble (lower 4 bits) and convert to hex
@@ -108,18 +111,14 @@ std::string ContentHash::to_hex() const {
 }
 
 bool ContentHash::operator==(const ContentHash& other) const {
-  return data[0] == other.data[0] && data[1] == other.data[1] && data[2] == other.data[2] &&
-         data[3] == other.data[3];
+  return std::equal(data, data + NUM_HASH_ELEMENTS, other.data, other.data + NUM_HASH_ELEMENTS);
 }
 
 bool ContentHash::operator!=(const ContentHash& other) const { return !(*this == other); }
 
 bool ContentHash::operator<(const ContentHash& other) const {
-  for (int i = 0; i < 4; ++i) {
-    if (data[i] < other.data[i]) return true;
-    if (data[i] > other.data[i]) return false;
-  }
-  return false;
+  return std::lexicographical_compare(data, data + NUM_HASH_ELEMENTS, other.data,
+                                      other.data + NUM_HASH_ELEMENTS);
 }
 
 }  // namespace cas

@@ -1,0 +1,6 @@
+export def makeOutput Unit =
+    makeExecPlan ("sh", "-c", "echo content > output.txt", Nil) Nil
+    | setPlanLabel "prune: make-output"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutput

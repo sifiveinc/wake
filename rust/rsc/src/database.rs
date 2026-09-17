@@ -533,7 +533,7 @@ pub async fn create_many_output_files<T: ConnectionTrait>(
 
     let chunked: Vec<Vec<output_file::ActiveModel>> = output_files
         .into_iter()
-        .chunks((MAX_SQLX_PARAMS / 6).into())
+        .chunks((MAX_SQLX_PARAMS / 7).into())
         .into_iter()
         .map(|chunk| chunk.collect())
         .collect();
@@ -566,7 +566,7 @@ pub async fn create_many_output_symlinks<T: ConnectionTrait>(
 
     let chunked: Vec<Vec<output_symlink::ActiveModel>> = output_symlinks
         .into_iter()
-        .chunks((MAX_SQLX_PARAMS / 5).into())
+        .chunks((MAX_SQLX_PARAMS / 6).into())
         .into_iter()
         .map(|chunk| chunk.collect())
         .collect();

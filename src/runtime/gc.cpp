@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <map>
@@ -121,6 +122,7 @@ void Space::resize(size_t size_) {
 struct Heap::Imp {
   int profile_heap;
   double heap_factor;
+  size_t heap_pivot_pads;
   Space spaces[2];
   int space;
   size_t last_pads;
@@ -133,9 +135,10 @@ struct Heap::Imp {
   size_t gc_count;
   size_t total_gc_time;
 
-  Imp(int profile_heap_, double heap_factor_)
+  Imp(int profile_heap_, double heap_factor_, size_t heap_pivot_pads_)
       : profile_heap(profile_heap_),
         heap_factor(heap_factor_),
+        heap_pivot_pads(heap_pivot_pads_),
         spaces(),
         space(0),
         last_pads(0),
@@ -146,10 +149,23 @@ struct Heap::Imp {
         finalize(nullptr),
         gc_count(0),
         total_gc_time(0) {}
+
+  size_t desired_size(size_t live_pads, size_t requested_pads) const {
+    size_t linear = static_cast<size_t>(heap_factor * live_pads);
+    size_t sqrt_desired =
+        live_pads +
+        static_cast<size_t>(heap_factor * std::sqrt(static_cast<double>(live_pads) *
+                                                    static_cast<double>(heap_pivot_pads)));
+    return std::min(linear, sqrt_desired) + requested_pads;
+  }
 };
 
-Heap::Heap(int profile_heap_, double heap_factor_)
-    : imp(new Imp(profile_heap_, heap_factor_)),
+static size_t mb_to_pads(double mb) {
+  return static_cast<size_t>(mb * 1024.0 * 1024.0 / sizeof(PadObject));
+}
+
+Heap::Heap(int profile_heap_, double heap_factor_, double heap_pivot_mb_)
+    : imp(new Imp(profile_heap_, heap_factor_, mb_to_pads(heap_pivot_mb_))),
       roots(),
       free(imp->spaces[imp->space].array),
       end(free + imp->spaces[imp->space].size) {}
@@ -222,7 +238,7 @@ void Heap::GC(size_t requested_pads) {
 
   Space &from = imp->spaces[imp->space];
   size_t no_gc_overrun = (free - from.array) + requested_pads;
-  size_t estimate_desired_size = imp->heap_factor * imp->last_pads + requested_pads;
+  size_t estimate_desired_size = imp->desired_size(imp->last_pads, requested_pads);
   size_t elems = std::max(no_gc_overrun, estimate_desired_size);
 
   // Resize the to space based on the above "calculation"
@@ -294,7 +310,7 @@ void Heap::GC(size_t requested_pads) {
   free = progress.free;              // The place to append new things on the heap
   imp->last_pads = free - to.array;  // how many bytes were copied to the to space
   // Contain heap growth due to no_gc_overrun pessimism
-  size_t desired_sized = imp->heap_factor * imp->last_pads + requested_pads;
+  size_t desired_sized = imp->desired_size(imp->last_pads, requested_pads);
   if (desired_sized < elems) {
     end =
         to.array + desired_sized;  // Update the end to be smaller if we don't need that much space

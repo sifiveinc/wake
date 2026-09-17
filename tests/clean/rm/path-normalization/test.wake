@@ -1,0 +1,8 @@
+# Test: --rm works with relative paths, absolute paths, and from subdirectories
+
+export def makeFiles (args: List String) =
+    def content = "test content"
+
+    map (write _ content) args
+    | findFail
+    | rmap (\_ Unit)

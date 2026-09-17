@@ -215,6 +215,8 @@ POLICY_STATIC_DEFINES(SharedCacheMissOnFailure)
 POLICY_STATIC_DEFINES(LogHeaderAlignPolicy)
 POLICY_STATIC_DEFINES(BulkLoggingDirPolicy)
 POLICY_STATIC_DEFINES(InterpreterRuntimeWarningPolicy)
+POLICY_STATIC_DEFINES(HeapFactorPolicy)
+POLICY_STATIC_DEFINES(HeapPivotPolicy)
 
 /********************************************************************
  * Non-Trivial Defaults
@@ -279,6 +281,18 @@ void InterpreterRuntimeWarningPolicy::set(InterpreterRuntimeWarningPolicy& p, co
   auto json_value = json.expect_integer();
   if (json_value) {
     p.interpreter_runtime_warning_s = *json_value;
+  }
+}
+
+void HeapFactorPolicy::set(HeapFactorPolicy& p, const JAST& json) {
+  if (json.kind == JSON_DOUBLE || json.kind == JSON_INTEGER) {
+    p.heap_factor = std::stod(json.value);
+  }
+}
+
+void HeapPivotPolicy::set(HeapPivotPolicy& p, const JAST& json) {
+  if (json.kind == JSON_DOUBLE || json.kind == JSON_INTEGER) {
+    p.heap_pivot_mb = std::stod(json.value);
   }
 }
 

@@ -1,0 +1,8 @@
+# Test: workspace file is removed by --rm
+
+export def makeFile (args: List String) =
+    def content = "content"
+
+    map (write _ content) args
+    | findFail
+    | rmap (\_ Unit)

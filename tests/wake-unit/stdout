@@ -1,8 +1,30 @@
 PASSED:
+  cas_store_blob_from_file
+  cas_store_blob_roundtrip
+  cas_store_deduplication
+  cas_store_enumerate
+  cas_store_enumerate_empty
+  cas_store_file_and_symlink_same_payload_same_hash
+  cas_store_file_blob_roundtrip
+  cas_store_has_blob_not_found
+  cas_store_materialize_blob
+  cas_store_open
+  cas_store_symlink_target_blob_roundtrip
   cli_options_basic
   cli_options_shebang
   cli_options_target
   cli_options_timline
+  content_hash_equality
+  content_hash_from_file
+  content_hash_from_file_not_found
+  content_hash_from_string_different_content
+  content_hash_from_string_empty
+  content_hash_from_string_same_content
+  content_hash_hex_roundtrip
+  content_hash_roundtrip
+  content_hash_same_bytes_match_for_file_and_symlink_payloads
+  content_hash_to_hex_length
+  content_hash_to_hex_valid_chars
   diff_add
   diff_empty
   diff_fuzz1
@@ -30,10 +52,25 @@ PASSED:
   filepath_range_only_slash
   filepath_range_two_slash
   filepath_relative_to
+  function_ref_const_lambda
+  function_ref_copy_assignment
+  function_ref_copy_constructor
+  function_ref_function_pointer
+  function_ref_function_reference
+  function_ref_functor
+  function_ref_lambda_capture
+  function_ref_multiple_params
+  function_ref_mutable_lambda
+  function_ref_optional_return
+  function_ref_return_conversion
+  function_ref_stateless_lambda
+  function_ref_void_return
   iterator_split_by_empty
   iterator_split_by_no_delim
   iterator_split_by_nominal
   iterator_split_by_only_delim
+  reflink_or_copy_file_basic
+  reflink_or_copy_file_src_not_found
   result_assign1
   result_assign2
   result_copy

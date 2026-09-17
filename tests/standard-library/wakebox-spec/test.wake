@@ -1,0 +1,87 @@
+# Tests for WakeboxSpec JSON serialization (writeWakeboxSpec / write_wakebox_spec prim).
+# Each test writes to an output-*.json file; pass.sh diffs against the committed references.
+
+package test_wake
+
+from wake import _
+
+# WakeboxSpec field order (must match runner.wake / wakebox_prim.cpp):
+#   [0]  Label          : Option String
+#   [1]  Command        : List String
+#   [2]  Environment    : List String
+#   [3]  Stdin          : String
+#   [4]  Directory      : String
+#   [5]  CommandTimeout : Option Integer
+#   [6]  IsolateNetwork : Boolean
+#   [7]  IsolatePids    : Boolean
+#   [8]  Hostname       : Option String
+#   [9]  DomainName     : Option String
+#   [10] UserId         : Option Integer
+#   [11] GroupId        : Option Integer
+#   [12] Version        : Option String
+#   [13] Runner         : Option String
+#   [14] CasDir         : String
+#   [15] MountOps       : List WakeboxMountOp
+#   [16] Visible        : List Path
+
+def baseSpec: WakeboxSpec =
+    WakeboxSpec
+    None           # Label
+    ("true", Nil)  # Command
+    Nil            # Environment
+    ""             # Stdin
+    "."            # Directory
+    None           # CommandTimeout
+    False          # IsolateNetwork
+    False          # IsolatePids
+    None           # Hostname
+    None           # DomainName
+    None           # UserId
+    None           # GroupId
+    None           # Version
+    None           # Runner
+    "/tmp/cas"     # CasDir
+    Nil            # MountOps
+    Nil            # Visible
+
+def fullSpec: WakeboxSpec =
+    def ops =
+        WakeboxBindOp "/src" "/dst" False,
+        WakeboxBindOp "/rsrc" "/rdst" True,
+        WakeboxSquashfsOp "/sq.img" "/mnt",
+        WakeboxTmpfsOp "/tmp",
+        WakeboxCreateDirOp "/newdir",
+        WakeboxCreateFileOp "/newfile",
+        WakeboxFuseWorkspaceOp ".",
+        Nil
+
+    WakeboxSpec
+    (Some "my-label")                         # Label
+    ("cmd", "--flag", Nil)                    # Command
+    ("HOME=/home/user", "PATH=/bin", Nil)     # Environment
+    ""                                         # Stdin
+    "."                                        # Directory
+    (Some 3600)                               # CommandTimeout
+    True                                       # IsolateNetwork
+    True                                       # IsolatePids
+    (Some "myhost")                           # Hostname
+    (Some "example.com")                      # DomainName
+    (Some 1000)                               # UserId
+    (Some 1001)                               # GroupId
+    (Some "1.0")                              # Version
+    (Some "/bin/runner")                      # Runner
+    "/cas"                                     # CasDir
+    ops                                        # MountOps
+    Nil                                        # Visible
+
+# Writes the minimal spec as pretty-printed JSON.
+export def testWriteMinimal _: Result Unit Error =
+    writeWakeboxSpec baseSpec 2 "output-minimal.json"
+
+# Writes the minimal spec as compact (no-whitespace) JSON.
+export def testWriteCompact _: Result Unit Error =
+    writeWakeboxSpec baseSpec 0 "output-compact.json"
+
+# Writes a spec exercising all optional fields and all mount-op variants.
+export def testWriteFull _: Result Unit Error =
+    writeWakeboxSpec fullSpec 2 "output-full.json"

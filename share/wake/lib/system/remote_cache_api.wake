@@ -88,10 +88,12 @@ tuple CacheSearchOutputDirectory =
 
 # A symlink created by a cached job
 tuple CacheSearchOutputSymlink =
-    # The path on disk of the symlink
+    # The symlink target (what the symlink points to)
     Path: String
-    # The file being linked to
+    # The symlink disk path (where the symlink lives on disk)
     Link: String
+    # The hash of the target string for CAS addressing; "" for legacy entries
+    Hash: String
 
 # A match response from the server. Specifies all details of a cached job
 tuple CacheSearchResponseMatch =
@@ -147,10 +149,12 @@ tuple CachePostRequestOutputDirectory =
 
 # A symlink created by a job
 tuple CachePostRequestOutputSymlink =
-    # The path on disk of the symlink
+    # The symlink target (what the symlink points to)
     Path: String
-    # The file being linked to
+    # The symlink disk path (where the symlink lives on disk)
     Link: String
+    # The hash of the symlink target string for CAS addressing
+    Hash: String
 
 # A request to the remote server to cache a job
 tuple CachePostRequest =
@@ -351,28 +355,25 @@ export def rscApiPostStringBlob (name: String) (value: String) (api: RemoteCache
 
     uploadBlobRequest api setBlobFn
 
-# rscApiPostFileBlob: Posts a named file on disk to the remote server defined by *api*
-#                     then returns the id associated to the blob. Requires authorization.
+# rscApiPostFileBlob: Posts a named file to the remote server defined by *api*, sourcing bytes from the
+#                     CAS blob path. Returns the blob id. Requires authorization.
 #
 # ```
-#  api | rscApiPostFileBlob "foo" "/some/path/to/foo" = Pass "asdf-fdsa-asdf-fdsa"
-#  (RemoteCacheApi "foo" 1 None) | rscApiPostFileBlob "foo" "/some/path/to/foo" = Fail "authorization required"
+#  api | rscApiPostFileBlob "foo" "abc123..." = Pass "asdf-fdsa-asdf-fdsa"
+#  (RemoteCacheApi "foo" 1 None) | rscApiPostFileBlob "foo" "abc123..." = Fail "authorization required"
 # ```
-export def rscApiPostFileBlob (name: String) (file: String) (api: RemoteCacheApi): Result String Error =
+export def rscApiPostFileBlob (name: String) (hash: String) (api: RemoteCacheApi): Result String Error =
     require Pass _ = guardRemoteCacheDisabled Unit
 
-    # We must use unsafe here since we cannot elevate *file* to a Path without either copying it
-    # or triggering the 'job output by multiple files' error.
+    require Pass sourcePath =
+        primCasBlobAbsPathStr hash
+        | addErrorContext "rsc: blob {hash} expected in CAS but not found"
 
-    def contentType = match (unsafe_stat file)
+    def contentType = match (unsafe_stat sourcePath)
         Pass (Stat _ _ size) -> contentTypeFromSize size
         Fail _ -> None
 
-    require Pass hash = rscHashFile file
-
-    def setBlobFn = addFormDataWithHash name file contentType hash
-
-    uploadBlobRequest api setBlobFn
+    uploadBlobRequest api (addFormDataWithHash name sourcePath contentType hash)
 
 # rscApiPostJob: Posts a job defined by *req* to the remote cache server. Requires authorization.
 #
@@ -613,23 +614,6 @@ def resolveDbScheme _scheme path =
     | cat
     | Pass
 
-# Dispatches the content resolution for uri based on its scheme
-def resolveUriResponse (dbSchemeFn: (String => String => Result a Error)) (fileSchemeFn: (String => String => Result a Error)) (uri: String) =
-    require scheme, path, Nil = extract `([a-zA-Z][a-zA-Z0-9+.-]*)://(.*)` uri
-    else failWithError "rsc: uri has unexpected format: '{uri}'"
-
-    def unsupportedSchemeFn s p =
-        failWithError "rsc: scheme '{scheme}' from uri '{uri}' is not supported"
-
-    def schemeFn = match scheme
-        "db" -> dbSchemeFn
-        "file" -> fileSchemeFn
-        "http" -> fileSchemeFn
-        "https" -> fileSchemeFn
-        _ -> unsupportedSchemeFn
-
-    schemeFn scheme path
-
 # Verifies that the actual hash matches the expected content hash
 def verifyBlobHash (blobId: String) (actualHash: String) (contentHash: String): Result Unit Error =
     require True = actualHash ==* contentHash
@@ -646,85 +630,236 @@ def verifyBlobHash (blobId: String) (actualHash: String) (contentHash: String): 
 
     Pass Unit
 
+# chunkList: Splits a list into consecutive sublists of at most *n* elements.
+#
+# ```
+#  chunkList 2 (1, 2, 3, 4, 5, Nil) = ((1, 2, Nil), (3, 4, Nil), (5, Nil), Nil)
+# ```
+def chunkList (n: Integer) (xs: List a): List (List a) =
+    require False = xs.empty
+    else Nil
+
+    def Pair head tail = splitAt n xs
+
+    head, chunkList n tail
+
+# Either: Holds one of two possible values.
+data Either a b =
+    Left a
+    Right b
+
+# resolveBlobsToPathsOrStrings: Resolves many blobs to local file paths or inline strings. db-scheme
+# blobs are decoded inline (no network); file/http(s) blobs are downloaded via few batched curl jobs.
+# Blobs are deduped by id so shared content is only fetched once. Returns an assoc list of
+# (blobId -> Either Path String).
+def resolveBlobsToPathsOrStrings (blobs: List CacheSearchBlob): Result (List (Pair String (Either Path String))) Error =
+    # Dedupe by blob id: identical ids resolve to identical bytes, so fetch each once.
+    def uniqueBlobs =
+        blobs
+        | distinctBy (\a \b scmp a.getCacheSearchBlobId b.getCacheSearchBlobId)
+
+    # Parse + validate each blob's URI exactly once, pairing the blob with its (scheme, path).
+    # Fails loudly on an unsupported scheme or malformed URI, mirroring the old resolveUriResponse.
+    def parseBlob (blob: CacheSearchBlob): Result (Pair CacheSearchBlob (Pair String String)) Error =
+        require (scheme, path, Nil) =
+            extract `([a-zA-Z][a-zA-Z0-9+.-]*)://(.*)` blob.getCacheSearchBlobUri
+        else failWithError "rsc: uri has unexpected format: '{blob.getCacheSearchBlobUri}'"
+
+        match scheme
+            "db" -> Pass (Pair blob (Pair scheme path))
+            "file" -> Pass (Pair blob (Pair scheme path))
+            "http" -> Pass (Pair blob (Pair scheme path))
+            "https" -> Pass (Pair blob (Pair scheme path))
+            _ ->
+                failWithError "rsc: scheme '{scheme}' from uri '{blob.getCacheSearchBlobUri}' is not supported"
+
+    require Pass parsedBlobs =
+        uniqueBlobs
+        | map parseBlob
+        | findFail
+
+    # db-scheme blobs stay on the inline path; file/http(s) blobs are curled.
+    def Pair dbParsed networkParsed =
+        parsedBlobs
+        | splitBy (\(Pair _ (Pair scheme _)) scheme ==* "db")
+
+    # Decode db-scheme blobs inline rather than materializing tracked temporary files.
+    def resolveDbBlob ((Pair blob (Pair scheme path)): Pair CacheSearchBlob (Pair String String)): Result (Pair String (Either Path String)) Error =
+        require Pass content = resolveDbScheme scheme path
+
+        Pass (Pair blob.getCacheSearchBlobId (Right content))
+
+    require Pass dbResolved =
+        dbParsed
+        | map resolveDbBlob
+        | findFail
+
+    def networkBlobs =
+        networkParsed
+        | map getPairFirst
+
+    # Batched download of the network blobs.
+    def wakePid: Integer = prim "pid"
+    def httpDir = ".build/wake-{str wakePid}/stdlib/http"
+
+    def downloadChunk (chunk: List CacheSearchBlob): Result (List (Pair String (Either Path String))) Error =
+        # Sort the chunk deterministically by blob id so that two batches with the same blob set
+        # produce byte-identical curl jobs (which wake then dedups to a single job / single writer).
+        def sortedChunk =
+            chunk
+            | sortBy (\a \b scmp a.getCacheSearchBlobId b.getCacheSearchBlobId)
+
+        # Key output filenames by the batch's blob-id set so distinct batches sharing a blob write
+        # to different paths (no concurrent-write race) while identical batches dedup to one writer.
+        def batchKey =
+            sortedChunk
+            | map getCacheSearchBlobId
+            | catWith "\n"
+            | hashString
+
+        def destForBlob (blob: CacheSearchBlob): String =
+            "{httpDir}/rsc.blob.{batchKey}.{blob.getCacheSearchBlobId}"
+
+        def specs =
+            sortedChunk
+            | map (\b BatchDownloadSpec b.getCacheSearchBlobUri (destForBlob b))
+
+        require Pass paths = makeBinaryRequests specs
+
+        # Map returned paths back to blob ids by path name rather than relying on wire/output order.
+        def pathByName =
+            paths
+            | map (\p p.getPathName :-> p)
+            | listToMap scmp
+
+        sortedChunk
+        | map (
+            \b match (mlookup (destForBlob b) pathByName)
+                Some p -> Pass (Pair b.getCacheSearchBlobId (Left p))
+                None ->
+                    failWithError "rsc: batched download did not produce output for blob {b.getCacheSearchBlobId}"
+        )
+        | findFail
+
+    require Pass networkResolved =
+        networkBlobs
+        | chunkList downloadBatchSize
+        | map downloadChunk
+        | findFail
+        |< flatten
+
+    Pass (dbResolved ++ networkResolved)
+
+# rscApiGetStringBlobs: Batched analogue of rscApiGetStringBlob. Downloads many blobs, verifies each
+# blob's content hash, and returns the contents in the same order as the input.
+export def rscApiGetStringBlobs (blobs: List CacheSearchBlob): Result (List String) Error =
+    require Pass resolved = resolveBlobsToPathsOrStrings blobs
+
+    def contentById =
+        resolved
+        | listToMap scmp
+
+    def resolveOne ((CacheSearchBlob blobId _uri contentHash): CacheSearchBlob): Result String Error =
+        require Pass content =
+            require Some resolvedContent = mlookup blobId contentById
+            else failWithError "rsc: no downloaded bytes found for blob {blobId}"
+
+            match resolvedContent
+                Left blobPath -> read blobPath
+                Right inlineContent -> Pass inlineContent
+
+        def actualHash = hashString content
+
+        require Pass _ = verifyBlobHash blobId actualHash contentHash
+
+        Pass content
+
+    blobs
+    | map resolveOne
+    | findFail
+
 # rscApiGetStringBlob: Downloads a blob and returns the contents as a string
 #
 # ```
 #  rscApiGetStringBlob (RemoteCacheBlob "asdf" "https://...") = Pass "foo\nbar\nbat"
 # ```
-export def rscApiGetStringBlob ((CacheSearchBlob blobId uri contentHash): CacheSearchBlob): Result String Error =
-    def resolveStringFileScheme scheme path =
-        def blobUrl = "{scheme}://{path}"
+export def rscApiGetStringBlob (blob: CacheSearchBlob): Result String Error =
+    require Pass contents = rscApiGetStringBlobs (blob, Nil)
 
-        require Pass binaryPath =
-            buildHttpRequest blobUrl
-            | setMethod HttpMethodGet
-            | makeBinaryRequest
-
-        read binaryPath
-
-    require Pass content =
-        uri
-        | resolveUriResponse resolveDbScheme resolveStringFileScheme
-
-    def actualHash = hashString content
-
-    require Pass _ = verifyBlobHash blobId actualHash contentHash
+    require (content, Nil) = contents
+    else failWithError "rsc: expected exactly one blob result for {blob.getCacheSearchBlobId}"
 
     Pass content
+
+# rscApiGetBlobsToCas: Batched analogue of rscApiGetFileBlobToCas. Downloads many file blobs,
+# verifies each blob's hash, and ingests each into CAS. Inline blob content is stored directly in
+# CAS rather than being written to a temporary file. Returns the PreparedStagingItems
+# (in input order) so the caller can materialize them later, after every blob for a job has been verified.
+export def rscApiGetBlobsToCas (entries: List (Pair CacheSearchBlob (Pair String Integer))): Result (List PreparedStagingItem) Error =
+    def blobs =
+        entries
+        | map getPairFirst
+
+    require Pass resolved = resolveBlobsToPathsOrStrings blobs
+
+    def contentById =
+        resolved
+        | listToMap scmp
+
+    def prepareOne ((Pair (CacheSearchBlob blobId _uri contentHash) (Pair path mode)): Pair CacheSearchBlob (Pair String Integer)): Result PreparedStagingItem Error =
+        require Some resolvedContent = mlookup blobId contentById
+        else failWithError "rsc: no downloaded bytes found for blob {blobId}"
+
+        def Pair actualHash stagingPath = match resolvedContent
+            Left downloadedPath -> Pair downloadedPath.getPathHash downloadedPath.getPathName
+            Right inlineContent -> Pair (hashString inlineContent) path
+
+        require Pass _ = verifyBlobHash blobId actualHash contentHash
+
+        # Use 0 for mtime; set to the current time on materialization. Inline blobs have no staging
+        # file, so they use their destination as the staging path (ignored by CAS materialization).
+        def preparedItem =
+            PreparedStagingItem (StagingFile (StagingFileOutput path stagingPath mode 0 0)) contentHash
+
+        require Pass _ =
+            match resolvedContent
+                Left _ -> ingestPreparedStagingItemIntoCas preparedItem
+                Right inlineContent -> ingestStringIntoCas path inlineContent actualHash
+            | addErrorContext "rsc: Failed to ingest blob {blobId} into CAS for {path}"
+
+        Pass preparedItem
+
+    entries
+    | map prepareOne
+    | findFail
+
+# rscApiGetFileBlobToCas: Downloads a blob, verifies its hash, and ingests it into CAS without
+# writing anything back to the workspace path. Returns the PreparedStagingItem describing the
+# eventual workspace destination, so the caller can materialize it later (after all blobs for a
+# job have been verified).
+#
+# ```
+#  rscApiGetFileBlobToCas (RemoteCacheBlob "asdf" "https://...") "foo/bar" 0644 = Pass (PreparedStagingItem ...)
+# ```
+export def rscApiGetFileBlobToCas (blob: CacheSearchBlob) (path: String) (mode: Integer): Result PreparedStagingItem Error =
+    require Pass preparedItems = rscApiGetBlobsToCas (Pair blob (Pair path mode), Nil)
+
+    require (preparedItem, Nil) = preparedItems
+    else failWithError "rsc: expected exactly one blob result for {blob.getCacheSearchBlobId}"
+
+    Pass preparedItem
 
 # rscApiGetFileBlob: Downloads a blob to *path* with *mode* permisssions and return *path*
 #
 # ```
 #  rscApiGetFileBlob (RemoteCacheBlob "asdf" "https://...") "foo/bar" 0644 = Pass "foo/bar"
 # ```
-export def rscApiGetFileBlob ((CacheSearchBlob blobId uri contentHash): CacheSearchBlob) (path: String) (mode: Integer): Result String Error =
-    def resolveDbSchemeToFile scheme path =
-        resolveDbScheme scheme path
-        |> writeTempFile "rsc.output_file.blob.{blobId}"
+export def rscApiGetFileBlob (blob: CacheSearchBlob) (path: String) (mode: Integer): Result String Error =
+    require Pass preparedItem = rscApiGetFileBlobToCas blob path mode
 
-    def resolveBlobFileScheme scheme path =
-        buildHttpRequest "{scheme}://{path}"
-        | setMethod HttpMethodGet
-        | makeBinaryRequest
-
-    require Pass blobPath = (uri | resolveUriResponse resolveDbSchemeToFile resolveBlobFileScheme)
-
-    # Verify content hash if provided
-    require Pass actualHash = rscHashFile blobPath.getPathName
-    require Pass _ = verifyBlobHash blobId actualHash contentHash
-
-    def fixupScript =
-        """
-        # 1. No failures are acceptable
-        set -e
-        # 2. Remove the old rsctmp file if it exists
-        rm -f '%{path}.rsctmp'
-        # 3. Hardlink the file to not use 2x disk space
-        cp -l %{blobPath.getPathName} '%{path}.rsctmp'
-        # 4. Set the permissions as specified
-        chmod %{mode | strOctal} '%{path}.rsctmp'
-        # 5. If the file was previously created with the exact inode by the rsc but not cleaned up
-        #    then it needs to be removed so we can complete the atomic mv
-        [ '%{path}.rsctmp' -ef '%{path}' ] && rm '%{path}'
-        # 6. Atomically move so interruptions don't effect the build.
-        mv '%{path}.rsctmp' '%{path}'
-        """
-
-    def job =
-        makeShellPlan fixupScript (blobPath, Nil)
-        | setPlanLabel "rsc: fixup blob {path} from {blobPath.getPathName}"
-        | setPlanPersistence Once
-        # We need to copy the file over another jobs output space so:
-        #   - We must run with the localRunner
-        #   - We must lie and say we output nothing
-        #   - The *path* must be listed as another jobs output to be available to the system
-        | setPlanFnOutputs (\_ Nil)
-        | setPlanEcho logDebug
-        | runJobWith localRunner
-        | setJobInspectVisibilityHidden
-
-    require True = job.isJobOk
-    else failWithError "Failed to cleanup downloaded file {path} from {blobPath.getPathName}"
+    require Pass _ =
+        materializePreparedStagingItemFromCas preparedItem
+        | addErrorContext "rsc: Failed to materialize blob to {path}"
 
     Pass path
 
@@ -826,6 +961,8 @@ def getPathAsJson path =
     JObject (
         "path" :-> JString path.getPathName,
         "hash" :-> JString path.getPathHash,
+        "type" :-> JString (pathTypeToString path.getPathType),
+        "mode" :-> JInteger path.getPathMode,
     )
 
 # Helper function for further processing the result of a http request in relation to the rsc
@@ -986,10 +1123,11 @@ def getCachePostRequestJson (req: CachePostRequest): JValue =
             "hidden" :-> JBoolean hidden,
         )
 
-    def mkOutputSymlinkJson (CachePostRequestOutputSymlink path link) =
+    def mkOutputSymlinkJson (CachePostRequestOutputSymlink path link hash) =
         JObject (
             "path" :-> JString path,
             "link" :-> JString link,
+            "hash" :-> JString hash,
         )
 
     JObject (
@@ -1084,7 +1222,12 @@ def mkCacheSearchResponse (json: JValue): Result CacheSearchResponse Error =
             failWithError
             "rsc: JSON response has incorrect schema. output_symlinks[x] must have string key 'link'"
 
-        CacheSearchOutputSymlink path link
+        require Pass (JString hash) = jField v "hash"
+        else
+            failWithError
+            "rsc: JSON response has incorrect schema. output_symlinks[x] must have string key 'hash'"
+
+        CacheSearchOutputSymlink path link hash
         | Pass
 
     def mkOutputDirectory (v: JValue): Result CacheSearchOutputDirectory Error =
@@ -1156,13 +1299,3 @@ def mkCacheSearchResponse (json: JValue): Result CacheSearchResponse Error =
     obytes
     | Match
     | Pass
-
-# RSC version of computing hashes for files, similar to Hashcode target in path.wake
-def rscHashFile (file: String): Result String Error =
-    def get f = prim "get_hash"
-    def cached = get file
-
-    if cached !=* "" then
-        Pass cached
-    else
-        failWithError "rsc: hash not found in DB for {file}"

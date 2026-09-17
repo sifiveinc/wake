@@ -63,7 +63,6 @@
 
 // How long to wait for a new client to connect before the daemon exits
 static int linger_timeout;
-static std::set<std::string> hardlinks = {};
 
 // Staging directory for CAS
 static std::string g_staging_dir;
@@ -79,7 +78,7 @@ overloaded(Ts...) -> overloaded<Ts...>;
 // Staged item types - written to .cas/staging/ during job execution, hashed by wakebox after
 struct StagedFileData {
   std::string staging_path;
-  mode_t mode;
+  std::shared_ptr<mode_t> mode;
 };
 
 struct StagedSymlinkData {
@@ -92,15 +91,17 @@ struct StagedDirectoryData {
   struct timespec mtime;
 };
 
-// Hardlinks are not true filesystem hardlinks. On link(), we reflink/copy the source's staging
-// file so each entry owns an independent staging_path.
-struct StagedHardlinkData {
-  std::string staging_path;
+// Special node (unix socket, fifo, or character/block device) created via mknod. These exist
+// only as a real on-disk node at a per-invocation-unique real_path, are not content-addressable,
+// and therefore have no backing CAS blob and are never materialized into the workspace.
+struct StagedSpecialData {
+  std::string real_path;
   mode_t mode;
+  mode_t type_bits;  // file-type bits: S_IFSOCK, S_IFIFO, S_IFCHR, or S_IFBLK
 };
 
 using StagedItemData =
-    std::variant<StagedFileData, StagedSymlinkData, StagedDirectoryData, StagedHardlinkData>;
+    std::variant<StagedFileData, StagedSymlinkData, StagedDirectoryData, StagedSpecialData>;
 
 struct StagedItem {
   std::string dest_path;
@@ -111,35 +112,40 @@ struct StagedItem {
   bool is_file() const { return std::holds_alternative<StagedFileData>(data); }
   bool is_symlink() const { return std::holds_alternative<StagedSymlinkData>(data); }
   bool is_directory() const { return std::holds_alternative<StagedDirectoryData>(data); }
-  bool is_hardlink() const { return std::holds_alternative<StagedHardlinkData>(data); }
+  bool is_special() const { return std::holds_alternative<StagedSpecialData>(data); }
+  bool is_hardlink() const {
+    if (auto *f = std::get_if<StagedFileData>(&data)) return f->mode.use_count() > 1;
+    return false;
+  }
 
   // Type name for JSON output
   const char *type_name() const {
-    return std::visit(
-        overloaded{
-            [](const StagedFileData &) { return "file"; },
-            [](const StagedSymlinkData &) { return "symlink"; },
-            [](const StagedDirectoryData &) { return "directory"; },
-            // Serialize hardlinks as ordinary file entries. The shared staging_path still preserves
-            // the deduplication behavior Wake cares about during hashing and CAS ingestion.
-            [](const StagedHardlinkData &) { return "file"; },
-        },
-        data);
+    return std::visit(overloaded{
+                          [](const StagedFileData &) { return "file"; },
+                          [](const StagedSymlinkData &) { return "symlink"; },
+                          [](const StagedDirectoryData &) { return "directory"; },
+                          [](const StagedSpecialData &s) {
+                            if (S_ISFIFO(s.type_bits)) return "fifo";
+                            if (S_ISCHR(s.type_bits)) return "chardev";
+                            if (S_ISBLK(s.type_bits)) return "blockdev";
+                            return "socket";
+                          },
+                      },
+                      data);
   }
 
   std::optional<std::string_view> staging_path() const {
     if (auto *f = std::get_if<StagedFileData>(&data)) return f->staging_path;
-    if (auto *h = std::get_if<StagedHardlinkData>(&data)) return h->staging_path;
     return std::nullopt;
   }
 
-  // Get mode (valid for file, directory, and hardlink)
+  // Get mode (valid for file, directory, hardlink, and special node)
   mode_t mode() const {
     return std::visit(overloaded{
-                          [](const StagedFileData &f) { return f.mode; },
+                          [](const StagedFileData &f) { return *f.mode; },
                           [](const StagedSymlinkData &) { return static_cast<mode_t>(0777); },
                           [](const StagedDirectoryData &d) { return d.mode; },
-                          [](const StagedHardlinkData &h) { return h.mode; },
+                          [](const StagedSpecialData &s) { return s.mode; },
                       },
                       data);
   }
@@ -147,19 +153,16 @@ struct StagedItem {
   // Set mode (for chmod support)
   void set_mode(mode_t m) {
     std::visit(overloaded{
-                   [m](StagedFileData &f) { f.mode = m; },
+                   [m](StagedFileData &f) { *f.mode = m; },
                    [](StagedSymlinkData &) {},  // Symlinks don't have mode
                    [m](StagedDirectoryData &d) { d.mode = m; },
-                   // Known limitation: hardlink mode is tracked per-entry rather than shared across
-                   // all names pointing to the same staged file. A chmod on one hardlink path will
-                   // not update sibling hardlink entries, diverging from POSIX inode semantics.
-                   // TODO: Add robust hardlink support
-                   [m](StagedHardlinkData &h) { h.mode = m; },
+                   [m](StagedSpecialData &s) { s.mode = m; },
                },
                data);
   }
 
-  // Get mtime (valid for symlink and directory; files/hardlinks use the backing staging file)
+  // Get mtime (valid for symlink and directory; files/hardlinks use the backing staging file,
+  // special nodes use their real backing node)
   struct timespec mtime() const {
     if (auto *l = std::get_if<StagedSymlinkData>(&data)) return l->mtime;
     if (auto *d = std::get_if<StagedDirectoryData>(&data)) return d->mtime;
@@ -173,12 +176,20 @@ struct StagedItem {
       l->mtime = mt;
     } else if (auto *d = std::get_if<StagedDirectoryData>(&data)) {
       d->mtime = mt;
-      // Known limitation: same as set_mode — timestamps are tracked per-entry, so an utimens on
-      // one hardlink path does not update sibling hardlink entries.
-      // TODO: Add robust hardlink support
     }
   }
 };
+
+// Unlink the real on-disk object backing a staged item, if any. Files/hardlinks are backed by a
+// staging file (staging_path); special nodes (sockets/fifos/devices) by a real node (real_path);
+// symlinks/directories have no on-disk backing until CAS ingestion, so this is a no-op for them.
+static void unlink_backing(const StagedItem &sf) {
+  if (auto sp = sf.staging_path()) {
+    unlink(sp->data());
+  } else if (auto *s = std::get_if<StagedSpecialData>(&sf.data)) {
+    unlink(s->real_path.c_str());
+  }
+}
 
 // Encapsulates the nested map of staged files with helper methods
 // Structure: job_id -> (path -> StagedItem)
@@ -208,8 +219,20 @@ class StagedFilesStore {
     return job_it->second.erase(path) > 0;
   }
 
-  // Erase all staged items for a job
-  void erase_job(const std::string &job_id) { files_.erase(job_id); }
+  // Erase all staged items for a job. Special nodes (sockets/fifos) have a real
+  // backing node that must be unlinked so a job that exits without an explicit unlink() does
+  // not leak it into the staging directory.
+  void erase_job(const std::string &job_id) {
+    auto job_it = files_.find(job_id);
+    if (job_it != files_.end()) {
+      for (auto &entry : job_it->second) {
+        if (auto *s = std::get_if<StagedSpecialData>(&entry.second.data)) {
+          unlink(s->real_path.c_str());
+        }
+      }
+    }
+    files_.erase(job_id);
+  }
 
   // Check if a staged directory has any children
   bool has_children(const std::string &job_id, const std::string &dir) {
@@ -253,13 +276,16 @@ static StagedFilesStore g_staged_files;
 // Counter for unique staging file names
 static uint64_t g_staging_counter = 0;
 
+// Allocate a fresh, collision-free path in the CAS staging directory for a new backing object
+// (a staging file for a regular/hardlinked file, or a real node for a special node). The pid
+// disambiguates concurrent wake daemons sharing the same staging dir; the counter is unique within
+// this daemon.
+static std::string create_unique_staging_path() {
+  return g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
+}
+
 // Path to CAS blobs directory for hash-based reads
 static std::string g_cas_blobs_dir;
-
-// Global flag to enable/disable CAS-first staging
-// When false, files are written directly to workspace
-// TODO: Remove the non-CAS workspace-write mode once WAKE_CAS is the default.
-static bool g_use_cas = false;
 
 // How to retry umount while quitting
 // (2^8-1)*100ms = 25.5s worst-case quit time
@@ -313,17 +339,15 @@ void Job::parse() {
     g_cas_blobs_dir = ".build/cas/blobs";
     g_staging_dir = ".build/cas/staging";
   }
-  if (g_use_cas) {
-    int err = mkdir_with_parents(g_cas_blobs_dir, 0755);
-    if (err != 0) {
-      fprintf(stderr, "fuse-waked: failed to create CAS blobs directory '%s': %s\n",
-              g_cas_blobs_dir.c_str(), strerror(err));
-    }
-    err = mkdir_with_parents(g_staging_dir, 0755);
-    if (err != 0) {
-      fprintf(stderr, "fuse-waked: failed to create CAS staging directory '%s': %s\n",
-              g_staging_dir.c_str(), strerror(err));
-    }
+  int err = mkdir_with_parents(g_cas_blobs_dir, 0755);
+  if (err != 0) {
+    fprintf(stderr, "fuse-waked: failed to create CAS blobs directory '%s': %s\n",
+            g_cas_blobs_dir.c_str(), strerror(err));
+  }
+  err = mkdir_with_parents(g_staging_dir, 0755);
+  if (err != 0) {
+    fprintf(stderr, "fuse-waked: failed to create CAS staging directory '%s': %s\n",
+            g_staging_dir.c_str(), strerror(err));
   }
 
   // We only need to make the relative paths visible; absolute paths are already
@@ -400,19 +424,14 @@ void Job::parse() {
       files_visible.insert(path);
       visible_entries[path] = VisibleEntry{type, content_hash, mode, mtime};
 
-      // Add implicit parent directories for this path.
-      // Only needed in CAS mode where the filesystem is virtualized and parent
-      // directories may not exist on disk.  In legacy mode the real filesystem
-      // already contains these directories, and adding them to files_visible
-      // causes wakefuse_mkdir to return EEXIST before the directory is created.
-      if (g_use_cas) {
-        for (size_t slash = path.find('/'); slash != std::string::npos;
-             slash = path.find('/', slash + 1)) {
-          std::string parent = path.substr(0, slash);
-          if (visible_entries.find(parent) == visible_entries.end()) {
-            files_visible.insert(parent);
-            visible_entries[parent] = VisibleEntry{"directory", std::nullopt, std::nullopt, mtime};
-          }
+      // Add implicit parent directories so that virtual directories created by
+      // staged jobs don't collide with visible ancestor paths.
+      for (size_t slash = path.find('/'); slash != std::string::npos;
+           slash = path.find('/', slash + 1)) {
+        std::string parent = path.substr(0, slash);
+        if (visible_entries.find(parent) == visible_entries.end()) {
+          files_visible.insert(parent);
+          visible_entries[parent] = VisibleEntry{"directory", std::nullopt, std::nullopt, mtime};
         }
       }
     }
@@ -473,71 +492,68 @@ void Job::dump(const std::string &job_id) {
     if (lastslash != std::string::npos) start = lastslash + 1;
     if (x.compare(start, prefix.length(), prefix) == 0) continue;
 
+    // special nodes (sockets/fifos) are not content-addressable and must not be
+    // reported as job outputs.
+    if (StagedItem *sf = g_staged_files.find(job_id, x)) {
+      if (sf->is_special()) continue;
+    }
+
     s << (first ? "" : ",") << "\"" << json_escape(x) << "\"";
     first = false;
   }
 
-  // Output staging_files with metadata for wakebox to process (CAS mode only)
-  // TODO: Remove the legacy non-CAS JSON shape once WAKE_CAS is the default.
-  if (g_use_cas) {
-    s << "],\"staging_files\":{";
-    first = true;
-    if (auto *job_staged = g_staged_files.get_job(job_id)) {
-      for (auto &entry : *job_staged) {
-        const StagedItem &sf = entry.second;
+  // Output staging_files with metadata for wakebox to process
+  s << "],\"staging_files\":{";
+  first = true;
+  if (auto *job_staged = g_staged_files.get_job(job_id)) {
+    for (auto &entry : *job_staged) {
+      const StagedItem &sf = entry.second;
 
-        size_t start = 0;
-        size_t lastslash = sf.dest_path.rfind("/");
-        if (lastslash != std::string::npos) start = lastslash + 1;
-        if (sf.dest_path.compare(start, prefix.length(), prefix) == 0) continue;
+      size_t start = 0;
+      size_t lastslash = sf.dest_path.rfind("/");
+      if (lastslash != std::string::npos) start = lastslash + 1;
+      if (sf.dest_path.compare(start, prefix.length(), prefix) == 0) continue;
 
-        s << (first ? "" : ",") << "\"" << json_escape(sf.dest_path) << "\":{";
-        s << "\"type\":\"" << sf.type_name() << "\"";
+      // special nodes (sockets/fifos) are not content-addressable and must never be
+      // ingested into CAS; exclude them from staging_files.
+      if (sf.is_special()) continue;
 
-        // Emit type-specific fields using std::visit
-        std::visit(overloaded{
-                       [&s](const StagedFileData &f) {
-                         struct stat st;
-                         int ret = stat(f.staging_path.c_str(), &st);
-                         assert(ret == 0 && "staging file must exist at dump time");
-                         s << ",\"staging_path\":\"" << json_escape(f.staging_path) << "\"";
-                         s << ",\"mode\":" << (f.mode & 07777);
-                         s << ",\"mtime_sec\":" << st.st_mtim.tv_sec;
-                         s << ",\"mtime_nsec\":" << st.st_mtim.tv_nsec;
-                       },
-                       [&s](const StagedSymlinkData &l) {
-                         s << ",\"target\":\"" << json_escape(l.target) << "\"";
-                         s << ",\"mtime_sec\":" << l.mtime.tv_sec;
-                         s << ",\"mtime_nsec\":" << l.mtime.tv_nsec;
-                       },
-                       [&s](const StagedDirectoryData &d) {
-                         s << ",\"mode\":" << (d.mode & 07777);
-                         s << ",\"mtime_sec\":" << d.mtime.tv_sec;
-                         s << ",\"mtime_nsec\":" << d.mtime.tv_nsec;
-                       },
-                       [&s](const StagedHardlinkData &h) {
-                         struct stat st;
-                         int ret = stat(h.staging_path.c_str(), &st);
-                         assert(ret == 0 && "staging file must exist at dump time");
-                         // Hardlink has same staging_path as source - client uses it as
-                         // deduplication key
-                         s << ",\"staging_path\":\"" << json_escape(h.staging_path) << "\"";
-                         s << ",\"mode\":" << (h.mode & 07777);
-                         s << ",\"mtime_sec\":" << st.st_mtim.tv_sec;
-                         s << ",\"mtime_nsec\":" << st.st_mtim.tv_nsec;
-                       },
-                   },
-                   sf.data);
+      s << (first ? "" : ",") << "\"" << json_escape(sf.dest_path) << "\":{";
+      s << "\"type\":\"" << sf.type_name() << "\"";
 
-        s << "}";
-        first = false;
-      }
+      // Emit type-specific fields using std::visit
+      std::visit(overloaded{
+                     [&s](const StagedFileData &f) {
+                       struct stat st;
+                       int ret = stat(f.staging_path.c_str(), &st);
+                       assert(ret == 0 && "staging file must exist at dump time");
+                       s << ",\"staging_path\":\"" << json_escape(f.staging_path) << "\"";
+                       s << ",\"mode\":" << (*f.mode & 07777);
+                       s << ",\"mtime_sec\":" << st.st_mtim.tv_sec;
+                       s << ",\"mtime_nsec\":" << st.st_mtim.tv_nsec;
+                     },
+                     [&s](const StagedSymlinkData &l) {
+                       s << ",\"target\":\"" << json_escape(l.target) << "\"";
+                       s << ",\"mtime_sec\":" << l.mtime.tv_sec;
+                       s << ",\"mtime_nsec\":" << l.mtime.tv_nsec;
+                     },
+                     [&s](const StagedDirectoryData &d) {
+                       s << ",\"mode\":" << (d.mode & 07777);
+                       s << ",\"mtime_sec\":" << d.mtime.tv_sec;
+                       s << ",\"mtime_nsec\":" << d.mtime.tv_nsec;
+                     },
+                     [](const StagedSpecialData &) {
+                       // Unreachable: special nodes are skipped above and never emitted.
+                       assert(false && "special nodes must not reach staging_files emit");
+                     },
+                 },
+                 sf.data);
+
+      s << "}";
+      first = false;
     }
-    s << "}}";
-  } else {
-    // Legacy mode: no staging_files, close outputs array and object
-    s << "]}";
   }
+  s << "}}";
 
   s << std::endl;
 
@@ -661,6 +677,14 @@ static const char *trace_out(int code) {
     return &buf[0];
   }
 }
+
+// Wakebox maps the FUSE daemon's UID/GID into the sandbox. Report that identity
+// rather than backing-file ownership, which may not be mapped into the sandbox.
+static void set_virtual_ownership(struct stat *stbuf) {
+  stbuf->st_uid = getuid();
+  stbuf->st_gid = getgid();
+}
+
 // Returns file attributes. For staged items, stats the staging file or synthesizes
 // attributes from stored metadata. Resolves hardlinks to their source.
 static int wakefuse_getattr(const char *path, struct stat *stbuf) {
@@ -722,7 +746,8 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
                             int res = stat(f.staging_path.c_str(), stbuf);
                             if (res == -1) return -errno;
                             // Combine file type from staging file with tracked permissions
-                            stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (f.mode & ~S_IFMT);
+                            stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (*f.mode & ~S_IFMT);
+                            set_virtual_ownership(stbuf);
                             return 0;
                           },
                           [stbuf](const StagedSymlinkData &l) {
@@ -731,8 +756,7 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
                             stbuf->st_mode = S_IFLNK | 0777;
                             stbuf->st_nlink = 1;
                             stbuf->st_size = l.target.size();
-                            stbuf->st_uid = getuid();
-                            stbuf->st_gid = getgid();
+                            set_virtual_ownership(stbuf);
                             stbuf->st_mtim = l.mtime;
                             return 0;
                           },
@@ -742,22 +766,24 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
                             stbuf->st_size = 4096;
                             stbuf->st_mode = S_IFDIR | (d.mode & 07777);
                             stbuf->st_nlink = 1;
-                            stbuf->st_uid = getuid();
-                            stbuf->st_gid = getgid();
+                            set_virtual_ownership(stbuf);
                             stbuf->st_mtim = d.mtime;
                             return 0;
                           },
-                          [stbuf](const StagedHardlinkData &h) {
-                            int res = stat(h.staging_path.c_str(), stbuf);
+                          [stbuf](const StagedSpecialData &s) {
+                            // Stat the real backing node, then force the special type bits so the
+                            // client sees a socket/fifo at its logical path.
+                            int res = stat(s.real_path.c_str(), stbuf);
                             if (res == -1) return -errno;
-                            stbuf->st_mode = (stbuf->st_mode & S_IFMT) | (h.mode & ~S_IFMT);
+                            stbuf->st_mode = s.type_bits | (s.mode & 07777);
+                            set_virtual_ownership(stbuf);
                             return 0;
                           },
                       },
                       sf->data);
   }
 
-  if (g_use_cas) {
+  {
     auto visible_it = it->second.visible_entries.find(key.second);
     if (visible_it != it->second.visible_entries.end()) {
       const std::string &type = visible_it->second.type;
@@ -769,6 +795,7 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
             stbuf->st_mode = (stbuf->st_mode & S_IFMT) | visible_mode_or(visible_it->second, 0444);
             stbuf->st_mtim.tv_sec = visible_it->second.mtime / 1000000000L;
             stbuf->st_mtim.tv_nsec = visible_it->second.mtime % 1000000000L;
+            set_virtual_ownership(stbuf);
             return 0;
           }
         } else if (type == "symlink") {
@@ -778,8 +805,7 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
             stbuf->st_mode = S_IFLNK | 0777;
             stbuf->st_nlink = 1;
             stbuf->st_size = target.size();
-            stbuf->st_uid = getuid();
-            stbuf->st_gid = getgid();
+            set_virtual_ownership(stbuf);
             stbuf->st_mtim.tv_sec = visible_it->second.mtime / 1000000000L;
             stbuf->st_mtim.tv_nsec = visible_it->second.mtime % 1000000000L;
             return 0;
@@ -791,8 +817,7 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
         stbuf->st_mode = S_IFDIR | visible_mode_or(visible_it->second, 0755);
         stbuf->st_size = 4096;
         stbuf->st_nlink = 1;
-        stbuf->st_uid = getuid();
-        stbuf->st_gid = getgid();
+        set_virtual_ownership(stbuf);
         stbuf->st_mtim.tv_sec = visible_it->second.mtime / 1000000000L;
         stbuf->st_mtim.tv_nsec = visible_it->second.mtime % 1000000000L;
         return 0;
@@ -800,10 +825,9 @@ static int wakefuse_getattr(const char *path, struct stat *stbuf) {
     }
   }
 
-  // TODO: Remove workspace fallback once CAS is on by default
-  int res = fstatat(context.rootfd, key.second.c_str(), stbuf, AT_SYMLINK_NOFOLLOW);
-  if (res == -1) res = -errno;
-  return res;
+  // All visible content (including sources) is served from CAS staged/visible entries.
+  // Anything not found above does not exist in the virtualized view.
+  return -ENOENT;
 }
 
 static int wakefuse_getattr_trace(const char *path, struct stat *stbuf) {
@@ -838,6 +862,16 @@ static int wakefuse_access(const char *path, int mask) {
   if (StagedItem *sf_ptr = g_staged_files.find(key.first, key.second)) {
     const StagedItem &sf = *sf_ptr;
 
+    // special nodes (sockets/fifos) live as real backing nodes; delegate to the real
+    // node so bind/connect and stat see consistent accessibility.
+    if (sf.is_special()) {
+      if (auto *s = std::get_if<StagedSpecialData>(&sf.data)) {
+        int res = access(s->real_path.c_str(), mask);
+        if (res == -1) return -errno;
+      }
+      return 0;
+    }
+
     // Staged directories are purely virtual - they don't have a staging_path on disk.
     // They are always readable and writable since they were created by this job.
     if (sf.is_directory()) {
@@ -866,12 +900,16 @@ static int wakefuse_access(const char *path, int mask) {
     return 0;
   }
 
-  if (g_use_cas) {
+  {
     auto visible_it = it->second.visible_entries.find(key.second);
     if (visible_it != it->second.visible_entries.end()) {
       const std::string &type = visible_it->second.type;
       if (type == "directory") {
-        if (mask & W_OK) return -EACCES;
+        // Match access() to getattr()'s mode bits; real writes are still gated by
+        // is_writeable() in unlink/rename/etc.
+        mode_t mode = visible_mode_or(visible_it->second, 0755);
+        if ((mask & W_OK) && !(mode & (S_IWUSR | S_IWGRP | S_IWOTH))) return -EACCES;
+        if ((mask & X_OK) && !(mode & (S_IXUSR | S_IXGRP | S_IXOTH))) return -EACCES;
         return 0;
       }
       if (type == "symlink") {
@@ -890,11 +928,9 @@ static int wakefuse_access(const char *path, int mask) {
     }
   }
 
-  // TODO: Remove workspace fallback once CAS is on by default
-  int res = faccessat(context.rootfd, key.second.c_str(), mask, 0);
-  if (res == -1) return -errno;
-
-  return 0;
+  // All visible content (including sources) is served from CAS staged/visible entries.
+  // Anything not found above does not exist in the virtualized view.
+  return -ENOENT;
 }
 
 static int wakefuse_access_trace(const char *path, int mask) {
@@ -929,7 +965,7 @@ static int wakefuse_readlink(const char *path, char *buf, size_t size) {
     }
   }
 
-  if (g_use_cas) {
+  {
     auto visible_it = it->second.visible_entries.find(key.second);
     if (visible_it != it->second.visible_entries.end()) {
       const std::string &type = visible_it->second.type;
@@ -948,13 +984,9 @@ static int wakefuse_readlink(const char *path, char *buf, size_t size) {
     }
   }
 
-  // TODO: Remove workspace fallback once CAS is on by default
-  int res = readlinkat(context.rootfd, key.second.c_str(), buf, size - 1);
-  if (res == -1) return -errno;
-
-  buf[res] = '\0';
-  it->second.files_read.insert(std::move(key.second));
-  return 0;
+  // All visible content (including sources) is served from CAS staged/visible entries.
+  // Anything not found above does not exist in the virtualized view.
+  return -ENOENT;
 }
 
 static int wakefuse_readlink_trace(const char *path, char *buf, size_t size) {
@@ -994,58 +1026,13 @@ static int wakefuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
   std::string dir_prefix = (key.second == ".") ? "" : (key.second + "/");
   std::set<std::string> already_listed;
 
-  // TODO: Remove workspace fallback once CAS is on by default
-  // Try to read from the real filesystem directory
-  int dfd;
-  if (key.second == ".") {
-    dfd = dup(context.rootfd);
-  } else {
-    dfd = openat(context.rootfd, key.second.c_str(), O_RDONLY | O_NOFOLLOW | O_DIRECTORY);
-  }
-
-  if (dfd != -1) {
-    DIR *dp = fdopendir(dfd);
-    if (dp != NULL) {
-      rewinddir(dp);
-      struct dirent *de;
-      while ((de = readdir(dp)) != NULL) {
-        struct stat st;
-        memset(&st, 0, sizeof(st));
-        st.st_ino = de->d_ino;
-        st.st_mode = de->d_type << 12;
-
-        std::string file;
-        if (key.second != ".") {
-          file += key.second;
-          file += "/";
-        }
-        file += de->d_name;
-
-        if (!it->second.is_readable(file)) {
-          // Allow '.' and '..' links in this directory.
-          // This directory was earlier checked as visible (for '.') and
-          // the parent of a readable directory should also be visible (for '..').
-          std::string name(de->d_name);
-          if (!(name == "." || name == "..")) continue;
-        }
-
-        already_listed.insert(de->d_name);
-        if (filler(buf, de->d_name, &st, 0)) break;
-      }
-      (void)closedir(dp);
-    } else {
-      (void)close(dfd);
-    }
-  }
-
-  // For virtual directories (created by mkdir or CAS-only visible dirs), add . and ..
-  if (dfd == -1 &&
-      (it->second.is_writeable(key.second) || (g_use_cas && it->second.is_visible(key.second)))) {
-    filler(buf, ".", 0, 0);
-    filler(buf, "..", 0, 0);
-    already_listed.insert(".");
-    already_listed.insert("..");
-  }
+  // The view is fully virtualized: directory contents come from staged items and
+  // CAS-visible entries, never from the real workspace. Every directory still
+  // advertises the conventional "." and ".." links.
+  filler(buf, ".", 0, 0);
+  filler(buf, "..", 0, 0);
+  already_listed.insert(".");
+  already_listed.insert("..");
 
   // Helper to add first path component to directory listing
   auto add_child_entry = [&](const std::string &path) {
@@ -1084,10 +1071,8 @@ static int wakefuse_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
   }
 
   // Add visible entries (CAS-tracked files, symlinks, and directories)
-  if (g_use_cas) {
-    for (auto &ve : it->second.visible_entries) {
-      add_child_entry(ve.first);
-    }
+  for (auto &ve : it->second.visible_entries) {
+    add_child_entry(ve.first);
   }
 
   return 0;
@@ -1100,7 +1085,10 @@ static int wakefuse_readdir_trace(const char *path, void *buf, fuse_fill_dir_t f
   return out;
 }
 
-// Creates special files. Only used for job registration; regular mknod not supported.
+// Creates a node via mknod. Regular files and directories are virtualized/CAS-backed like
+// create()/mkdir(). Sockets, fifos, and device nodes are ephemeral special nodes: they are not
+// content-addressable, so they are created as real nodes at a per-invocation-unique backing path,
+// tracked per-job, and excluded from CAS/staging_files/outputs.
 static int wakefuse_mknod(const char *path, mode_t mode, dev_t rdev) {
   if (is_special(path)) return -EEXIST;
 
@@ -1119,31 +1107,71 @@ static int wakefuse_mknod(const char *path, mode_t mode, dev_t rdev) {
 
   if (it->second.is_visible(key.second)) return -EEXIST;
 
-  // TODO: Remove workspace writes once backwards compatibility is no longer needed
-  if (!it->second.is_writeable(key.second)) (void)deep_unlink(context.rootfd, key.second.c_str());
+  if (it->second.is_writeable(key.second)) return -EEXIST;
 
-  int res;
   if (S_ISREG(mode)) {
-    res = openat(context.rootfd, key.second.c_str(), O_CREAT | O_EXCL | O_WRONLY, mode);
-    if (res >= 0) res = close(res);
-  } else if (S_ISDIR(mode)) {
-    res = mkdirat(context.rootfd, key.second.c_str(), mode);
-  } else if (S_ISFIFO(mode)) {
+    // Stage a regular file (like create(), but without keeping an open fd). wakebox will hash and
+    // store it in CAS after the job completes.
+    std::string staging_path = create_unique_staging_path();
+    // Keep the staging file owner-readable regardless of the requested mode: the hashing and
+    // CAS steps after the job open it directly. The tracked mode below is what getattr reports
+    // and what lands in the workspace, so the extra bit isn't visible to the job.
+    mode_t perm_bits = (mode & 07777) | S_IRUSR;
+    int fd = open(staging_path.c_str(), O_CREAT | O_EXCL | O_WRONLY, perm_bits);
+    if (fd == -1) return -errno;
+    (void)close(fd);
+
+    StagedItem staged;
+    staged.dest_path = key.second;
+    staged.job_id = key.first;
+    staged.data = StagedFileData{staging_path, std::make_shared<mode_t>(mode)};
+    g_staged_files.insert(key.first, key.second, std::move(staged));
+    it->second.staged_paths.insert(key.second);
+    it->second.files_wrote.insert(std::move(key.second));
+    return 0;
+  }
+
+  if (S_ISDIR(mode)) {
+    // Track as a virtual directory; the real directory is created during CAS post-processing.
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    StagedItem staged;
+    staged.dest_path = key.second;
+    staged.job_id = key.first;
+    staged.data = StagedDirectoryData{mode, now};
+    g_staged_files.insert(key.first, key.second, std::move(staged));
+    it->second.staged_paths.insert(key.second);
+    it->second.files_wrote.insert(std::move(key.second));
+    return 0;
+  }
+
+  // Any other node type (socket, fifo, character/block device) is an ephemeral special node:
+  // it is not content-addressable, so create a real node at a per-invocation-unique backing path
+  // (so concurrent jobs binding the same relative path don't collide on the shared backing store),
+  // track it per-job, and exclude it from CAS/staging_files/outputs.
+  std::string real_path = create_unique_staging_path();
+  int res;
+  if (S_ISFIFO(mode)) {
 #ifdef __APPLE__
-    res = mkfifo(key.second.c_str(), mode);
+    res = mkfifo(real_path.c_str(), mode);
 #else
-    res = mkfifoat(context.rootfd, key.second.c_str(), mode);
+    res = mkfifoat(AT_FDCWD, real_path.c_str(), mode);
 #endif
   } else {
 #ifdef __APPLE__
-    res = mknod(key.second.c_str(), mode, rdev);
+    res = mknod(real_path.c_str(), mode, rdev);
 #else
-    res = mknodat(context.rootfd, key.second.c_str(), mode, rdev);
+    res = mknodat(AT_FDCWD, real_path.c_str(), mode, rdev);
 #endif
   }
-
   if (res == -1) return -errno;
 
+  StagedItem staged;
+  staged.dest_path = key.second;
+  staged.job_id = key.first;
+  staged.data = StagedSpecialData{real_path, mode, static_cast<mode_t>(mode & S_IFMT)};
+  g_staged_files.insert(key.first, key.second, std::move(staged));
+  it->second.staged_paths.insert(key.second);
   it->second.files_wrote.insert(std::move(key.second));
   return 0;
 }
@@ -1191,40 +1219,31 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
 
   if (it->second.is_visible(key.second)) return -EEXIST;
 
-  if (g_use_cas) {
-    // CAS mode: write to staging directory (wakebox will hash and store in CAS)
-    // Check if this path was already staged by this job - if so, delete the old staging file
-    if (StagedItem *existing = g_staged_files.find(key.first, key.second)) {
-      if (auto existing_staging_path = existing->staging_path()) {
-        unlink(existing_staging_path->data());
-        g_staged_files.erase(key.first, key.second);
-      }
-    }
-
-    // Include PID to avoid collisions between concurrent wake processes
-    std::string staging_path =
-        g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
-    mode_t perm_bits = mode & 07777;
-    int fd = open(staging_path.c_str(), O_CREAT | O_RDWR | O_TRUNC, perm_bits);
-    if (fd == -1) return -errno;
-
-    StagedItem staged;
-    staged.dest_path = key.second;
-    staged.job_id = key.first;
-    staged.data = StagedFileData{staging_path, mode};
-    StagedItem *inserted = g_staged_files.insert(key.first, key.second, std::move(staged));
-
-    g_staged_files.register_fd(fd, inserted);
-    fi->fh = fd;
-    it->second.staged_paths.insert(key.second);
-  } else {
-    // TODO: Remove the direct-to-workspace create path once WAKE_CAS is the default.
-    // Legacy mode: create directly in workspace
-    if (!it->second.is_writeable(key.second)) (void)deep_unlink(context.rootfd, key.second.c_str());
-    int fd = openat(context.rootfd, key.second.c_str(), O_CREAT | O_RDWR | O_TRUNC, mode);
-    if (fd == -1) return -errno;
-    fi->fh = fd;
+  // Write to staging directory; wakebox will hash and store in CAS after the job completes.
+  // Check if this path was already staged by this job - if so, delete its backing object (staging
+  // file for a file, real node for a special) so it isn't orphaned when we overwrite the entry.
+  if (StagedItem *existing = g_staged_files.find(key.first, key.second)) {
+    unlink_backing(*existing);
+    g_staged_files.erase(key.first, key.second);
   }
+
+  std::string staging_path = create_unique_staging_path();
+  // Keep the staging file owner-readable regardless of the requested mode: the hashing and CAS
+  // steps after the job open it directly. The tracked mode below is what getattr reports and
+  // what lands in the workspace, so the extra bit isn't visible to the job.
+  mode_t perm_bits = (mode & 07777) | S_IRUSR;
+  int fd = open(staging_path.c_str(), O_CREAT | O_RDWR | O_TRUNC, perm_bits);
+  if (fd == -1) return -errno;
+
+  StagedItem staged;
+  staged.dest_path = key.second;
+  staged.job_id = key.first;
+  staged.data = StagedFileData{staging_path, std::make_shared<mode_t>(mode)};
+  StagedItem *inserted = g_staged_files.insert(key.first, key.second, std::move(staged));
+
+  g_staged_files.register_fd(fd, inserted);
+  fi->fh = fd;
+  it->second.staged_paths.insert(key.second);
 
   it->second.files_wrote.insert(key.second);
   return 0;
@@ -1258,8 +1277,8 @@ static int wakefuse_mkdir(const char *path, mode_t mode) {
   // Already created by this job
   if (it->second.is_writeable(key.second)) return -EEXIST;
 
-  if (g_use_cas) {
-    // CAS mode: track as virtual directory, will be created during post-processing
+  // Track as virtual directory; the real directory is created during CAS post-processing.
+  {
     struct timespec now;
     clock_gettime(CLOCK_REALTIME, &now);
     StagedItem staged;
@@ -1268,19 +1287,6 @@ static int wakefuse_mkdir(const char *path, mode_t mode) {
     staged.data = StagedDirectoryData{mode, now};
     g_staged_files.insert(key.first, key.second, std::move(staged));
     it->second.staged_paths.insert(key.second);
-  } else {
-    // TODO: Remove the direct-to-workspace mkdir path once WAKE_CAS is the default.
-    // Legacy mode: create directory in workspace
-    int res = unlinkat(context.rootfd, key.second.c_str(), 0);
-    if (res == -1 && errno != EPERM && errno != ENOENT && errno != EISDIR) return -errno;
-
-    res = mkdirat(context.rootfd, key.second.c_str(), mode);
-
-    // If a directory already exists, change permissions and claim it
-    if (res == -1 && (errno == EEXIST || errno == EISDIR))
-      res = fchmodat(context.rootfd, key.second.c_str(), mode, 0);
-
-    if (res == -1) return -errno;
   }
 
   it->second.files_wrote.insert(key.second);
@@ -1311,10 +1317,9 @@ static int wakefuse_unlink(const char *path) {
 
   // Handle staged file removal
   if (StagedItem *sf = g_staged_files.find(key.first, key.second)) {
-    // Only unlink staging file if it exists (files and hardlinks have staging_path)
-    if (auto spath = sf->staging_path()) {
-      unlink(spath->data());
-    }
+    // Remove the backing object (staging file for files/hardlinks, real node for special nodes;
+    // symlinks/directories have none).
+    unlink_backing(*sf);
     g_staged_files.erase(key.first, key.second);
     it->second.staged_paths.erase(key.second);
     it->second.files_wrote.erase(key.second);
@@ -1421,8 +1426,8 @@ static int wakefuse_symlink(const char *from, const char *to) {
   // Already created by this job
   if (it->second.is_writeable(key.second)) return -EEXIST;
 
-  if (g_use_cas) {
-    // CAS mode: track as virtual symlink, will be created during post-processing
+  // Track as virtual symlink; the real symlink is created during CAS post-processing.
+  {
     struct timespec now;
     clock_gettime(CLOCK_REALTIME, &now);
     StagedItem staged;
@@ -1431,12 +1436,6 @@ static int wakefuse_symlink(const char *from, const char *to) {
     staged.data = StagedSymlinkData{from, now};
     g_staged_files.insert(key.first, key.second, std::move(staged));
     it->second.staged_paths.insert(key.second);
-  } else {
-    // TODO: Remove the direct-to-workspace symlink path once WAKE_CAS is the default.
-    // Legacy mode: create symlink in workspace
-    if (!it->second.is_writeable(key.second)) (void)deep_unlink(context.rootfd, key.second.c_str());
-    int res = symlinkat(from, context.rootfd, key.second.c_str());
-    if (res == -1) return -errno;
   }
 
   it->second.files_wrote.insert(key.second);
@@ -1548,11 +1547,10 @@ static int wakefuse_rename(const char *from, const char *to) {
     StagedItem sf = *from_sf;
     sf.dest_path = keyt.second;
     g_staged_files.erase(keyf.first, keyf.second);
-    // Check if destination already has a staged file - if so, delete its staging file
+    // Destination already staged - delete its backing object (staging file for a file, real node
+    // for a special) so it isn't orphaned when the insert below overwrites the entry.
     if (StagedItem *existing_to = g_staged_files.find(keyt.first, keyt.second)) {
-      if (auto existing_staging_path = existing_to->staging_path()) {
-        unlink(existing_staging_path->data());
-      }
+      unlink_backing(*existing_to);
     }
     g_staged_files.insert(keyt.first, keyt.second, sf);
 
@@ -1630,55 +1628,38 @@ static int wakefuse_link(const char *from, const char *to) {
 
   if (it->second.is_visible(keyt.second)) return -EEXIST;
 
-  // Handle link from staged file (CAS mode only)
-  if (g_use_cas) {
-    if (StagedItem *src_ptr = g_staged_files.find(keyf.first, keyf.second)) {
-      const StagedItem &src = *src_ptr;
-      // Hardlinks to directories are forbidden in POSIX
-      if (src.is_directory()) return -EPERM;
+  // Deny hardlinking visible files as "from".
+  if (it->second.is_visible(keyf.second)) return -EPERM;
+  // Allow hardlinking staged files as "from".
+  if (StagedItem *src_ptr = g_staged_files.find(keyf.first, keyf.second)) {
+    const StagedItem &src = *src_ptr;
+    // Hardlinks to directories are forbidden in POSIX
+    if (src.is_directory()) return -EPERM;
 
-      // Resolve source staging_path and metadata (works for both files and chained hardlinks)
-      auto src_staging_path = src.staging_path();
-      if (!src_staging_path) return -EPERM;  // symlinks have no staging_path
+    // Resolve source staging_path and metadata (works for both files and chained hardlinks)
+    auto src_staging_path = src.staging_path();
+    if (!src_staging_path) return -EPERM;  // symlinks have no staging_path
 
-      mode_t src_mode = src.mode();
+    const StagedFileData *src_sf = std::get_if<StagedFileData>(&src.data);
+    assert(src_sf && "must be staged file");
 
-      // Create an independent copy of the staging file so each output owns its own
-      // staging path. This avoids races where one consumer (CAS ingestion or workspace
-      // materialization) deletes the shared file before another can read it.
-      // Uses reflink (copy-on-write) when the filesystem supports it.
-      std::string new_staging_path = g_staging_dir + "/" + std::to_string(getpid()) + "_" +
-                                     std::to_string(++g_staging_counter);
-      auto copy_result = wcl::reflink_or_copy_file(std::string(*src_staging_path), new_staging_path,
-                                                   src_mode & 07777);
-      if (!copy_result) return -copy_result.error();
+    std::string new_staging_path = create_unique_staging_path();
+    int res = link(src_staging_path->data(), new_staging_path.c_str());
+    if (res < 0) return -errno;
 
-      StagedItem sf;
-      sf.dest_path = keyt.second;
-      sf.job_id = keyf.first;
-      sf.data = StagedHardlinkData{new_staging_path, src_mode};
-      g_staged_files.insert(keyt.first, keyt.second, std::move(sf));
+    StagedItem sf;
+    sf.dest_path = keyt.second;
+    sf.job_id = keyf.first;
+    sf.data = StagedFileData{new_staging_path, src_sf->mode};
+    g_staged_files.insert(keyt.first, keyt.second, std::move(sf));
 
-      it->second.staged_paths.insert(keyt.second);
-      it->second.files_wrote.insert(keyt.second);
-      // Both hardlink paths need direct_io to prevent kernel caching issues
-      hardlinks.insert(std::string(from));
-      hardlinks.insert(std::string(to));
-      return 0;
-    }
+    it->second.staged_paths.insert(keyt.second);
+    it->second.files_wrote.insert(keyt.second);
+    return 0;
   }
 
-  // TODO: Remove the workspace hardlink fallback once WAKE_CAS is the default.
-  // Legacy mode (or non-staged source in CAS mode): create hardlink in workspace
-  if (!it->second.is_writeable(keyt.second)) (void)deep_unlink(context.rootfd, keyt.second.c_str());
-
-  int res = linkat(context.rootfd, keyf.second.c_str(), context.rootfd, keyt.second.c_str(), 0);
-  if (res == -1) return -errno;
-
-  hardlinks.insert(std::string(to));
-
-  it->second.files_wrote.insert(std::move(keyt.second));
-  return 0;
+  // "from" doesn't exist as a staged file.
+  return -EEXIST;
 }
 
 static int wakefuse_link_trace(const char *from, const char *to) {
@@ -1705,11 +1686,20 @@ static int wakefuse_chmod(const char *path, mode_t mode) {
 
   // Update mode in staged file if present
   if (StagedItem *sf = g_staged_files.find(key.first, key.second)) {
-    sf->set_mode(mode);
+    // Apply the mode to the backing file too, not just our metadata: access(R_OK) and the
+    // hashing/CAS steps after the job read that file directly. Keep it owner-readable so a
+    // job that chmods its own output write-only doesn't make it unreadable to them; getattr
+    // still reports the mode set below, so the extra bit isn't visible to the job.
+    if (auto spath = sf->staging_path()) {
+      if (chmod(spath->data(), (mode & 07777) | S_IRUSR) == -1) return -errno;
+    } else if (auto *s = std::get_if<StagedSpecialData>(&sf->data)) {
+      // Special nodes (sockets/fifos/devices) have a real backing node; keep its actual
+      // permissions in sync so access()/bind()/connect() agree with what getattr reports.
+      if (chmod(s->real_path.c_str(), mode & 07777) == -1) return -errno;
+    }
+    sf->set_mode(mode);  // after chmod, so a failure can't leave mode and disk diverged
     return 0;
   }
-  assert(!g_use_cas && "chmod writing to workspace file in virtualization mode");
-
   // TODO: Remove workspace writes once backwards compatibility is no longer needed
 #ifdef __linux__
   // Linux is broken and violates POSIX by returning EOPNOTSUPP even for non-symlinks
@@ -1856,14 +1846,17 @@ static int wakefuse_utimens(const char *path, const struct timespec ts[2]) {
       // File/hardlink: apply to backing (staing) file directly
       int res = utimensat(AT_FDCWD, spath->data(), ts, 0);
       if (res == -1) return -errno;
+    } else if (auto *s = std::get_if<StagedSpecialData>(&sf->data)) {
+      // Special node (socket/fifo/device): apply to its real backing node, since getattr
+      // reports mtime from that real node rather than from any in-memory metadata.
+      int res = utimensat(AT_FDCWD, s->real_path.c_str(), ts, 0);
+      if (res == -1) return -errno;
     } else {
       // Symlink/directory: no backing file, track in metadata
       sf->set_times(ts[0], ts[1]);
     }
     return 0;
   }
-  assert(!g_use_cas && "utimens writing to workspace file in virtualization mode");
-
   // TODO: Remove workspace writes once backwards compatibility is no longer needed
   int res = wake_utimensat(context.rootfd, key.second.c_str(), ts);
   if (res == -1) return -errno;
@@ -1921,18 +1914,24 @@ static int wakefuse_open(const char *path, struct fuse_file_info *fi) {
 
   if (!it->second.is_readable(key.second)) return -ENOENT;
 
-  if (hardlinks.count(std::string(path))) {
-    // Hardlinked staged files have independent staging copies; writes would not
-    // propagate to other links as a real hardlink would. Reject to avoid silent
-    // divergence between hardlinked outputs.
-    if ((fi->flags & O_ACCMODE) != O_RDONLY) return -EACCES;
+  StagedItem *sf = g_staged_files.find(key.first, key.second);
+  bool is_hardlink = sf && sf->is_hardlink();
+
+  if (is_hardlink) {
+    // TODO: This is insufficient if open() happens /then/ the file is linked.
     fi->direct_io = true;
   }
 
   // Check if file is staged (written by this job)
-  if (StagedItem *sf = g_staged_files.find(key.first, key.second)) {
+  if (sf) {
     // open() is not valid for directories
     if (sf->is_directory()) return -EISDIR;
+
+    // Special nodes (sockets/fifos/devices) have their open()/I/O handled in-kernel via
+    // init_special_inode() once getattr reports the type bits, so this handler is normally never
+    // reached for them. Guard defensively: refuse rather than risk a blocking open freezing the
+    // single-threaded daemon.
+    if (sf->is_special()) return -ENXIO;
 
     auto spath = sf->staging_path();
     if (!spath) return -EINVAL;
@@ -1944,30 +1943,23 @@ static int wakefuse_open(const char *path, struct fuse_file_info *fi) {
     return 0;
   }
 
-  // Check if this is a visible file with a known hash -> read from CAS (CAS mode only)
-  if (g_use_cas) {
+  // A visible file (including sources) is served from its CAS blob.
+  {
     auto visible_it = it->second.visible_entries.find(key.second);
     if (visible_it != it->second.visible_entries.end() && visible_it->second.content_hash) {
       const std::string &type = visible_it->second.type;
       if (type != "symlink" && type != "directory") {
         std::string blob_path = cas_blob_path(*visible_it->second.content_hash);
         int fd = open(blob_path.c_str(), O_RDONLY);
-        if (fd != -1) {
-          fi->fh = fd;
-          return 0;
-        }
-        // Fall through to workspace if CAS blob not found
+        if (fd == -1) return -errno;
+        fi->fh = fd;
+        return 0;
       }
     }
   }
 
-  // Fallback: read from workspace
-  // TODO: Remove workspace fallback once Source adds files to CAS directly
-  int fd = openat(context.rootfd, key.second.c_str(), fi->flags, 0);
-  if (fd == -1) return -errno;
-
-  fi->fh = fd;
-  return 0;
+  // All visible content is served from CAS; nothing else exists in the virtualized view.
+  return -ENOENT;
 }
 
 static int wakefuse_open_trace(const char *path, struct fuse_file_info *fi) {
@@ -2086,12 +2078,13 @@ static int wakefuse_statfs(const char *path, struct statvfs *stbuf) {
     auto it = context.jobs.find(key.first);
     if (it == context.jobs.end()) {
       return -ENOENT;
-    } else if (key.second == ".") {
-      fd = dup(context.rootfd);
-    } else if (!it->second.is_readable(key.second)) {
+    } else if (key.second != "." && !it->second.is_readable(key.second)) {
       return -ENOENT;
     } else {
-      fd = openat(context.rootfd, key.second.c_str(), O_RDONLY | O_NOFOLLOW);
+      // statfs reports filesystem-wide statistics, identical for every path on the
+      // filesystem hosting the workspace and CAS. Use the workspace root rather than
+      // opening the (possibly CAS-only) path in the real workspace.
+      fd = dup(context.rootfd);
     }
   }
   if (fd == -1) return -errno;
@@ -2405,16 +2398,11 @@ int main(int argc, char *argv[]) {
   bool madedir;
   struct rlimit rlim;
 
-  if (argc < 3 || argc > 4) {
-    fprintf(stderr, "Syntax: fuse-waked <mount-point> <min-timeout-seconds> [--use-cas]\n");
+  if (argc != 3) {
+    fprintf(stderr, "Syntax: fuse-waked <mount-point> <min-timeout-seconds>\n");
     goto term;
   }
   path = argv[1];
-
-  // Check for --use-cas flag
-  if (argc == 4 && strcmp(argv[3], "--use-cas") == 0) {
-    g_use_cas = true;
-  }
 
   linger_timeout = atol(argv[2]);
   if (linger_timeout < 1) linger_timeout = 1;

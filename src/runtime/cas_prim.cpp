@@ -429,6 +429,7 @@ static PRIMFN(prim_materialize_staged_workspace_item) {
 // prim "cas_ingest_staged_item" destPath type stagingPathOrTarget hash -> Result Unit Error
 // Stores staged content in CAS under its precomputed hash. Does not write to the workspace.
 // - type="file": stagingPathOrTarget = staging path
+// - type="string": stagingPathOrTarget = inline file contents
 // - type="symlink": stagingPathOrTarget = symlink target
 // - type="directory": no-op (directories have no CAS blob)
 static PRIMTYPE(type_cas_ingest_staged_item) {
@@ -491,6 +492,24 @@ static PRIMFN(prim_cas_ingest_staged_item) {
 
     cleanup_staging_file(staging_path, dest_str);
 
+  } else if (type == "string") {
+    std::string content(staging_path_or_target->c_str(), staging_path_or_target->size());
+    cas::ContentHash expected_hash;
+    std::string parse_error;
+    if (!parse_hash_string(hash_str->c_str(), expected_hash, parse_error)) {
+      runtime.heap.reserve(reserve_result() + String::reserve(parse_error.size()));
+      auto err = String::claim(runtime.heap, parse_error);
+      RETURN(claim_result(runtime.heap, false, err));
+    }
+
+    auto store_result = store->store_blob_with_hash(content, expected_hash);
+    if (!store_result) {
+      std::string msg = "Failed to store inline staged file in CAS for " + dest_str;
+      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+      auto err = String::claim(runtime.heap, msg);
+      RETURN(claim_result(runtime.heap, false, err));
+    }
+
   } else if (type == "symlink") {
     // Handle symlink: insert the target bytes into CAS under the precomputed hash.
     std::string target = staging_path_or_target->c_str();
@@ -524,12 +543,120 @@ static PRIMFN(prim_cas_ingest_staged_item) {
   RETURN(claim_result(runtime.heap, true, claim_unit(runtime.heap)));
 }
 
+// prim "cas_blob_abs_path" hash -> Result String Error
+// Returns the absolute filesystem path to the CAS-managed blob for the given content hash.
+// Fails if the blob is not present in CAS. Result is a filesystem path that may be passed
+// directly to upload tools (e.g. RSC blob POST) without reading through the workspace.
+static PRIMTYPE(type_cas_blob_abs_path) {
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeString);
+  result[1].unify(Data::typeString);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(result);
+}
+
+static PRIMFN(prim_cas_blob_abs_path) {
+  CASContext* ctx = static_cast<CASContext*>(data);
+  EXPECT(1);
+  STRING(hash_str, 0);
+
+  cas::Cas* store = ctx->get_store();
+  if (!store) {
+    runtime.heap.reserve(reserve_result() + String::reserve(28));
+    auto err = String::claim(runtime.heap, "CAS store not initialized");
+    RETURN(claim_result(runtime.heap, false, err));
+  }
+
+  cas::ContentHash hash;
+  std::string parse_error;
+  if (!parse_hash_string(hash_str->c_str(), hash, parse_error)) {
+    runtime.heap.reserve(reserve_result() + String::reserve(parse_error.size()));
+    auto err = String::claim(runtime.heap, parse_error);
+    RETURN(claim_result(runtime.heap, false, err));
+  }
+
+  if (!store->has_blob(hash)) {
+    std::string msg = "Blob not in CAS: " + std::string(hash_str->c_str());
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    auto err = String::claim(runtime.heap, msg);
+    RETURN(claim_result(runtime.heap, false, err));
+  }
+
+  std::string path = store->blob_path(hash);
+  runtime.heap.reserve(reserve_result() + String::reserve(path.size()));
+  RETURN(claim_result(runtime.heap, true, String::claim(runtime.heap, path)));
+}
+
+static PRIMTYPE(type_cas_alloc_staging_dir) {
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeString);
+  result[1].unify(Data::typeString);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(result);
+}
+
+static PRIMFN(prim_cas_alloc_staging_dir) {
+  CASContext* ctx = static_cast<CASContext*>(data);
+  EXPECT(1);
+  STRING(prefix, 0);
+  cas::Cas* store = ctx->get_store();
+  if (!store) {
+    std::string msg = "CAS store not initialized";
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, msg)));
+  }
+  auto result = store->alloc_staging_dir(prefix->c_str());
+  if (!result) {
+    std::string msg =
+        "Failed to allocate CAS staging directory: " + cas::cas_error_to_string(result.error());
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, msg)));
+  }
+  runtime.heap.reserve(reserve_result() + String::reserve(result->size()));
+  RETURN(claim_result(runtime.heap, true, String::claim(runtime.heap, *result)));
+}
+
+static PRIMTYPE(type_cas_remove_staging_dir) {
+  TypeVar result;
+  Data::typeResult.clone(result);
+  result[0].unify(Data::typeUnit);
+  result[1].unify(Data::typeString);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(result);
+}
+
+static PRIMFN(prim_cas_remove_staging_dir) {
+  CASContext* ctx = static_cast<CASContext*>(data);
+  EXPECT(1);
+  STRING(path, 0);
+  cas::Cas* store = ctx->get_store();
+  if (!store) {
+    std::string msg = "CAS store not initialized";
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, msg)));
+  }
+  auto result = store->remove_staging_dir(path->c_str());
+  if (!result) {
+    std::string msg =
+        "Failed to remove CAS staging directory: " + cas::cas_error_to_string(result.error());
+    runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
+    RETURN(claim_result(runtime.heap, false, String::claim(runtime.heap, msg)));
+  }
+  runtime.heap.reserve(reserve_result() + reserve_unit());
+  RETURN(claim_result(runtime.heap, true, claim_unit(runtime.heap)));
+}
+
 // ============================================================================
 // Primitive Registration
 // ============================================================================
 
 void prim_register_cas(CASContext* ctx, PrimMap& pmap) {
   prim_register(pmap, "cas_dir", prim_cas_dir, type_cas_dir, PRIM_PURE, ctx);
+  prim_register(pmap, "cas_blob_abs_path", prim_cas_blob_abs_path, type_cas_blob_abs_path,
+                PRIM_PURE, ctx);
+  prim_register(pmap, "cas_alloc_staging_dir", prim_cas_alloc_staging_dir,
+                type_cas_alloc_staging_dir, PRIM_IMPURE, ctx);
+  prim_register(pmap, "cas_remove_staging_dir", prim_cas_remove_staging_dir,
+                type_cas_remove_staging_dir, PRIM_IMPURE, ctx);
   prim_register(pmap, "cas_materialize_item", prim_cas_materialize_item, type_cas_materialize_item,
                 PRIM_IMPURE, ctx);
   prim_register(pmap, "materialize_staged_workspace_item", prim_materialize_staged_workspace_item,

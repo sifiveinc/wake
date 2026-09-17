@@ -48,10 +48,10 @@ void Work::format(std::ostream &os, FormatState &state) const { os << "Work"; }
 
 Category Work::category() const { return WORK; }
 
-Runtime::Runtime(Profile *profile_, int profile_heap, double heap_factor)
+Runtime::Runtime(Profile *profile_, int profile_heap, double heap_factor, double heap_pivot_mb)
     : abort(false),
       profile(profile_),
-      heap(profile_heap, heap_factor),
+      heap(profile_heap, heap_factor, heap_pivot_mb),
       stack(heap.root<Work>(nullptr)),
       output(heap.root<HeapObject>(nullptr)),
       sources(heap.root<HeapObject>(nullptr)) {

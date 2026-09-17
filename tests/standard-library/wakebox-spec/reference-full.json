@@ -1,0 +1,59 @@
+{
+  "label": "my-label",
+  "command": [
+    "cmd",
+    "--flag"
+  ],
+  "environment": [
+    "HOME=/home/user",
+    "PATH=/bin"
+  ],
+  "directory": ".",
+  "stdin": "",
+  "cas-dir": "/cas",
+  "isolate-network": true,
+  "isolate-pids": true,
+  "hostname": "myhost",
+  "domainname": "example.com",
+  "user-id": 1000,
+  "group-id": 1001,
+  "command-timeout": 3600,
+  "version": "1.0",
+  "runner": "/bin/runner",
+  "mount-ops": [
+    {
+      "type": "bind",
+      "source": "/src",
+      "destination": "/dst",
+      "read_only": false
+    },
+    {
+      "type": "bind",
+      "source": "/rsrc",
+      "destination": "/rdst",
+      "read_only": true
+    },
+    {
+      "type": "squashfs",
+      "source": "/sq.img",
+      "destination": "/mnt"
+    },
+    {
+      "type": "tmpfs",
+      "destination": "/tmp"
+    },
+    {
+      "type": "create-dir",
+      "destination": "/newdir"
+    },
+    {
+      "type": "create-file",
+      "destination": "/newfile"
+    },
+    {
+      "type": "workspace",
+      "destination": "."
+    }
+  ],
+  "visible": []
+}

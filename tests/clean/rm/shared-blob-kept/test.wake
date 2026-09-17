@@ -1,0 +1,8 @@
+# Test: CAS blob kept when other jobs reference it
+
+export def makeShared (args: List String) =
+    def content = "shared"
+
+    map (write _ content) args
+    | findFail
+    | rmap (\_ Unit)

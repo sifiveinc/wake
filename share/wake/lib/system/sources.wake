@@ -22,6 +22,12 @@ package wake
 # Anything published to this topic will be returned by calls to `sources`.
 export topic source: String
 
+def sourceJobCommandPrefix: String =
+    "<source>"
+
+def claimJobCommandPrefix: String =
+    "<claim>"
+
 # Private implementation of global sources
 def add_sources str =
     prim "add_sources"
@@ -45,7 +51,7 @@ def raw_source file =
     if time == -1 then
         failWithError "{file}: source does not exist. Did you delete it or move it without telling git?"
     else
-        makeExecPlan ("<source>", str time, file, Nil) Nil
+        makeExecPlan (sourceJobCommandPrefix, str time, file, Nil) Nil
         | setPlanLabel "source: {file}"
         | setPlanShare False
         | setPlanEcho logDebug
@@ -99,7 +105,7 @@ export def claim (file: String): Result Path Error =
         else
             # Its important that the command here is distinct from what `source` would use
             # so that claim and source do not overlap.
-            makeExecPlan ("<claim>", str time, file, Nil) Nil
+            makeExecPlan (claimJobCommandPrefix, str time, file, Nil) Nil
             | setPlanLabel "claim: {file}"
             | setPlanShare False
             | setPlanEcho logDebug

@@ -62,6 +62,9 @@ struct JobTable {
   // Wait for a job to complete; false -> no more active jobs
   bool wait(Runtime &runtime);
   static bool exit_now();
+
+  // Get the database pointer
+  Database *get_db() const;
 };
 
 #endif

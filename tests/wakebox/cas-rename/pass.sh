@@ -7,7 +7,6 @@
 set -eu
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
-export WAKE_CAS=1
 
 trap 'rm -rf renamed.txt renamed_dir' EXIT
 

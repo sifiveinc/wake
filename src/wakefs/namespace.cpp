@@ -27,6 +27,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sched.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
@@ -491,7 +492,7 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
   prctl(PR_SET_NAME, "wb-pid-ns", 0, 0, 0);
   // This process should terminate if the parent process exits.
   if (prctl(PR_SET_PDEATHSIG, SIGKILL) == -1) {
-    std::cerr << "pidns_init prctl: " << strerror(errno) << std::endl;
+    dprintf(STDERR_FILENO, "pidns_init prctl: %s\n", strerror(errno));
     exit(1);
   }
 
@@ -502,8 +503,8 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
   // than leaking process ids from the exterior namespace.
   int err = mount("proc", "/proc", "proc", 0, nullptr);
   if (err == -1) {
-    std::cerr << "new pid namespace: mount('proc', '/proc', 'proc', 0, nullptr): "
-              << strerror(errno) << std::endl;
+    dprintf(STDERR_FILENO, "new pid namespace: mount('proc', '/proc', 'proc', 0, nullptr): %s\n",
+            strerror(errno));
     exit(1);
   }
 
@@ -512,7 +513,7 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
     // Execute the user-specified command.
     const auto *args = reinterpret_cast<const pidns_args *>(arg);
     err = execve_wrapper(args->command, args->environment);
-    std::cerr << "execve " << args->command[0] << ": " << strerror(err) << std::endl;
+    dprintf(STDERR_FILENO, "execve %s: %s\n", args->command[0].c_str(), strerror(err));
     exit(1);
   }
 
@@ -531,7 +532,7 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
       if (errno == EINTR) {
         continue;  // Interrupted by signal, try again
       }
-      std::cerr << "waitpid: " << strerror(errno) << std::endl;
+      dprintf(STDERR_FILENO, "waitpid: %s\n", strerror(errno));
       exit(1);
     }
 
@@ -543,7 +544,7 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
   }
 
   if (!user_cmd_finished) {
-    std::cerr << "waitpid: user command did not terminate" << std::endl;
+    dprintf(STDERR_FILENO, "waitpid: user command did not terminate\n");
     exit(1);
   }
 
@@ -556,7 +557,7 @@ bool setup_user_namespaces(int id_user, int id_group, bool isolate_network,
 
 [[noreturn]] void exec_in_pidns(pidns_args &nsargs) {
   alignas(16) uint8_t stack_buf[4096];
-  void *child_stack = reinterpret_cast<void *>(stack_buf + sizeof(child_stack));
+  void *child_stack = reinterpret_cast<void *>(stack_buf + sizeof(stack_buf));
 
   // Create a new thread in a PID namespace, calling pidns_init.
   pid_t child_pid = clone(pidns_init, child_stack, CLONE_NEWPID | SIGCHLD, &nsargs);

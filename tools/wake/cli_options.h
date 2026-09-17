@@ -41,6 +41,9 @@ struct CommandLineOptions {
   bool last_use;
   bool last_exe;
   bool history;
+  bool ps;
+  bool attach;
+  bool active;
   bool lsp;
   bool failed;
   bool script;
@@ -62,9 +65,14 @@ struct CommandLineOptions {
   bool simple_timeline;
   bool simple;
   bool canceled;
+  bool queued;
+  bool in_flight;
   bool clean;
+  bool prune;
   bool list_outputs;
   bool include_hidden;
+  bool rm;
+  bool recursive;
   std::optional<bool> log_header_align;
   std::optional<bool> cache_miss_on_failure;
 
@@ -72,6 +80,7 @@ struct CommandLineOptions {
   const char *jobs_str;
   const char *memory_str;
   const char *heapf;
+  const char *heappivot;
   const char *profile;
   const char *init;
   const char *chdir;
@@ -89,6 +98,7 @@ struct CommandLineOptions {
   const char *label_filter;  // TODO: Allow unions of multiple filters
   const char *log_header;
   const char *user_config;
+  const char *attach_job_id;
 
   std::optional<int64_t> log_header_source_width;
 
@@ -124,6 +134,7 @@ struct CommandLineOptions {
       {0, "batch", GOPT_ARGUMENT_FORBIDDEN},
       {0, "fatal-warnings", GOPT_ARGUMENT_FORBIDDEN},
       {0, "heap-factor", GOPT_ARGUMENT_REQUIRED | GOPT_ARGUMENT_NO_HYPHEN},
+      {0, "heap-pivot", GOPT_ARGUMENT_REQUIRED | GOPT_ARGUMENT_NO_HYPHEN},
       {0, "profile-heap", GOPT_ARGUMENT_FORBIDDEN | GOPT_REPEATABLE},
       {0, "profile", GOPT_ARGUMENT_REQUIRED},
       {'C', "chdir", GOPT_ARGUMENT_REQUIRED},
@@ -138,6 +149,11 @@ struct CommandLineOptions {
       {0, "last-used", GOPT_ARGUMENT_FORBIDDEN},
       {0, "last-executed", GOPT_ARGUMENT_FORBIDDEN},
       {0, "history", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "ps", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "attach", GOPT_ARGUMENT_REQUIRED},
+      {0, "active", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "queued", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "in-flight", GOPT_ARGUMENT_FORBIDDEN},
       {0, "lsp", GOPT_ARGUMENT_FORBIDDEN},
       {'f', "failed", GOPT_ARGUMENT_FORBIDDEN},
       {'s', "script", GOPT_ARGUMENT_FORBIDDEN},
@@ -166,7 +182,10 @@ struct CommandLineOptions {
       {0, "stdout", GOPT_ARGUMENT_REQUIRED},
       {0, "stderr", GOPT_ARGUMENT_REQUIRED},
       {0, "clean", GOPT_ARGUMENT_FORBIDDEN },
+      {0, "prune", GOPT_ARGUMENT_FORBIDDEN },
       {0, "list-outputs", GOPT_ARGUMENT_FORBIDDEN },
+      {0, "rm", GOPT_ARGUMENT_FORBIDDEN },
+      {'r', "recursive", GOPT_ARGUMENT_FORBIDDEN},
       {0, "fd:3", GOPT_ARGUMENT_REQUIRED},
       {0, "fd:4", GOPT_ARGUMENT_REQUIRED},
       {0, "fd:5", GOPT_ARGUMENT_REQUIRED},
@@ -200,6 +219,11 @@ struct CommandLineOptions {
     last_use = arg(options, "last")->count || arg(options, "last-used")->count;
     last_exe = arg(options, "last-executed")->count;
     history = arg(options, "history")->count;
+    ps = arg(options, "ps")->count;
+    attach = arg(options, "attach")->count;
+    active = arg(options, "active")->count;
+    queued = arg(options, "queued")->count;
+    in_flight = arg(options, "in-flight")->count;
     lsp = arg(options, "lsp")->count;
     failed = arg(options, "failed")->count;
     script = arg(options, "script")->count;
@@ -222,13 +246,17 @@ struct CommandLineOptions {
     simple = arg(options, "simple")->count;
     canceled = arg(options, "canceled")->count;
     clean = arg(options, "clean")->count;
+    prune = arg(options, "prune")->count;
     list_outputs = arg(options, "list-outputs")->count;
     include_hidden = arg(options, "include-hidden")->count;
+    rm = arg(options, "rm")->count;
+    recursive = arg(options, "recursive")->count;
 
     percent_str = arg(options, "percent")->argument;
     jobs_str = arg(options, "jobs")->argument;
     memory_str = arg(options, "memory")->argument;
     heapf = arg(options, "heap-factor")->argument;
+    heappivot = arg(options, "heap-pivot")->argument;
     profile = arg(options, "profile")->argument;
     init = arg(options, "init")->argument;
     chdir = arg(options, "chdir")->argument;
@@ -246,6 +274,7 @@ struct CommandLineOptions {
     label_filter = arg(options, "label-filter")->argument;
     log_header = arg(options, "log-header")->argument;
     user_config = arg(options, "user-config")->argument;
+    attach_job_id = arg(options, "attach")->argument;
 
     if (arg(options, "log-header-align")->count) {
       log_header_align = std::make_optional(true);
@@ -317,6 +346,12 @@ struct CommandLineOptions {
   std::optional<std::string> validate() {
     if (quiet && verbose) {
       return std::optional<std::string>{"Cannot specify both -v and -q!"};
+    }
+
+    if (attach) {
+      if (!job_ids.empty()) {
+        return std::optional<std::string>{"--attach takes a job id directly; do not use --job!"};
+      }
     }
 
     if (profile && !debug) {
