@@ -24,5 +24,10 @@ MANIFEST=$(sed -n 's/.*"recovery_manifest":"\([^"]*\)".*/\1/p' "$STATS_FILE")
 [ -f "$MANIFEST" ] || { echo "FAIL: recovery manifest was not written"; exit 1; }
 grep -q '"version":1' "$MANIFEST" || { echo "FAIL: recovery manifest version missing"; cat "$MANIFEST"; exit 1; }
 grep -q '"destination":"test_output.txt"' "$MANIFEST" || { echo "FAIL: recovery manifest output missing"; cat "$MANIFEST"; exit 1; }
+case "$MANIFEST" in
+  */wakebox-*-*.json) ;;
+  *) echo "FAIL: standalone manifest has unexpected name: $MANIFEST"; exit 1 ;;
+esac
+! grep -q '"wake_run_id"' "$MANIFEST" || { echo "FAIL: standalone manifest contains Wake IDs"; cat "$MANIFEST"; exit 1; }
 
 echo "PASS"

@@ -397,6 +397,8 @@ export tuple WakeboxSpec =
     export Version: Option String
     export Runner: Option String
     export CasDir: String
+    export WakeRunId: Option Integer
+    export WakeJobId: Option Integer
     export MountOps: List WakeboxMountOp
     export Visible: List Path
 
@@ -549,6 +551,7 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
     def executeOk = access script xOK
 
     def run (job: Job) ((RunnerInput label command visible environment directory stdin res prefix record isatty fnInputs fnOutputs): RunnerInput): RunnerOutput =
+        def currentWakeRunId: Integer = prim "current_run_id"
         require True = executeOk
         else
             def runnerError = "Runner {script} is not executable".makeError
@@ -604,6 +607,8 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             (Some version)
             (Some script)
             primCasDir
+            (Some currentWakeRunId)
+            (Some (getJobId job))
             mountOps
             visible
 

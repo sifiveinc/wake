@@ -53,7 +53,8 @@ struct daemon_client {
   daemon_client(const std::string &base_dir);
 
   bool connect(std::vector<visible_file> &visible, const std::string &cas_dir,
-               bool close_live_file);
+               bool close_live_file, std::optional<long> wake_run_id,
+               std::optional<long> wake_job_id);
   bool disconnect(std::string &result);
 
  protected:
@@ -68,6 +69,8 @@ struct json_args {
   std::vector<visible_file> visible;  // Visible files with path, type, hash, and mode
   std::string directory;
   std::string stdin_file;
+  std::optional<long> wake_run_id;
+  std::optional<long> wake_job_id;
   std::string
       cas_dir;  // Root of the CAS layout; blobs at {cas_dir}/blobs, staging at {cas_dir}/staging.
 

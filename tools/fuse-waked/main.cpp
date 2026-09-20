@@ -314,6 +314,8 @@ struct Job {
   int json_out_uses;
   int uses;
   std::string recovery_manifest;
+  std::optional<long> wake_run_id;
+  std::optional<long> wake_job_id;
 
   Job() : ibytes(0), obytes(0), json_in_uses(0), json_out_uses(0), uses(0) {}
 
@@ -332,6 +334,25 @@ void Job::parse() {
   std::stringstream s;
   if (!JAST::parse(json_in, s, jast)) {
     fprintf(stderr, "Parse error: %s\n", s.str().c_str());
+    return;
+  }
+
+  JAST run_id = jast.get("wake_run_id");
+  JAST job_id = jast.get("wake_job_id");
+  if (run_id.kind != job_id.kind) {
+    fprintf(stderr, "fuse-waked: wake_run_id and wake_job_id must be provided together\n");
+    return;
+  }
+  if (run_id.kind == JSON_INTEGER) {
+    try {
+      wake_run_id = std::stol(run_id.value);
+      wake_job_id = std::stol(job_id.value);
+    } catch (const std::exception &e) {
+      fprintf(stderr, "fuse-waked: invalid Wake identity: %s\n", e.what());
+      return;
+    }
+  } else if (run_id.kind != JSON_NULLVAL) {
+    fprintf(stderr, "fuse-waked: wake_run_id and wake_job_id must be integer values\n");
     return;
   }
 
@@ -506,8 +527,10 @@ bool Job::snapshot_recovery_manifest(const std::string &job_id) {
   }
   struct timespec now;
   clock_gettime(CLOCK_REALTIME, &now);
-  const std::string name = std::to_string(getpid()) + "-" + job_id + "-" +
-                           std::to_string(now.tv_sec) + "-" + std::to_string(now.tv_nsec) + ".json";
+  const std::string name = wake_run_id
+                               ? "run-" + std::to_string(*wake_run_id) + "-job-" +
+                                     std::to_string(*wake_job_id) + ".json"
+                               : "wakebox-" + std::to_string(getpid()) + "-" + job_id + ".json";
   const std::string final_path = recovery_dir + "/" + name;
   const std::string temporary_path = recovery_dir + "/." + name + ".tmp";
 
@@ -519,6 +542,10 @@ bool Job::snapshot_recovery_manifest(const std::string &job_id) {
   manifest.add("job_key", job_id);
   manifest.add("daemon_pid", static_cast<long>(getpid()));
   manifest.add("created_at_ns", static_cast<long long>(now.tv_sec) * 1000000000LL + now.tv_nsec);
+  if (wake_run_id) {
+    manifest.add("wake_run_id", *wake_run_id);
+    manifest.add("wake_job_id", *wake_job_id);
+  }
   JAST& entries = manifest.add("entries", JSON_ARRAY);
   if (auto *job_staged = g_staged_files.get_job(job_id)) {
     for (const auto &entry : *job_staged) {

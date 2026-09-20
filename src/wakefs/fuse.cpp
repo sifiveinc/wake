@@ -142,6 +142,25 @@ bool json_as_struct(const std::string &json, json_args &result) {
   result.directory = jast.get("directory").value;
   result.stdin_file = jast.get("stdin").value;
 
+  JAST wake_run_id = jast.get("wake_run_id");
+  JAST wake_job_id = jast.get("wake_job_id");
+  if (wake_run_id.kind != wake_job_id.kind) {
+    std::cerr << "wake_run_id and wake_job_id must be provided together" << std::endl;
+    return false;
+  }
+  if (wake_run_id.kind == JSON_INTEGER) {
+    try {
+      result.wake_run_id = std::stol(wake_run_id.value);
+      result.wake_job_id = std::stol(wake_job_id.value);
+    } catch (const std::exception &e) {
+      std::cerr << "wake_run_id and wake_job_id must be integer values: " << e.what() << std::endl;
+      return false;
+    }
+  } else if (wake_run_id.kind != JSON_NULLVAL) {
+    std::cerr << "wake_run_id and wake_job_id must be integer values" << std::endl;
+    return false;
+  }
+
   result.isolate_network = jast.get("isolate-network").kind == JSON_TRUE;
   result.isolate_pids = jast.get("isolate-pids").kind == JSON_TRUE;
 
@@ -228,7 +247,9 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     return false;
   }
 
-  if (!args.daemon.connect(args.visible, args.cas_dir, args.isolate_pids)) return false;
+  if (!args.daemon.connect(args.visible, args.cas_dir, args.isolate_pids, args.wake_run_id,
+                           args.wake_job_id))
+    return false;
 
   struct timeval start;
   gettimeofday(&start, 0);

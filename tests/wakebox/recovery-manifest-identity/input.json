@@ -1,0 +1,12 @@
+{
+  "command": ["/bin/sh", "-c", "echo wake > output.txt"],
+  "environment": ["USER=root", "HOME=/root", "PATH=/usr/bin:/bin:/usr/sbin:/sbin"],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "wake_run_id": 42,
+  "wake_job_id": 7,
+  "mount-ops": [{"type": "workspace", "destination": "."}],
+  "visible": []
+}

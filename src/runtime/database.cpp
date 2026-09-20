@@ -943,6 +943,8 @@ void Database::prepare(const std::string &cmdline) {
   end_txn();
 }
 
+long Database::current_run_id() const { return imp->run_id; }
+
 void Database::finish_run() {
   auto ts = gettime_ns();
 
@@ -2501,6 +2503,17 @@ static PRIMFN(prim_rm_generated) {
   }
 }
 
+static PRIMTYPE(type_current_run_id) {
+  return args.empty() && out->unify(Data::typeInteger);
+}
+
+static PRIMFN(prim_current_run_id) {
+  auto *db = static_cast<Database *>(data);
+  EXPECT(0);
+  MPZ result(db->current_run_id());
+  RETURN(Integer::alloc(runtime.heap, result));
+}
+
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,
                                                                   sqlite3_stmt *query) {
   const char *why = "Could not get file dependencies";
@@ -2920,4 +2933,5 @@ void Database::gc_if_dead(const std::vector<std::string> &hashes,
 void prim_register_database(Database *db, CASContext *cas_ctx, PrimMap &pmap) {
   static std::pair<Database *, CASContext *> rm_ctx(db, cas_ctx);
   prim_register(pmap, "rm_generated", prim_rm_generated, type_rm_generated, PRIM_IMPURE, &rm_ctx);
+  prim_register(pmap, "current_run_id", prim_current_run_id, type_current_run_id, PRIM_PURE, db);
 }
