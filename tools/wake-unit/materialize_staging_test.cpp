@@ -101,6 +101,17 @@ TEST(staging_manifest_rejects_unsafe_input, "cas") {
       &manifest, &error));
 }
 
+TEST(staging_manifest_wake_identity_is_paired, "cas") {
+  wakefs::StagingManifest manifest;
+  std::string error;
+  EXPECT_FALSE(wakefs::parse_staging_manifest(
+      R"({"version":1,"job_key":"job","created_at_ns":1,"materialization_complete":false,"wake_run_id":1,"entries":[]})",
+      &manifest, &error));
+  EXPECT_FALSE(wakefs::parse_staging_manifest(
+      R"({"version":1,"job_key":"job","created_at_ns":1,"materialization_complete":false,"wake_run_id":"1","wake_job_id":2,"entries":[]})",
+      &manifest, &error));
+}
+
 TEST(staging_manifest_workspace_materialization_retries, "cas") {
   const std::string root = test_root("retry");
   fs::create_directories(staging(root));
@@ -313,4 +324,24 @@ TEST(staging_manifest_materializes_relocated_record, "cas") {
   EXPECT_FALSE(fs::exists(copied_manifest));
   fs::remove_all(source);
   fs::remove_all(destination);
+}
+
+TEST(staging_manifest_discovery_preserves_wake_identity, "cas") {
+  const std::string root = test_root("identity");
+  fs::create_directories(staging(root) + "/recovery");
+  std::string error;
+  wakefs::StagingManifest manifest = basic_manifest(root);
+  manifest.wake_run_id = 42;
+  manifest.wake_job_id = 7;
+  const std::string manifest_path = staging(root) + "/recovery/run-42-job-7.json";
+  ASSERT_TRUE(wakefs::write_staging_manifest_atomic(manifest_path, manifest, &error));
+
+  std::vector<wakefs::CompletedStagingManifest> manifests;
+  ASSERT_TRUE(wakefs::discover_completed_staging_manifests(staging(root) + "/recovery", &manifests,
+                                                           &error));
+  ASSERT_TRUE(manifests[0].manifest.wake_run_id.has_value());
+  ASSERT_TRUE(manifests[0].manifest.wake_job_id.has_value());
+  EXPECT_EQUAL(*manifests[0].manifest.wake_run_id, 42);
+  EXPECT_EQUAL(*manifests[0].manifest.wake_job_id, 7);
+  fs::remove_all(root);
 }

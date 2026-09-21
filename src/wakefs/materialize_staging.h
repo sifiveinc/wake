@@ -73,8 +73,6 @@ struct StagingMaterializationSummary {
   bool success() const { return failed == 0; }
 };
 
-// Restore every output beneath the current workspace, persist a manifest-level
-// completion checkpoint, then consume only its named regular staging sources.
 // A parsed completed manifest. Wakebox processes recovered manifests in creation
 // time and filename order.
 struct CompletedStagingManifest {
