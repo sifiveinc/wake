@@ -1,4 +1,4 @@
-/* Wake FUSE driver to capture file access and outputs
+/* Wake FUSE driver to capture file outputs
  *
  * Copyright 2019 SiFive, Inc.
  * Copyright 2001-2007  Miklos Szeredi <miklos@szeredi.hu>
@@ -302,7 +302,6 @@ struct Job {
 
   std::set<std::string> files_visible;
   std::map<std::string, VisibleEntry> visible_entries;  // path -> type/hash/mode for CAS reads
-  std::set<std::string> files_read;
   std::set<std::string> files_wrote;
   std::set<std::string> staged_paths;  // Paths staged for CAS (for is_readable)
   std::string json_in;
@@ -950,7 +949,6 @@ static int wakefuse_readlink(const char *path, char *buf, size_t size) {
       size_t len = std::min(l->target.size(), size - 1);
       memcpy(buf, l->target.c_str(), len);
       buf[len] = '\0';
-      it->second.files_read.insert(std::move(key.second));
       return 0;
     }
   }
@@ -967,7 +965,6 @@ static int wakefuse_readlink(const char *path, char *buf, size_t size) {
           size_t len = std::min(target.size(), size - 1);
           memcpy(buf, target.c_str(), len);
           buf[len] = '\0';
-          it->second.files_read.insert(std::move(key.second));
           return 0;
         }
       }
@@ -1313,7 +1310,6 @@ static int wakefuse_unlink(const char *path) {
     g_staged_files.erase(key.first, key.second);
     it->second.staged_paths.erase(key.second);
     it->second.files_wrote.erase(key.second);
-    it->second.files_read.erase(key.second);
     return 0;
   }
 
@@ -1322,7 +1318,6 @@ static int wakefuse_unlink(const char *path) {
   if (res == -1) return -errno;
 
   it->second.files_wrote.erase(key.second);
-  it->second.files_read.erase(key.second);
   return 0;
 }
 
@@ -1367,7 +1362,6 @@ static int wakefuse_rmdir(const char *path) {
       g_staged_files.erase(key.first, key.second);
       it->second.staged_paths.erase(key.second);
       it->second.files_wrote.erase(key.second);
-      it->second.files_read.erase(key.second);
       return 0;
     }
   }
@@ -1384,7 +1378,6 @@ static int wakefuse_rmdir(const char *path) {
   }
 
   it->second.files_wrote.erase(key.second);
-  it->second.files_read.erase(key.second);
   return 0;
 }
 
@@ -1548,17 +1541,15 @@ static int wakefuse_rename(const char *from, const char *to) {
     it->second.staged_paths.erase(keyf.second);
     it->second.staged_paths.insert(keyt.second);
     it->second.files_wrote.erase(keyf.second);
-    it->second.files_read.erase(keyf.second);
     it->second.files_wrote.insert(keyt.second);
 
     // If this is a directory, also move all children in g_staged_files, staged_paths,
-    // files_wrote, and files_read. This ensures that files inside a renamed directory
-    // are still accessible under the new path.
+    // and files_wrote. This ensures that files inside a renamed directory are still
+    // accessible under the new path.
     if (sf.is_directory()) {
       move_staged_children(keyf.first, keyf.second, keyt.second);
       move_members(it->second.staged_paths, it->second.staged_paths, keyf.second, keyt.second);
       move_members(it->second.files_wrote, it->second.files_wrote, keyf.second, keyt.second);
-      move_members(it->second.files_read, it->second.files_read, keyf.second, keyt.second);
     }
 
     return 0;
@@ -1571,12 +1562,10 @@ static int wakefuse_rename(const char *from, const char *to) {
   if (res == -1) return -errno;
 
   it->second.files_wrote.erase(keyf.second);
-  it->second.files_read.erase(keyf.second);
   it->second.files_wrote.insert(keyt.second);
 
   // Move any children as well
   move_members(it->second.files_wrote, it->second.files_wrote, keyf.second, keyt.second);
-  move_members(it->second.files_read, it->second.files_wrote, keyf.second, keyt.second);
 
   return 0;
 }
@@ -1980,7 +1969,6 @@ static int wakefuse_read(const char *path, char *buf, size_t size, off_t offset,
     if (res == -1) res = -errno;
 
     it->second.ibytes += res;
-    it->second.files_read.insert(std::move(key.second));
     return res;
   }
 
