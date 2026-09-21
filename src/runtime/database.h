@@ -118,7 +118,6 @@ struct JobReflection {
   std::vector<std::pair<std::string, int>> std_writes;
   Usage usage;
   std::vector<FileReflection> visible;
-  std::vector<FileReflection> inputs;
   std::vector<FileReflection> outputs;
   std::vector<JobTag> tags;
   std::pair<bool, std::string> runner_status;  // bool=true if error present, false if NULL
@@ -210,7 +209,6 @@ struct Database {
   // True when the run is unfinished and its owning wake process still holds its lock.
   bool is_live_run(long run_id) const;
   void finish_job(long job,
-                  const std::string &inputs,       // null separated
                   const std::string &outputs,      // null separated
                   const std::string &all_outputs,  // null seperated
                   int64_t starttime, int64_t endtime, uint64_t hashcode, bool keep, Usage reality);

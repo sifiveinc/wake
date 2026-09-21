@@ -21,7 +21,7 @@
 
 // File tree access types (from database.cpp)
 #define VISIBLE 0
-#define INPUT 1
+// INPUT previously 1; now deprecated
 #define OUTPUT 2
 
 #include <fcntl.h>
@@ -231,7 +231,7 @@ std::vector<int> get_live_run_ids(Database &db) {
 
 // Build a run_id in/not-in predicate for use in core_filters.
 std::string run_id_filter(bool in, const std::vector<int> &ids) {
-  std::string q = in ? "run_id in (" : "run_id not in (";
+  std::string q = in ? "core.run_id in (" : "core.run_id not in (";
   bool any = false;
   for (auto id : ids) {
     if (any) q += ',';
@@ -247,10 +247,10 @@ MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database
   MatchingQueryFilters filters;
 
   // Process --job
-  make_and_group(clo.job_ids, "cast(job_id as TEXT)", "", filters.core_filters);
+  make_and_group(clo.job_ids, "cast(core.job_id as TEXT)", "", filters.core_filters);
 
   // --label
-  make_and_group(clo.labels, "label", "", filters.core_filters);
+  make_and_group(clo.labels, "core.label", "", filters.core_filters);
 
   // --input
   make_and_group(clo.input_files, "path", "", filters.input_file_filters);
@@ -273,13 +273,13 @@ MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database
   // --last-use
   if (clo.last_use) {
     filters.core_filters.push_back(
-        {"job_id in (select job_id from run_jobs where run_id = "
+        {"core.job_id in (select job_id from run_jobs where run_id = "
          "(select max(run_id) from runs where end_time is not null))"});
   }
 
   // --failed
   if (clo.failed) {
-    filters.core_filters.push_back({"(status <> 0 OR runner_status IS NOT NULL)"});
+    filters.core_filters.push_back({"(core.status <> 0 OR core.runner_status IS NOT NULL)"});
   }
 
   // Filters on unfinished jobs (stat_id is null).
@@ -288,7 +288,7 @@ MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database
     auto live_run_ids = get_live_run_ids(db);
     // finish_job unconditinoally sets stat_id for jobs.
     // endtime=0 is close but includes jobs that finished.
-    filters.core_filters.push_back({"stat_id is null"});
+    filters.core_filters.push_back({"core.stat_id is null"});
 
     // --canceled: jobs from non-live runs (run crashed before job finished)
     if (clo.canceled) {
@@ -297,13 +297,13 @@ MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database
 
     // --active: forked jobs (starttime!=0) in a live run
     if (clo.active) {
-      filters.core_filters.push_back({"starttime != 0"});
+      filters.core_filters.push_back({"core.starttime != 0"});
       filters.core_filters.push_back({run_id_filter(/*in=*/true, live_run_ids)});
     }
 
     // --queued: not-yet-forked jobs (starttime==0) in a live run
     if (clo.queued) {
-      filters.core_filters.push_back({"starttime = 0"});
+      filters.core_filters.push_back({"core.starttime = 0"});
       filters.core_filters.push_back({run_id_filter(/*in=*/true, live_run_ids)});
     }
 

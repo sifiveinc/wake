@@ -85,7 +85,7 @@
 #define STATE_RUNNER_OUT 8   // runner_out has been closed and in database
 #define STATE_RUNNER_ERR 16  // runner_err has been closed and in database
 #define STATE_MERGED 32      // exit status in struct
-#define STATE_FINISHED 64    // inputs+outputs+status+runtime in database
+#define STATE_FINISHED 64    // visible+outputs+status+runtime in database
 
 // Can be queried at multiple stages of the job's lifetime
 struct Job final : public GCObject<Job, Value> {
@@ -119,9 +119,9 @@ struct Job final : public GCObject<Job, Value> {
   HeapPointer<Continuation> q_runner_out;  // waken once runner output available
   HeapPointer<Continuation> q_runner_err;  // waken once runner error available
   HeapPointer<Continuation> q_reality;     // waken once job merged (reality available)
-  HeapPointer<Continuation> q_inputs;   // waken once job finished (inputs+outputs+report available)
-  HeapPointer<Continuation> q_outputs;  // waken once job finished (inputs+outputs+report available)
-  HeapPointer<Continuation> q_report;   // waken once job finished (inputs+outputs+report available)
+  HeapPointer<Continuation> q_inputs;      // waken once job finished (vis+outputs+report available)
+  HeapPointer<Continuation> q_outputs;     // waken once job finished (vis+outputs+report available)
+  HeapPointer<Continuation> q_report;      // waken once job finished (vis+outputs+report available)
 
   Job(Database *db_, String *label_, String *dir_, String *stdin_file_, String *environ,
       String *cmdline_, bool keep, const char *echo, const char *stream_out, const char *stream_err,
@@ -1696,7 +1696,7 @@ static PRIMFN(prim_job_tree) {
   runtime.heap.reserve(Tuple::fulfiller_pads + WJob::reserve());
   Continuation *continuation = scope->claim_fulfiller(runtime, output);
 
-  if (mpz_cmp_si(arg1, 1) == 0) {
+  if (mpz_cmp_si(arg1, 0) == 0) {
     runtime.schedule(WJob::claim(runtime.heap, arg0));
     continuation->next = std::move(arg0->q_inputs);
     arg0->q_inputs = std::move(continuation);
@@ -1734,12 +1734,11 @@ static PRIMFN(prim_job_desc) {
 }
 
 static PRIMTYPE(type_job_finish) {
-  return args.size() == 10 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeString) &&
-         args[2]->unify(Data::typeString) && args[3]->unify(Data::typeString) &&
-         args[4]->unify(Data::typeInteger) && args[5]->unify(Data::typeDouble) &&
-         args[6]->unify(Data::typeDouble) && args[7]->unify(Data::typeInteger) &&
-         args[8]->unify(Data::typeInteger) && args[9]->unify(Data::typeInteger) &&
-         out->unify(Data::typeUnit);
+  return args.size() == 9 && args[0]->unify(Data::typeJob) && args[1]->unify(Data::typeString) &&
+         args[2]->unify(Data::typeString) && args[3]->unify(Data::typeInteger) &&
+         args[4]->unify(Data::typeDouble) && args[5]->unify(Data::typeDouble) &&
+         args[6]->unify(Data::typeInteger) && args[7]->unify(Data::typeInteger) &&
+         args[8]->unify(Data::typeInteger) && out->unify(Data::typeUnit);
 }
 
 static int64_t int64_ns(struct timespec tv) {
@@ -1747,11 +1746,10 @@ static int64_t int64_ns(struct timespec tv) {
 }
 
 static PRIMFN(prim_job_finish) {
-  EXPECT(10);
+  EXPECT(9);
   JOB(job, 0);
-  STRING(inputs, 1);
-  STRING(outputs, 2);
-  STRING(all_outputs, 3);
+  STRING(outputs, 1);
+  STRING(all_outputs, 2);
 
   REQUIRE(job->state & STATE_MERGED);
   REQUIRE(!(job->state & STATE_FINISHED));
@@ -1759,13 +1757,12 @@ static PRIMFN(prim_job_finish) {
   size_t need = WJob::reserve() + reserve_unit();
   runtime.heap.reserve(need);
 
-  parse_usage(&job->report, args + 4, runtime, scope);
+  parse_usage(&job->report, args + 3, runtime, scope);
   job->report.found = true;
 
   bool keep = !job->bad_launch && !job->bad_finish && job->keep && job->report.status == 0;
-  job->db->finish_job(job->job, inputs->as_str(), outputs->as_str(), all_outputs->as_str(),
-                      int64_ns(job->start), int64_ns(job->stop), job->code.data[0], keep,
-                      job->report);
+  job->db->finish_job(job->job, outputs->as_str(), all_outputs->as_str(), int64_ns(job->start),
+                      int64_ns(job->stop), job->code.data[0], keep, job->report);
 
   // Runner status is left untouched to avoid overwriting any errors set by
   // `prim_job_set_runner_status` if that was called first, with the safe fallback of a NULL
@@ -2044,7 +2041,7 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   prim_register(pmap, "job_runner_status", prim_job_runner_status, type_job_runner_status,
                 PRIM_PURE);
 
-  // Get's the set of file paths of a job: 0=visible, 1=input, 2=output
+  // Get's the set of file paths of a job: 0=visible, 1=DEPRECATED, 2=output
   prim_register(pmap, "job_tree", prim_job_tree, type_job_tree, PRIM_PURE);
 
   // The id of the job
@@ -2085,7 +2082,7 @@ void prim_register_job(JobTable *jobtable, PrimMap &pmap) {
   // the created job.
   prim_register(pmap, "job_virtual", prim_job_virtual, type_job_virtual, PRIM_IMPURE, jobtable);
 
-  // This is where you "finish" a job by explaining what its inputs, outputs, usage etc...
+  // This is where you "finish" a job by explaining what its outputs, usage etc...
   // are. This call unblocks things like `job_output` for instance.
   prim_register(pmap, "job_finish", prim_job_finish, type_job_finish, PRIM_IMPURE);
 
@@ -2208,7 +2205,7 @@ void WJob::execute(Runtime &runtime) {
       runtime.heap.reserve(reserve_result());
       what = claim_result(runtime.heap, false, job->bad_finish.get());
     } else {
-      auto files = job->db->get_tree(1, job->job);
+      auto files = job->db->get_tree(0, job->job);
       runtime.heap.reserve(reserve_result() + reserve_tree(files));
       what = claim_result(runtime.heap, true, claim_tree(runtime.heap, files));
     }

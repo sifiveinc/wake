@@ -54,7 +54,7 @@
 #include "wcl/iterator.h"
 
 #define VISIBLE 0
-#define INPUT 1
+// INPUT previously 1; now deprecated
 #define OUTPUT 2
 #define INDEXES 3
 
@@ -71,7 +71,6 @@ struct Database::detail {
   sqlite3_stmt *stats_job;
   sqlite3_stmt *insert_job;
   sqlite3_stmt *insert_tree;
-  sqlite3_stmt *insert_tree_file_id;
   sqlite3_stmt *insert_log;
   sqlite3_stmt *insert_file;
   sqlite3_stmt *reset_deleted;
@@ -138,7 +137,6 @@ struct Database::detail {
         stats_job(0),
         insert_job(0),
         insert_tree(0),
-        insert_tree_file_id(0),
         insert_log(0),
         insert_file(0),
         reset_deleted(0),
@@ -393,9 +391,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_insert_tree =
       "insert into filetree(access, job_id, file_id, modified)"
       " values(?, ?, (select file_id from files where path=? and hash=? and type=? and mode=?), ?)";
-  const char *sql_insert_tree_file_id =
-      "insert into filetree(access, job_id, file_id, modified)"
-      " values(?, ?, ?, ?)";
   const char *sql_insert_log =
       "insert into log(job_id, descriptor, seconds, output)"
       " values(?, ?, ?, ?)";
@@ -497,7 +492,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_setcrit_path =
       "update stats set pathtime=runtime+("
       "  select coalesce(max(s.pathtime),0) from filetree f1, filetree f2, jobs j, stats s"
-      "  where f1.job_id=?1 and f1.access=2 and f1.file_id=f2.file_id and f2.access=1 and "
+      "  where f1.job_id=?1 and f1.access=2 and f1.file_id=f2.file_id and f2.access=0 and "
       "f2.job_id=j.job_id and j.stat_id=s.stat_id and f1.modified=f2.modified"
       ") where stat_id=(select stat_id from jobs where job_id=?1)";
   const char *sql_tag_job = "insert into tags(job_id, uri, content) values(?, ?, ?)";
@@ -508,7 +503,7 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   const char *sql_get_edges =
       "select distinct user.job_id as user, used.job_id as used"
       "  from filetree user, filetree used"
-      "   where user.access=1 and user.file_id=used.file_id and used.access=2";
+      "   where user.access=0 and user.file_id=used.file_id and used.access=2";
   const char *sql_get_file_dependency =
       "SELECT l.job_id, r.job_id"
       " FROM filetree l"
@@ -610,7 +605,6 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   PREPARE(sql_stats_job, stats_job);
   PREPARE(sql_insert_job, insert_job);
   PREPARE(sql_insert_tree, insert_tree);
-  PREPARE(sql_insert_tree_file_id, insert_tree_file_id);
   PREPARE(sql_insert_log, insert_log);
   PREPARE(sql_insert_file, insert_file);
   PREPARE(sql_reset_deleted, reset_deleted);
@@ -688,7 +682,6 @@ void Database::close() {
   FINALIZE(stats_job);
   FINALIZE(insert_job);
   FINALIZE(insert_tree);
-  FINALIZE(insert_tree_file_id);
   FINALIZE(insert_log);
   FINALIZE(insert_file);
   FINALIZE(reset_deleted);
@@ -1208,7 +1201,7 @@ Usage Database::reuse_job(const std::string &directory, const std::string &envir
 
   auto match_it = std::find_if(matches.begin(), matches.end(), [&](const auto &candidate) -> bool {
     bind_integer(why, imp->get_tree, 1, candidate.job);
-    bind_integer(why, imp->get_tree, 2, INPUT);
+    bind_integer(why, imp->get_tree, 2, VISIBLE);
 
     while (sqlite3_step(imp->get_tree) == SQLITE_ROW) {
       auto path = rip_column(imp->get_tree, 0);
@@ -1429,9 +1422,9 @@ static void scan_until_sep(char sep, const std::string &to_scan, F f) {
   }
 }
 
-void Database::finish_job(long job, const std::string &inputs, const std::string &outputs,
-                          const std::string &all_outputs, int64_t starttime, int64_t endtime,
-                          uint64_t hashcode, bool keep, Usage reality) {
+void Database::finish_job(long job, const std::string &outputs, const std::string &all_outputs,
+                          int64_t starttime, int64_t endtime, uint64_t hashcode, bool keep,
+                          Usage reality) {
   std::unordered_set<std::string_view> output_set;
   std::vector<PathInfo> output_paths;
 
@@ -1451,7 +1444,7 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
     if (!output_set.count(path)) unhashed_outputs.emplace_back(std::move(path));
   });
 
-  const char *why = "Could not save job inputs and outputs";
+  const char *why = "Could not save job outputs";
   begin_rw_txn();
 
   bind_integer(why, imp->clear_live_job, 1, job);
@@ -1470,39 +1463,6 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   bind_integer(why, imp->link_stats, 3, keep ? 1 : 0);
   bind_integer(why, imp->link_stats, 4, job);
   single_step(why, imp->link_stats, imp->debugdb);
-
-  // Grab the visible set.
-  struct FileAndMtime {
-    long file_id;
-    long mtime;
-  };
-  std::unordered_map<std::string, FileAndMtime> visible_files;
-  bind_integer(why, imp->get_tree_id, 1, job);
-  bind_integer(why, imp->get_tree_id, 2, VISIBLE);
-  while (sqlite3_step(imp->get_tree_id) == SQLITE_ROW) {
-    auto path = rip_column(imp->get_tree_id, 0);
-    auto file_id = sqlite3_column_int64(imp->get_tree_id, 1);
-    auto modified = sqlite3_column_int64(imp->get_tree_id, 2);
-    visible_files.emplace(std::move(path), FileAndMtime{file_id, modified});
-  }
-  finish_stmt(why, imp->get_tree_id, imp->debugdb);
-
-  // Insert inputs, confirming they are visible
-  scan_until_sep('\0', inputs, [&, this](const std::string &input) {
-    auto it = visible_files.find(input);
-    if (it == visible_files.end()) {
-      std::stringstream s;
-      s << "Job " << job << " erroneously added input '" << input
-        << "' which was not a visible file." << std::endl;
-      status_get_generic_stream(STREAM_ERROR) << s.str() << std::endl;
-    } else {
-      bind_integer(why, imp->insert_tree_file_id, 1, INPUT);
-      bind_integer(why, imp->insert_tree_file_id, 2, job);
-      bind_integer(why, imp->insert_tree_file_id, 3, it->second.file_id);
-      bind_integer(why, imp->insert_tree_file_id, 4, it->second.mtime);
-      single_step(why, imp->insert_tree_file_id, imp->debugdb);
-    }
-  });
 
   // Insert outputs.
   for (const auto &output : output_paths) {
@@ -1903,11 +1863,6 @@ JAST JobReflection::to_structured_json() const {
     visible_json.add("", visible_file.path);
   }
 
-  JAST &input_json = json.add("input_files", JSON_ARRAY);
-  for (const auto &input : inputs) {
-    input_json.add("", input.path);
-  }
-
   JAST &output_json = json.add("output_files", JSON_ARRAY);
   for (const auto &output : outputs) {
     output_json.add("", output.path);
@@ -1980,12 +1935,6 @@ JAST JobReflection::to_json() const {
     visible_stream << visible_file.path << "<br>";
   }
   json.add("visible", visible_stream.str());
-
-  std::stringstream inputs_stream;
-  for (const auto &input : inputs) {
-    inputs_stream << input.path << "<br>";
-  }
-  json.add("inputs", inputs_stream.str());
 
   std::stringstream outputs_stream;
   for (const auto &output : outputs) {
@@ -2080,19 +2029,6 @@ static JobReflection find_one(const Database *db, sqlite3_stmt *query) {
     desc.tags.emplace_back(sqlite3_column_int64(db->imp->get_tags, 0),
                            rip_column(db->imp->get_tags, 1), rip_column(db->imp->get_tags, 2));
   finish_stmt(why, db->imp->get_tags, db->imp->debugdb);
-
-  // inputs
-  bind_integer(why, db->imp->get_tree, 1, desc.job);
-  bind_integer(why, db->imp->get_tree, 2, INPUT);
-  while (sqlite3_step(db->imp->get_tree) == SQLITE_ROW) {
-    std::string path = rip_column(db->imp->get_tree, 0);
-    std::string hash = rip_column(db->imp->get_tree, 1);
-    std::string type = rip_column(db->imp->get_tree, 2);
-    long mode = sqlite3_column_int64(db->imp->get_tree, 3);
-    long modified = sqlite3_column_int64(db->imp->get_tree, 4);
-    desc.inputs.emplace_back(std::move(path), std::move(type), std::move(hash), mode, modified);
-  }
-  finish_stmt(why, db->imp->get_tree, db->imp->debugdb);
 
   // outputs
   bind_integer(why, db->imp->get_tree, 1, desc.job);
@@ -2566,7 +2502,7 @@ std::string collapse_and(const std::vector<std::vector<std::string>> &ands, int 
 static std::string build_matching_id_query(MatchingQueryFilters filters) {
   std::string input_file_join = "";
   if (!filters.input_file_filters.empty()) {
-    filters.input_file_filters.push_back({"access = 1"});
+    filters.input_file_filters.push_back({"access = 0"});
     std::string conds = collapse_and(filters.input_file_filters, 3);
     input_file_join =
         "        INNER JOIN (\n"

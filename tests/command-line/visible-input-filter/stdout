@@ -1,0 +1,28 @@
+Pass "content\n"
+Job 3 (cat):
+  Command-line: /usr/bin/dash -c 'cat visible.txt'
+  Environment:
+    PATH=/usr/bin:/bin
+    TERM=xterm-256color
+  Directory:     .
+  In  bytes:     8
+  Out bytes:     0
+  Status:        0
+  Runner Status: success
+  Stdin:         /dev/null
+Job 3 (cat):
+  Command-line: /usr/bin/dash -c 'cat visible.txt'
+  Environment:
+    PATH=/usr/bin:/bin
+    TERM=xterm-256color
+  Directory:     .
+  In  bytes:     8
+  Out bytes:     0
+  Status:        0
+  Runner Status: success
+  Stdin:         /dev/null
+Visible:
+  df0c40684c6bda3958244ee330300fdcbc5a37fb7ae06fe886b786bc474be87e visible.txt
+Outputs:
+Stdout:
+  content

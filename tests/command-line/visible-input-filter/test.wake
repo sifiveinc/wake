@@ -1,0 +1,6 @@
+def test _ =
+    require Pass file = claim "visible.txt"
+
+    makePlan "cat" (file, Nil) "cat {file.getPathName}"
+    | runJobWith fuseRunner
+    | getJobStdout
