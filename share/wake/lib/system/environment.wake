@@ -76,6 +76,12 @@ export def getenv (key: String): Option String =
 
     head (p key)
 
+# getSystemProperty: retrieve a System Property from Wake's effective configuration
+export def getSystemProperty (key: String): Option String =
+    def p x = prim "get_system_property"
+
+    head (p key)
+
 def test key =
     replace `=.*` "" _ ==* key
 

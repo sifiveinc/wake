@@ -413,6 +413,7 @@ void print_help(const char *argv0) {
     << "    --chdir    -C PATH Locate database and default package starting from PATH"     << std::endl
     << "    --in          PKG  Evaluate command-line in package PKG (default is chdir)"    << std::endl
     << "    --exec     -x EXPR Execute expression EXPR instead of a target function"       << std::endl
+    << "    --property KEY=VAL Set a system property (repeat for multiple properties)"     << std::endl
     << "    --stdout      EXPR Send specified log levels to stdout (FD 1)"                 << std::endl
     << "    --stderr      EXPR Send specified log levels to stderr (FD 2)"                 << std::endl
     << "    --fd:3        EXPR Send specified log levels to FD 3. Same for --fd:4, --fd:5" << std::endl
@@ -712,6 +713,16 @@ int main(int argc, char **argv) {
 
   // Now check for any flags that override config options
   WakeConfigOverrides config_override;
+  for (const auto &property : clo.properties) {
+    size_t separator = property.find('=');
+    if (separator == std::string::npos || separator == 0) {
+      std::cerr << "--property: invalid property entry '" << property << "' (expected KEY=VALUE)"
+                << std::endl;
+      return 1;
+    }
+    config_override.properties.emplace_back(property.substr(0, separator),
+                                            property.substr(separator + 1));
+  }
   if (clo.label_filter) {
     config_override.label_filter = std::make_optional(std::optional<std::string>{clo.label_filter});
   }
