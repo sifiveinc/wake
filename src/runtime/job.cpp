@@ -67,9 +67,13 @@
 #include "wcl/defer.h"
 
 // How many times to SIGTERM a process before SIGKILL
-#define TERM_ATTEMPTS 1
+#define TERM_ATTEMPTS 6
 // How long between first and second SIGTERM attempt (exponentially increasing)
-#define TERM_BASE_GAP_MS 30000
+#define TERM_BASE_GAP_MS 100
+// How long cancellation gives jobs to finish before SIGKILL
+#define CANCELLATION_DRAIN_GRACE_MS 30000
+// How often cancellation checks whether its grace period has expired
+#define CANCELLATION_DRAIN_POLL_NS 100000000
 // The most file descriptors used by wake for itself (database/stdio/etc)
 #define MAX_SELF_FDS 24
 // The default memory to provision for jobs (2MB)
@@ -328,6 +332,10 @@ struct JobTable::detail {
   bool quiet;
   bool check;
   bool batch;
+  bool draining;
+  bool escalated;
+  bool deadline_escalated;
+  struct timespec drain_deadline;
   struct timespec wall;
   RUsage childrenUsage;
 
@@ -458,6 +466,7 @@ std::string ResourceBudget::format(uint64_t x) {
 
 static volatile bool child_ready = false;
 static volatile bool exit_asap = false;
+static volatile bool exit_repeated = false;
 
 static void handle_SIGCHLD(int sig) {
   (void)sig;
@@ -466,6 +475,7 @@ static void handle_SIGCHLD(int sig) {
 
 static void handle_exit(int sig) {
   (void)sig;
+  if (exit_asap) exit_repeated = true;
   exit_asap = true;
 }
 
@@ -500,6 +510,10 @@ JobTable::JobTable(Database *db, ResourceBudget memory, ResourceBudget cpu, bool
   imp->quiet = quiet;
   imp->check = check;
   imp->batch = batch;
+  imp->draining = false;
+  imp->escalated = false;
+  imp->deadline_escalated = false;
+  imp->drain_deadline = {};
   imp->db = db;
   imp->active = 0;
   imp->limit = cpu.get(get_concurrency());
@@ -648,8 +662,8 @@ JobTable::~JobTable() {
       sigprocmask(SIG_BLOCK, &imp->block, &saved);
       sigdelset(&saved, SIGCHLD);
 
-      // Continue waiting for the full grace period
-      timeout.tv_sec = remain.tv_sec;
+      // Continue waiting for the full second
+      timeout.tv_sec = 0;
       timeout.tv_nsec = remain.tv_nsec;
 
       // Sleep until timeout or a signal arrives
@@ -1001,19 +1015,23 @@ bool JobTable::wait(Runtime &runtime) {
   struct timespec nowait;
   memset(&nowait, 0, sizeof(nowait));
 
-  launch(this);
+  if (!imp->draining && !exit_now()) launch(this);
 
   bool compute = false;
-  while (!exit_now() && imp->num_running) {
+  // Normally wait for JobEntries, including their output pipes, to finish. During cancellation,
+  // wait only for direct children to be reaped: descendants can retain inherited pipe FDs forever.
+  while ((!exit_now() || imp->draining) &&
+         (imp->draining ? !imp->pidmap.empty() : imp->num_running)) {
     // Block all signals we expect to interrupt pselect
     sigset_t saved;
     sigprocmask(SIG_BLOCK, &imp->block, &saved);
     sigdelset(&saved, SIGCHLD);
 
     // Check for all signals that are now blocked
-    struct timespec *timeout = 0;
+    struct timespec drain_timeout = {0, CANCELLATION_DRAIN_POLL_NS};
+    struct timespec *timeout = imp->draining ? &drain_timeout : nullptr;
     if (child_ready) timeout = &nowait;
-    if (exit_now()) timeout = &nowait;
+    if (exit_now() && !imp->draining) timeout = &nowait;
 
 #if !defined(__linux__)
     struct timespec alarm;
@@ -1036,6 +1054,20 @@ bool JobTable::wait(Runtime &runtime) {
     // Restore signal mask
     sigaddset(&saved, SIGCHLD);
     sigprocmask(SIG_SETMASK, &saved, 0);
+
+    if (imp->draining && !imp->escalated) {
+      struct timespec drain_now;
+      clock_gettime(CLOCK_MONOTONIC, &drain_now);
+      const bool deadline_passed =
+          drain_now.tv_sec > imp->drain_deadline.tv_sec ||
+          (drain_now.tv_sec == imp->drain_deadline.tv_sec &&
+           drain_now.tv_nsec >= imp->drain_deadline.tv_nsec);
+      if (exit_repeated || deadline_passed) {
+        for (auto &entry : imp->pidmap) kill(entry.first, SIGKILL);
+        imp->escalated = true;
+        imp->deadline_escalated = deadline_passed;
+      }
+    }
 
     struct timespec now;
     clock_gettime(CLOCK_REALTIME, &now);
@@ -1171,6 +1203,24 @@ bool JobTable::wait(Runtime &runtime) {
   }
 
   return compute;
+}
+
+bool JobTable::drain(Runtime &runtime) {
+  if (!exit_now() || imp->pidmap.empty()) return false;
+
+  imp->draining = true;
+  clock_gettime(CLOCK_MONOTONIC, &imp->drain_deadline);
+  // Give wakeboxes time to publish and consume their final manifest before escalation.
+  imp->drain_deadline.tv_sec += CANCELLATION_DRAIN_GRACE_MS / 1000;
+  imp->drain_deadline.tv_nsec += (CANCELLATION_DRAIN_GRACE_MS % 1000) * 1000000;
+  if (imp->drain_deadline.tv_nsec >= 1000000000) {
+    ++imp->drain_deadline.tv_sec;
+    imp->drain_deadline.tv_nsec -= 1000000000;
+  }
+  for (auto &entry : imp->pidmap) kill(entry.first, SIGTERM);
+
+  while (!imp->pidmap.empty()) wait(runtime);
+  return imp->deadline_escalated;
 }
 
 Job::Job(Database *db_, String *label_, String *dir_, String *stdin_file_, String *environ,

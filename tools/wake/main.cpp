@@ -1327,6 +1327,15 @@ int main(int argc, char **argv) {
   do {
     runtime.run();
   } while (!runtime.abort && jobtable.wait(runtime));
+  const bool cancellation_escalated = jobtable.drain(runtime);
+  if (cancellation_escalated) {
+    std::cerr << "Wake run " << db.current_run_id()
+              << " canceled; one or more jobs exceeded the cancellation deadline and were killed."
+              << std::endl;
+    std::cerr << "If any FUSE jobs published recovery manifests before being killed, recover their "
+                 "staged outputs with:\n"
+              << "  wakebox --materialize-previous " << db.current_run_id() << std::endl;
+  }
   status_finish();
 
   runtime.heap.report();
