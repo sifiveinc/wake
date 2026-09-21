@@ -59,8 +59,8 @@ daemon_client::daemon_client(const std::string &base_dir)
 
 // The arg 'visible' is destroyed/moved in the interest of performance with large visible lists.
 bool daemon_client::connect(std::vector<visible_file> &visible, const std::string &cas_dir,
-                             bool close_live_file, std::optional<long> wake_run_id,
-                             std::optional<long> wake_job_id) {
+                            bool close_live_file, std::optional<long> wake_run_id,
+                            std::optional<long> wake_job_id) {
   int err = mkdir_with_parents(mount_path, 0775);
   if (0 != err) {
     std::cerr << "mkdir_with_parents ('" << mount_path << "'):" << strerror(err) << std::endl;

@@ -2503,9 +2503,7 @@ static PRIMFN(prim_rm_generated) {
   }
 }
 
-static PRIMTYPE(type_current_run_id) {
-  return args.empty() && out->unify(Data::typeInteger);
-}
+static PRIMTYPE(type_current_run_id) { return args.empty() && out->unify(Data::typeInteger); }
 
 static PRIMFN(prim_current_run_id) {
   auto *db = static_cast<Database *>(data);

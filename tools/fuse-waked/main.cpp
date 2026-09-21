@@ -38,8 +38,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <fstream>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <set>
@@ -375,7 +375,8 @@ void Job::parse() {
             g_staging_dir.c_str(), strerror(err));
   }
   std::error_code canonical_error;
-  std::filesystem::path canonical_staging = std::filesystem::canonical(g_staging_dir, canonical_error);
+  std::filesystem::path canonical_staging =
+      std::filesystem::canonical(g_staging_dir, canonical_error);
   if (canonical_error) {
     fprintf(stderr, "fuse-waked: failed to canonicalize CAS staging directory: %s\n",
             canonical_error.message().c_str());
@@ -527,15 +528,16 @@ bool Job::snapshot_recovery_manifest(const std::string &job_id) {
   }
   struct timespec now;
   clock_gettime(CLOCK_REALTIME, &now);
-  const std::string name = wake_run_id
-                               ? "run-" + std::to_string(*wake_run_id) + "-job-" +
-                                     std::to_string(*wake_job_id) + ".json"
-                               : "wakebox-" + std::to_string(getpid()) + "-" + job_id + ".json";
+  const std::string name =
+      wake_run_id
+          ? "run-" + std::to_string(*wake_run_id) + "-job-" + std::to_string(*wake_job_id) + ".json"
+          : "wakebox-" + std::to_string(getpid()) + "-" + job_id + ".json";
   const std::string final_path = recovery_dir + "/" + name;
   const std::string temporary_path = recovery_dir + "/." + name + ".tmp";
 
   JAST manifest(JSON_OBJECT);
-  // Increment this for incompatible manifest schema changes; materializers must reject unknown versions.
+  // Increment this for incompatible manifest schema changes; materializers must reject unknown
+  // versions.
   manifest.add("version", 1);
   manifest.add("workspace_root", g_workspace_root);
   manifest.add("cas_staging_root", g_staging_dir);
@@ -546,7 +548,7 @@ bool Job::snapshot_recovery_manifest(const std::string &job_id) {
     manifest.add("wake_run_id", *wake_run_id);
     manifest.add("wake_job_id", *wake_job_id);
   }
-  JAST& entries = manifest.add("entries", JSON_ARRAY);
+  JAST &entries = manifest.add("entries", JSON_ARRAY);
   if (auto *job_staged = g_staged_files.get_job(job_id)) {
     for (const auto &entry : *job_staged) {
       const StagedItem &sf = entry.second;
@@ -562,36 +564,37 @@ bool Job::snapshot_recovery_manifest(const std::string &job_id) {
           continue;
         }
       }
-      JAST& manifest_entry = entries.add("", JSON_OBJECT);
+      JAST &manifest_entry = entries.add("", JSON_OBJECT);
       manifest_entry.add("destination", sf.dest_path);
-      std::visit(overloaded{
-                     [&manifest_entry](const StagedFileData &file) {
-                       struct stat st;
-                       int result = stat(file.staging_path.c_str(), &st);
-                       assert(result == 0);
-                       std::filesystem::path relative =
-                           std::filesystem::path(file.staging_path).lexically_relative(g_staging_dir);
-                       manifest_entry.add("type", "file");
-                       manifest_entry.add("staging_path", relative.string());
-                       manifest_entry.add("mode", static_cast<long>(*file.mode & 07777));
-                       manifest_entry.add("mtime_sec", static_cast<long>(st.st_mtim.tv_sec));
-                       manifest_entry.add("mtime_nsec", static_cast<long>(st.st_mtim.tv_nsec));
-                     },
-                     [&manifest_entry](const StagedSymlinkData &link) {
-                       manifest_entry.add("type", "symlink");
-                       manifest_entry.add("target", link.target);
-                       manifest_entry.add("mtime_sec", static_cast<long>(link.mtime.tv_sec));
-                       manifest_entry.add("mtime_nsec", static_cast<long>(link.mtime.tv_nsec));
-                     },
-                     [&manifest_entry](const StagedDirectoryData &directory) {
-                       manifest_entry.add("type", "directory");
-                       manifest_entry.add("mode", static_cast<long>(directory.mode & 07777));
-                       manifest_entry.add("mtime_sec", static_cast<long>(directory.mtime.tv_sec));
-                       manifest_entry.add("mtime_nsec", static_cast<long>(directory.mtime.tv_nsec));
-                     },
-                     [](const StagedSpecialData &) {},
-                  },
-                  sf.data);
+      std::visit(
+          overloaded{
+              [&manifest_entry](const StagedFileData &file) {
+                struct stat st;
+                int result = stat(file.staging_path.c_str(), &st);
+                assert(result == 0);
+                std::filesystem::path relative =
+                    std::filesystem::path(file.staging_path).lexically_relative(g_staging_dir);
+                manifest_entry.add("type", "file");
+                manifest_entry.add("staging_path", relative.string());
+                manifest_entry.add("mode", static_cast<long>(*file.mode & 07777));
+                manifest_entry.add("mtime_sec", static_cast<long>(st.st_mtim.tv_sec));
+                manifest_entry.add("mtime_nsec", static_cast<long>(st.st_mtim.tv_nsec));
+              },
+              [&manifest_entry](const StagedSymlinkData &link) {
+                manifest_entry.add("type", "symlink");
+                manifest_entry.add("target", link.target);
+                manifest_entry.add("mtime_sec", static_cast<long>(link.mtime.tv_sec));
+                manifest_entry.add("mtime_nsec", static_cast<long>(link.mtime.tv_nsec));
+              },
+              [&manifest_entry](const StagedDirectoryData &directory) {
+                manifest_entry.add("type", "directory");
+                manifest_entry.add("mode", static_cast<long>(directory.mode & 07777));
+                manifest_entry.add("mtime_sec", static_cast<long>(directory.mtime.tv_sec));
+                manifest_entry.add("mtime_nsec", static_cast<long>(directory.mtime.tv_nsec));
+              },
+              [](const StagedSpecialData &) {},
+          },
+          sf.data);
     }
   }
   std::stringstream serialized_manifest;

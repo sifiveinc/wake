@@ -52,9 +52,8 @@ struct daemon_client {
 
   daemon_client(const std::string &base_dir);
 
-  bool connect(std::vector<visible_file> &visible, const std::string &cas_dir,
-               bool close_live_file, std::optional<long> wake_run_id,
-               std::optional<long> wake_job_id);
+  bool connect(std::vector<visible_file> &visible, const std::string &cas_dir, bool close_live_file,
+               std::optional<long> wake_run_id, std::optional<long> wake_job_id);
   bool disconnect(std::string &result);
 
  protected:
