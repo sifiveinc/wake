@@ -24,8 +24,8 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#include <cstring>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -102,7 +102,7 @@ void print_help() {
 }
 
 // Use the directory where wakebox was invoked as the recovery workspace.
-bool resolve_workspace(std::string* workspace, std::string* error) {
+bool resolve_workspace(std::string *workspace, std::string *error) {
   std::error_code ec;
   const fs::path current = fs::canonical(fs::current_path(), ec);
   if (ec) {
@@ -118,21 +118,22 @@ bool resolve_workspace(std::string* workspace, std::string* error) {
   return true;
 }
 
-bool discover_completed_manifests(const std::string& workspace,
-                                  std::vector<wakefs::CompletedStagingManifest>* manifests,
-                                  std::string* error) {
+bool discover_completed_manifests(const std::string &workspace,
+                                  std::vector<wakefs::CompletedStagingManifest> *manifests,
+                                  std::string *error) {
   const fs::path recovery = fs::path(workspace) / ".build" / "cas" / "staging" / "recovery";
   return wakefs::discover_completed_staging_manifests(recovery.string(), manifests, error);
 }
 
-void print_materialization_summary(const std::string& manifest_path,
-                                   const wakefs::StagingMaterializationSummary& summary) {
+void print_materialization_summary(const std::string &manifest_path,
+                                   const wakefs::StagingMaterializationSummary &summary) {
   std::cout << manifest_path << ": materialized " << summary.materialized << ", consumed "
             << summary.consumed << ", failed " << summary.failed
-            << (summary.manifest_removed ? ", manifest removed" : ", manifest retained") << std::endl;
+            << (summary.manifest_removed ? ", manifest removed" : ", manifest retained")
+            << std::endl;
 }
 
-bool parse_run_id(const char* text, int64_t* run_id) {
+bool parse_run_id(const char *text, int64_t *run_id) {
   if (!text || !*text) return false;
   try {
     size_t parsed = 0;
@@ -147,7 +148,7 @@ bool parse_run_id(const char* text, int64_t* run_id) {
   }
 }
 
-int materialize_previous_workspace(const char* requested_run_id) {
+int materialize_previous_workspace(const char *requested_run_id) {
   int64_t run_id;
   if (!parse_run_id(requested_run_id, &run_id)) {
     std::cerr << "--materialize-previous requires an integer Wake run ID." << std::endl;
@@ -167,7 +168,7 @@ int materialize_previous_workspace(const char* requested_run_id) {
   }
   bool success = true;
   size_t selected = 0;
-  for (const wakefs::CompletedStagingManifest& manifest : manifests) {
+  for (const wakefs::CompletedStagingManifest &manifest : manifests) {
     if (!manifest.manifest.wake_run_id || *manifest.manifest.wake_run_id != run_id) continue;
     ++selected;
     if (manifest.manifest.workspace_root != workspace) {
@@ -179,7 +180,7 @@ int materialize_previous_workspace(const char* requested_run_id) {
     wakefs::StagingMaterializationSummary summary;
     std::string materialize_error;
     if (!wakefs::materialize_completed_workspace(manifest.path, manifest.manifest, &summary,
-                                                  &materialize_error)) {
+                                                 &materialize_error)) {
       success = false;
       std::cerr << manifest.path << ": "
                 << (materialize_error.empty() ? "one or more entries failed" : materialize_error)
@@ -188,11 +189,12 @@ int materialize_previous_workspace(const char* requested_run_id) {
     print_materialization_summary(manifest.path, summary);
   }
   if (selected == 0)
-    std::cout << "No recovery manifests match Wake run " << run_id << " in " << workspace << std::endl;
+    std::cout << "No recovery manifests match Wake run " << run_id << " in " << workspace
+              << std::endl;
   return success ? 0 : 1;
 }
 
-int materialize_manifest(const char* path) {
+int materialize_manifest(const char *path) {
   std::error_code ec;
   const fs::file_status status = fs::symlink_status(path, ec);
   if (ec || !fs::is_regular_file(status)) {
@@ -210,8 +212,8 @@ int materialize_manifest(const char* path) {
   wakefs::StagingMaterializationSummary summary;
   const bool success = wakefs::materialize_completed_workspace(path, manifest, &summary, &error);
   if (!success)
-    std::cerr << path << ": "
-              << (error.empty() ? "one or more entries failed" : error) << std::endl;
+    std::cerr << path << ": " << (error.empty() ? "one or more entries failed" : error)
+              << std::endl;
   print_materialization_summary(path, summary);
   return success ? 0 : 1;
 }
@@ -226,8 +228,8 @@ struct ImmediateMaterialization {
   std::string error;
 };
 
-ImmediateMaterialization materialize_returned_manifest(const fuse_args& args,
-                                                       const std::string& result_json) {
+ImmediateMaterialization materialize_returned_manifest(const fuse_args &args,
+                                                       const std::string &result_json) {
   ImmediateMaterialization result;
   std::stringstream parse_errors;
   JAST metadata;
@@ -279,8 +281,8 @@ ImmediateMaterialization materialize_returned_manifest(const fuse_args& args,
   }
 
   wakefs::StagingMaterializationSummary summary;
-  result.success =
-      wakefs::materialize_completed_workspace(result.manifest_path, parsed, &summary, &result.error);
+  result.success = wakefs::materialize_completed_workspace(result.manifest_path, parsed, &summary,
+                                                           &result.error);
   result.materialized = summary.materialized;
   result.consumed = summary.consumed;
   result.failed = summary.failed;
@@ -506,15 +508,16 @@ int main(int argc, char *argv[]) {
                                  arg(options, "interactive")->count > 0;
 #ifdef __linux__
     has_execution_options = has_execution_options || arg(options, "rootfs")->count > 0 ||
-                            arg(options, "toolchain")->count > 0 || arg(options, "bind")->count > 0 ||
-                            arg(options, "bind-cwd")->count > 0;
+                            arg(options, "toolchain")->count > 0 ||
+                            arg(options, "bind")->count > 0 || arg(options, "bind-cwd")->count > 0;
 #endif
     if (materialize_previous && materialize_manifest_path) {
       std::cerr << "Choose only one recovery command." << std::endl;
       return 1;
     }
     if (has_execution_options) {
-      std::cerr << "Recovery commands cannot be combined with payload execution options." << std::endl;
+      std::cerr << "Recovery commands cannot be combined with payload execution options."
+                << std::endl;
       return 1;
     }
     if (materialize_previous)

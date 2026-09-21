@@ -456,7 +456,8 @@ bool discover_completed_staging_manifests(const std::string& recovery_dir,
     if (ec) return fail(error, "inspect recovery directory: " + ec.message());
     return fail(error, "recovery path is not a directory: " + recovery_dir);
   }
-  for (fs::directory_iterator it(recovery_dir, fs::directory_options::skip_permission_denied, ec), end;
+  for (fs::directory_iterator it(recovery_dir, fs::directory_options::skip_permission_denied, ec),
+       end;
        it != end; it.increment(ec)) {
     if (ec) return fail(error, "scan recovery directory: " + ec.message());
     std::error_code status_error;
@@ -465,15 +466,16 @@ bool discover_completed_staging_manifests(const std::string& recovery_dir,
     StagingManifest manifest;
     std::string manifest_error;
     if (!read_staging_manifest(it->path().string(), &manifest, &manifest_error))
-      return fail(error, "invalid recovery manifest " + it->path().string() + ": " + manifest_error);
+      return fail(error,
+                  "invalid recovery manifest " + it->path().string() + ": " + manifest_error);
     manifests->push_back({it->path().string(), std::move(manifest)});
   }
-  std::sort(manifests->begin(), manifests->end(), [](const CompletedStagingManifest& left,
-                                                     const CompletedStagingManifest& right) {
-    if (left.manifest.created_at_ns != right.manifest.created_at_ns)
-      return left.manifest.created_at_ns < right.manifest.created_at_ns;
-    return left.path < right.path;
-  });
+  std::sort(manifests->begin(), manifests->end(),
+            [](const CompletedStagingManifest& left, const CompletedStagingManifest& right) {
+              if (left.manifest.created_at_ns != right.manifest.created_at_ns)
+                return left.manifest.created_at_ns < right.manifest.created_at_ns;
+              return left.path < right.path;
+            });
   return true;
 }
 
@@ -534,14 +536,15 @@ bool write_staging_manifest_atomic(const std::string& path, const StagingManifes
 
 // Recover one manifest into the current workspace and consume its staging sources.
 bool materialize_completed_workspace(const std::string& manifest_path,
-                                      StagingMaterializationSummary* summary, std::string* error) {
+                                     StagingMaterializationSummary* summary, std::string* error) {
   StagingManifest manifest;
   if (!read_staging_manifest(manifest_path, &manifest, error)) return false;
   return materialize_completed_workspace(manifest_path, manifest, summary, error);
 }
 
-bool materialize_completed_workspace(const std::string& manifest_path, const StagingManifest& parsed_manifest,
-                                      StagingMaterializationSummary* summary, std::string* error) {
+bool materialize_completed_workspace(const std::string& manifest_path,
+                                     const StagingManifest& parsed_manifest,
+                                     StagingMaterializationSummary* summary, std::string* error) {
   if (!summary) return fail(error, "materialization summary is required");
   *summary = {};
   StagingManifest manifest = parsed_manifest;
