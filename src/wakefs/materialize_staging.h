@@ -30,9 +30,6 @@ struct StagingEntry {
   mode_t mode = 0;
   int64_t mtime_sec = 0;
   long mtime_nsec = 0;
-  // Tracks recovery state: false requires placement; true requires only source
-  // cleanup and entry removal, so retry does not reopen the source.
-  bool placed = false;
 };
 
 // The persisted per-job mapping from staging sources to workspace projections.
@@ -45,6 +42,9 @@ struct StagingManifest {
   // Wake-launched manifests persist both IDs; standalone manifests omit both.
   std::optional<int64_t> wake_run_id;
   std::optional<int64_t> wake_job_id;
+  // Set only after every destination has been placed. A retry of a completed
+  // manifest consumes its named regular sources without touching destinations.
+  bool materialization_complete = false;
   std::vector<StagingEntry> entries;
 };
 
@@ -75,8 +75,8 @@ struct StagingMaterializationSummary {
   bool success() const { return failed == 0; }
 };
 
-// Restore outputs to their recorded workspace, then remove their staging sources
-// and completed manifest entries.
+// Restore every output to its recorded workspace, persist a manifest-level
+// completion checkpoint, then consume only its named regular staging sources.
 bool materialize_completed_workspace(const std::string& manifest_path,
                                      StagingMaterializationSummary* summary, std::string* error);
 

@@ -99,9 +99,9 @@ bool required_integer(const JAST& object, const char* key, int64_t* value, std::
   return true;
 }
 
-bool optional_boolean(const JAST& object, const char* key, bool* value, std::string* error) {
+bool required_boolean(const JAST& object, const char* key, bool* value, std::string* error) {
   auto child = object.get_opt(key);
-  if (!child) return true;
+  if (!child) return fail(error, std::string("manifest field '") + key + "' must be a boolean");
   auto parsed = (*child)->expect_boolean();
   if (!parsed) return fail(error, std::string("manifest field '") + key + "' must be a boolean");
   *value = *parsed;
@@ -150,27 +150,8 @@ bool validate_metadata(const StagingManifest& manifest, std::string* error) {
     if ((entry.type == StagingEntryType::File || entry.type == StagingEntryType::Directory) &&
         (entry.mode & ~07777) != 0)
       return fail(error, "entry mode has unsupported bits");
-    if (entry.placed && entry.type != StagingEntryType::File)
-      return fail(error, "only regular file entries may be marked placed");
   }
   return true;
-}
-
-// Persist one fully consumed entry's removal, deleting the manifest when it is empty.
-bool remove_entry_and_write(const std::string& manifest_path, StagingManifest* manifest,
-                            const std::string& destination, std::string* error) {
-  auto entry = std::find_if(manifest->entries.begin(), manifest->entries.end(),
-                            [&destination](const StagingEntry& candidate) {
-                              return candidate.destination == destination;
-                            });
-  if (entry == manifest->entries.end()) return fail(error, "manifest entry disappeared during recovery");
-  manifest->entries.erase(entry);
-  if (manifest->entries.empty()) {
-    if (unlink(manifest_path.c_str()) != 0 && errno != ENOENT)
-      return fail(error, errno_message("remove completed manifest"));
-    return true;
-  }
-  return write_staging_manifest_atomic(manifest_path, *manifest, error);
 }
 
 bool write_all(int fd, const std::string& data) {
@@ -332,6 +313,42 @@ bool materialize_directory(int target_rootfd, const StagingEntry& entry,
   return true;
 }
 
+// Consume one exact named regular source without following a final symlink.
+// The manifest-level completion checkpoint makes ENOENT safe on retry.
+bool consume_regular_source(int source_rootfd, const StagingEntry& entry, std::string* error) {
+  std::string parent_path, leaf;
+  split_parent(entry.staging_path, &parent_path, &leaf);
+  int parent = -1;
+  if (!open_relative_directory(source_rootfd, parent_path, false, &parent, error)) {
+    if (errno == ENOENT) return true;
+    return false;
+  }
+  struct stat source_stat;
+  const bool valid = fstatat(parent, leaf.c_str(), &source_stat, AT_SYMLINK_NOFOLLOW) == 0;
+  if (!valid && errno == ENOENT) {
+    close(parent);
+    return true;
+  }
+  if (!valid) {
+    const int saved = errno;
+    close(parent);
+    errno = saved;
+    return fail(error, errno_message("inspect staging source " + entry.staging_path));
+  }
+  if (!S_ISREG(source_stat.st_mode)) {
+    close(parent);
+    return fail(error, "staging source is not a regular file: " + entry.staging_path);
+  }
+  if (unlinkat(parent, leaf.c_str(), 0) != 0 && errno != ENOENT) {
+    const int saved = errno;
+    close(parent);
+    errno = saved;
+    return fail(error, errno_message("consume staging source " + entry.staging_path));
+  }
+  close(parent);
+  return true;
+}
+
 bool entry_before(const StagingEntry& left, const StagingEntry& right) {
   return left.destination.size() < right.destination.size() ||
          (left.destination.size() == right.destination.size() && left.destination < right.destination);
@@ -384,16 +401,18 @@ bool parse_staging_manifest(const std::string& text, StagingManifest* manifest, 
   if (!JAST::parse(text, parse_errors, root) || root.kind != JSON_OBJECT)
     return fail(error, "invalid staging manifest: " + parse_errors.str());
   if (!has_only_fields(root, {"version", "workspace_root", "cas_staging_root", "job_key", "daemon_pid",
-                              "created_at_ns", "wake_run_id", "wake_job_id", "entries"}, error))
+                               "created_at_ns", "wake_run_id", "wake_job_id", "materialization_complete",
+                               "entries"}, error))
     return false;
   int64_t version;
   if (!required_integer(root, "version", &version, error)) return false;
   if (version != 1) return fail(error, "unsupported staging manifest version");
   StagingManifest parsed;
   if (!required_string(root, "workspace_root", &parsed.workspace_root, error) ||
-      !required_string(root, "cas_staging_root", &parsed.cas_staging_root, error) ||
-      !required_string(root, "job_key", &parsed.job_key, error) ||
-      !required_integer(root, "created_at_ns", &parsed.created_at_ns, error))
+       !required_string(root, "cas_staging_root", &parsed.cas_staging_root, error) ||
+       !required_string(root, "job_key", &parsed.job_key, error) ||
+       !required_integer(root, "created_at_ns", &parsed.created_at_ns, error) ||
+       !required_boolean(root, "materialization_complete", &parsed.materialization_complete, error))
     return false;
   auto daemon_pid = root.get_opt("daemon_pid");
   if (daemon_pid && !parse_integer(**daemon_pid, &parsed.daemon_pid))
@@ -427,7 +446,7 @@ bool parse_staging_manifest(const std::string& text, StagingManifest* manifest, 
     entry.mtime_nsec = static_cast<long>(nsec);
     if (type == "file") {
       if (!has_only_fields(json,
-                           {"destination", "type", "staging_path", "mode", "mtime_sec", "mtime_nsec", "placed"},
+                           {"destination", "type", "staging_path", "mode", "mtime_sec", "mtime_nsec"},
                            error))
         return false;
       entry.type = StagingEntryType::File;
@@ -436,7 +455,6 @@ bool parse_staging_manifest(const std::string& text, StagingManifest* manifest, 
           !required_integer(json, "mode", &mode, error) || mode < 0 || mode > 07777)
         return fail(error, "file entry has invalid staging_path or mode");
       entry.mode = static_cast<mode_t>(mode);
-      if (!optional_boolean(json, "placed", &entry.placed, error)) return false;
     } else if (type == "symlink") {
       if (!has_only_fields(json, {"destination", "type", "target", "mtime_sec", "mtime_nsec"}, error))
         return false;
@@ -481,6 +499,7 @@ bool write_staging_manifest_atomic(const std::string& path, const StagingManifes
   root.add("job_key", manifest.job_key);
   root.add("daemon_pid", static_cast<long long>(manifest.daemon_pid));
   root.add("created_at_ns", static_cast<long long>(manifest.created_at_ns));
+  root.add_bool("materialization_complete", manifest.materialization_complete);
   if (manifest.wake_run_id) {
     root.add("wake_run_id", static_cast<long long>(*manifest.wake_run_id));
     root.add("wake_job_id", static_cast<long long>(*manifest.wake_job_id));
@@ -493,7 +512,6 @@ bool write_staging_manifest_atomic(const std::string& path, const StagingManifes
       json.add("type", "file");
       json.add("staging_path", entry.staging_path);
       json.add("mode", static_cast<long>(entry.mode & 07777));
-      if (entry.placed) json.add_bool("placed", true);
     } else if (entry.type == StagingEntryType::Symlink) {
       json.add("type", "symlink");
       json.add("target", entry.target);
@@ -534,12 +552,6 @@ bool materialize_completed_workspace(const std::string& manifest_path,
   if (!read_staging_manifest(manifest_path, &manifest, error)) return false;
   for (const StagingEntry& entry : manifest.entries)
     summary->entries.push_back({entry.destination, false, false, ""});
-  if (manifest.entries.empty()) {
-    if (unlink(manifest_path.c_str()) != 0 && errno != ENOENT)
-      return fail(error, errno_message("remove empty manifest"));
-    summary->manifest_removed = true;
-    return true;
-  }
 
   // Bind this manifest to its original staging and workspace directories before
   // opening descriptor-relative roots for all later source and target access.
@@ -557,115 +569,75 @@ bool materialize_completed_workspace(const std::string& manifest_path,
     if (entry && entry->error.empty()) entry->error = message;
     ++summary->failed;
   };
-  // A placed file no longer needs its source. Delete it, then persist removal of
-  // the entry; ENOENT means a prior interrupted cleanup already deleted it.
-  auto consume_placed = [&](const StagingEntry& entry) {
-    std::string parent_path, leaf, cleanup_error;
-    split_parent(entry.staging_path, &parent_path, &leaf);
-    int parent = -1;
-    if (!open_relative_directory(source_root, parent_path, false, &parent, &cleanup_error) ||
-        (unlinkat(parent, leaf.c_str(), 0) != 0 && errno != ENOENT)) {
-      if (parent >= 0) close(parent);
-      record_failure(entry.destination,
-                     cleanup_error.empty() ? errno_message("consume staging source") : cleanup_error);
-      return;
-    }
-    close(parent);
-    if (!remove_entry_and_write(manifest_path, &manifest, entry.destination, &cleanup_error)) {
-      record_failure(entry.destination, cleanup_error);
-      return;
-    }
-    StagingEntrySummary* result = find_summary(summary, entry.destination);
-    if (result) result->consumed = true;
-    ++summary->consumed;
-  };
-
-  std::vector<StagingEntry> pending = manifest.entries;
-  // A prior attempt committed these destinations; finish source cleanup without
-  // reopening a source that may already have been removed.
-  for (const StagingEntry& entry : pending) {
-    if (entry.placed) consume_placed(entry);
-  }
-
-  pending = manifest.entries;
-  // Create parent directories before their children; final directory metadata
-  // waits until every child has been placed.
-  std::stable_sort(pending.begin(), pending.end(), [](const StagingEntry& left, const StagingEntry& right) {
-    const bool left_directory = entry_is_directory(left);
-    const bool right_directory = entry_is_directory(right);
-    if (left_directory != right_directory) return left_directory;
-    return entry_before(left, right);
-  });
-  for (const StagingEntry& entry : pending) {
-    if (entry.type != StagingEntryType::Directory && entry.placed) continue;
-    if (entry.type == StagingEntryType::Directory) {
-      // Create/reuse the directory now, but retain its entry for final metadata
-      // after all children have been materialized.
+  if (!manifest.materialization_complete) {
+    std::vector<StagingEntry> pending = manifest.entries;
+    // Create parent directories before their children; final directory metadata
+    // waits until every child has been placed.
+    std::stable_sort(pending.begin(), pending.end(), [](const StagingEntry& left, const StagingEntry& right) {
+      const bool left_directory = entry_is_directory(left);
+      const bool right_directory = entry_is_directory(right);
+      if (left_directory != right_directory) return left_directory;
+      return entry_before(left, right);
+    });
+    for (const StagingEntry& entry : pending) {
       std::string placement_error;
-      if (materialize_directory(workspace_root, entry, false, &placement_error)) {
-        StagingEntrySummary* result = find_summary(summary, entry.destination);
-        if (result) result->materialized = true;
-        ++summary->materialized;
+      bool placed = false;
+      if (entry.type == StagingEntryType::Directory) {
+        placed = materialize_directory(workspace_root, entry, false, &placement_error);
+      } else if (entry.type == StagingEntryType::Symlink) {
+        placed = materialize_symlink(workspace_root, entry, &placement_error);
       } else {
-        record_failure(entry.destination, placement_error);
+        placed = materialize_file(source_root, workspace_root, entry, &placement_error);
       }
-      continue;
-    }
-    if (entry.type == StagingEntryType::Symlink) {
-      // Symlinks have no separate staging source, so successful placement fully
-      // completes the entry and it can be removed immediately.
-      std::string placement_error;
-      if (!materialize_symlink(workspace_root, entry, &placement_error)) {
-        record_failure(entry.destination, placement_error);
-        continue;
-      }
-      if (!remove_entry_and_write(manifest_path, &manifest, entry.destination, &placement_error)) {
+      if (!placed) {
         record_failure(entry.destination, placement_error);
         continue;
       }
       StagingEntrySummary* result = find_summary(summary, entry.destination);
       if (result) result->materialized = true;
       ++summary->materialized;
-      continue;
     }
-    std::string placement_error;
-    if (!materialize_file(source_root, workspace_root, entry, &placement_error)) {
-      record_failure(entry.destination, placement_error);
-      continue;
+    // Do not apply restrictive final directory metadata when another entry
+    // failed: the uncompleted manifest must remain retryable.
+    if (summary->failed == 0) {
+      std::stable_sort(pending.begin(), pending.end(), [](const StagingEntry& left, const StagingEntry& right) {
+        return entry_before(right, left);
+      });
+      for (const StagingEntry& entry : pending) {
+        if (entry.type != StagingEntryType::Directory) continue;
+        std::string metadata_error;
+        if (!materialize_directory(workspace_root, entry, true, &metadata_error))
+          record_failure(entry.destination, metadata_error);
+      }
     }
-    // Persist the placement before consuming the only recoverable source.
-    auto current = std::find_if(manifest.entries.begin(), manifest.entries.end(),
-                                [&entry](const StagingEntry& candidate) {
-                                  return candidate.destination == entry.destination;
-                                });
-    current->placed = true;
-    if (!write_staging_manifest_atomic(manifest_path, manifest, &placement_error)) {
-      record_failure(entry.destination, placement_error);
-      continue;
+    if (summary->failed == 0) {
+      manifest.materialization_complete = true;
+      std::string checkpoint_error;
+      if (!write_staging_manifest_atomic(manifest_path, manifest, &checkpoint_error))
+        record_failure("", checkpoint_error);
     }
-    StagingEntrySummary* result = find_summary(summary, entry.destination);
-    if (result) result->materialized = true;
-    ++summary->materialized;
-    // The manifest now records that the destination is committed, so cleanup can
-    // safely remove the source even if a later recovery is interrupted.
-    consume_placed(*current);
   }
 
-  pending = manifest.entries;
-  // Apply parent metadata last so restrictive final modes cannot block child placement.
-  std::stable_sort(pending.begin(), pending.end(),
-                   [](const StagingEntry& left, const StagingEntry& right) { return entry_before(right, left); });
-  for (const StagingEntry& entry : pending) {
-    if (entry.type != StagingEntryType::Directory) continue;
-    StagingEntrySummary* result = find_summary(summary, entry.destination);
-    if (!result || !result->materialized) continue;
-    std::string metadata_error;
-    if (!materialize_directory(workspace_root, entry, true, &metadata_error) ||
-        !remove_entry_and_write(manifest_path, &manifest, entry.destination, &metadata_error)) {
-      record_failure(entry.destination, metadata_error);
+  if (summary->failed == 0 && manifest.materialization_complete) {
+    for (const StagingEntry& entry : manifest.entries) {
+      if (entry.type != StagingEntryType::File) continue;
+      std::string cleanup_error;
+      if (!consume_regular_source(source_root, entry, &cleanup_error)) {
+        record_failure(entry.destination, cleanup_error);
+        continue;
+      }
+      StagingEntrySummary* result = find_summary(summary, entry.destination);
+      if (result) result->consumed = true;
+      ++summary->consumed;
     }
   }
-  summary->manifest_removed = manifest.entries.empty();
+  if (summary->failed == 0 && manifest.materialization_complete) {
+    if (unlink(manifest_path.c_str()) != 0 && errno != ENOENT) {
+      record_failure("", errno_message("remove completed manifest"));
+    } else {
+      summary->manifest_removed = true;
+    }
+  }
   close(source_root);
   close(workspace_root);
   return summary->success();

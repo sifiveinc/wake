@@ -105,11 +105,12 @@ TEST(staging_manifest_workspace_materialization_retries, "cas") {
   EXPECT_EQUAL(first.materialized, 1U);
   EXPECT_TRUE(fs::exists(root + "/workspace/one"));
   EXPECT_EQUAL(read_file(root + "/workspace/one"), std::string("new one"));
-  EXPECT_FALSE(fs::exists(root + "/staging/one"));
+  EXPECT_TRUE(fs::exists(root + "/staging/one"));
   EXPECT_TRUE(fs::exists(path));
   wakefs::StagingManifest pending;
   ASSERT_TRUE(wakefs::read_staging_manifest(path, &pending, &error));
-  EXPECT_EQUAL(pending.entries.size(), 1U);
+  EXPECT_FALSE(pending.materialization_complete);
+  EXPECT_EQUAL(pending.entries.size(), 2U);
   write_file(root + "/staging/two", "new two");
   wakefs::StagingMaterializationSummary second;
   EXPECT_TRUE(wakefs::materialize_completed_workspace(path, &second, &error));
@@ -152,13 +153,14 @@ TEST(staging_manifest_removes_empty_manifest, "cas") {
   fs::remove_all(root);
 }
 
-TEST(staging_manifest_retries_placed_source_cleanup, "cas") {
-  const std::string root = test_root("placed");
+TEST(staging_manifest_retries_completed_source_cleanup, "cas") {
+  const std::string root = test_root("completed");
   fs::create_directories(root + "/workspace");
   fs::create_directories(root + "/staging");
   write_file(root + "/workspace/output", "already placed");
   wakefs::StagingManifest manifest = basic_manifest(root);
-  manifest.entries = {{"output", wakefs::StagingEntryType::File, "missing-source", "", 0644, 1, 2, true}};
+  manifest.materialization_complete = true;
+  manifest.entries = {{"output", wakefs::StagingEntryType::File, "missing-source", "", 0644, 1, 2}};
   const std::string path = root + "/staging/recovery.json";
   std::string error;
   ASSERT_TRUE(wakefs::write_staging_manifest_atomic(path, manifest, &error));
@@ -168,6 +170,40 @@ TEST(staging_manifest_retries_placed_source_cleanup, "cas") {
   EXPECT_EQUAL(summary.consumed, 1U);
   EXPECT_FALSE(fs::exists(path));
   fs::remove_all(root);
+}
+
+TEST(staging_manifest_completed_cleanup_rejects_symlink_source, "cas") {
+  const std::string root = test_root("cleanup_symlink");
+  fs::create_directories(root + "/workspace");
+  fs::create_directories(root + "/staging");
+  write_file(root + "/outside", "preserve");
+  symlink("../outside", (root + "/staging/source").c_str());
+  wakefs::StagingManifest manifest = basic_manifest(root);
+  manifest.materialization_complete = true;
+  manifest.entries = {{"output", wakefs::StagingEntryType::File, "source", "", 0644, 1, 2}};
+  const std::string path = root + "/staging/recovery.json";
+  std::string error;
+  ASSERT_TRUE(wakefs::write_staging_manifest_atomic(path, manifest, &error));
+  wakefs::StagingMaterializationSummary summary;
+  EXPECT_FALSE(wakefs::materialize_completed_workspace(path, &summary, &error));
+  EXPECT_TRUE(fs::is_symlink(root + "/staging/source"));
+  EXPECT_TRUE(fs::exists(path));
+  EXPECT_EQUAL(read_file(root + "/outside"), std::string("preserve"));
+  fs::remove_all(root);
+}
+
+TEST(staging_manifest_requires_completion_state, "cas") {
+  wakefs::StagingManifest manifest;
+  std::string error;
+  EXPECT_FALSE(wakefs::parse_staging_manifest(
+      R"({"version":1,"workspace_root":"/workspace","cas_staging_root":"/staging","job_key":"job","created_at_ns":1,"entries":[]})",
+      &manifest, &error));
+  EXPECT_FALSE(wakefs::parse_staging_manifest(
+      R"({"version":1,"workspace_root":"/workspace","cas_staging_root":"/staging","job_key":"job","created_at_ns":1,"materialization_complete":1,"entries":[]})",
+      &manifest, &error));
+  EXPECT_FALSE(wakefs::parse_staging_manifest(
+      R"({"version":1,"workspace_root":"/workspace","cas_staging_root":"/staging","job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[{"destination":"out","type":"file","staging_path":"source","mode":420,"mtime_sec":0,"mtime_nsec":0,"placed":true}]})",
+      &manifest, &error));
 }
 
 
