@@ -54,8 +54,8 @@
 #include "util/execpath.h"
 #include "util/mkdir_parents.h"
 #include "util/unlink.h"
-#include "wcl/file_ops.h"
 #include "wakefs/materialize_staging.h"
+#include "wcl/file_ops.h"
 
 #define MAX_JSON (128 * 1024 * 1024)
 
@@ -511,33 +511,35 @@ bool Job::snapshot_recovery_manifest(const std::string &job_id) {
           continue;
         }
       }
-      std::visit(overloaded{
-                     [&manifest, &sf](const StagedFileData &file) {
-                        struct stat st;
-                        int result = stat(file.staging_path.c_str(), &st);
-                        assert(result == 0);
-                        manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::File,
-                                                    file.staging_path.substr(g_staging_dir.size() + 1), "",
-                                                    *file.mode & 07777, st.st_mtim.tv_sec,
-                                                    st.st_mtim.tv_nsec});
-                      },
-                     [&manifest, &sf](const StagedSymlinkData &link) {
-                       manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::Symlink, "",
-                                                   link.target, 0, link.mtime.tv_sec, link.mtime.tv_nsec});
-                     },
-                     [&manifest, &sf](const StagedDirectoryData &directory) {
-                       manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::Directory, "", "",
-                                                   directory.mode & 07777, directory.mtime.tv_sec,
-                                                   directory.mtime.tv_nsec});
-                     },
-                      [](const StagedSpecialData &) {},
-                    },
-                    sf.data);
+      std::visit(
+          overloaded{
+              [&manifest, &sf](const StagedFileData &file) {
+                struct stat st;
+                int result = stat(file.staging_path.c_str(), &st);
+                assert(result == 0);
+                manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::File,
+                                            file.staging_path.substr(g_staging_dir.size() + 1), "",
+                                            *file.mode & 07777,
+                                            st.st_mtim.tv_sec, st.st_mtim.tv_nsec});
+              },
+              [&manifest, &sf](const StagedSymlinkData &link) {
+                manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::Symlink, "",
+                                            link.target, 0, link.mtime.tv_sec, link.mtime.tv_nsec});
+              },
+              [&manifest, &sf](const StagedDirectoryData &directory) {
+                manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::Directory, "",
+                                            "", directory.mode & 07777, directory.mtime.tv_sec,
+                                            directory.mtime.tv_nsec});
+              },
+              [](const StagedSpecialData &) {},
+          },
+          sf.data);
     }
   }
   std::string error;
   if (!wakefs::write_staging_manifest_atomic(final_path, manifest, &error)) {
-    fprintf(stderr, "fuse-waked: write recovery manifest '%s': %s\n", final_path.c_str(), error.c_str());
+    fprintf(stderr, "fuse-waked: write recovery manifest '%s': %s\n", final_path.c_str(),
+            error.c_str());
     return false;
   }
   recovery_manifest = final_path;

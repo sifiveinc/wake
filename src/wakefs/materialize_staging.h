@@ -23,7 +23,7 @@ enum class StagingEntryType { File, Symlink, Directory };
 
 // One output projection described by a final staging manifest.
 struct StagingEntry {
-  std::string destination;   // Workspace-relative projection path.
+  std::string destination;  // Workspace-relative projection path.
   StagingEntryType type;
   std::string staging_path;
   std::string target;

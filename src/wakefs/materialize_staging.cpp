@@ -108,7 +108,8 @@ bool required_boolean(const JAST& object, const char* key, bool* value, std::str
   return true;
 }
 
-bool has_only_fields(const JAST& object, std::initializer_list<const char*> allowed, std::string* error) {
+bool has_only_fields(const JAST& object, std::initializer_list<const char*> allowed,
+                     std::string* error) {
   for (const JChild& child : object.children) {
     bool known = false;
     for (const char* field : allowed) {
@@ -171,7 +172,8 @@ bool write_all(int fd, const std::string& data) {
   return true;
 }
 
-bool canonical_existing_directory(const std::string& path, std::string* canonical, std::string* error) {
+bool canonical_existing_directory(const std::string& path, std::string* canonical,
+                                  std::string* error) {
   char resolved[PATH_MAX];
   if (!realpath(path.c_str(), resolved)) return fail(error, errno_message("canonicalize " + path));
   struct stat st;
@@ -231,13 +233,14 @@ bool split_parent(const std::string& path, std::string* parent, std::string* lea
 
 // Safely open a regular staging source and atomically place it below target_rootfd.
 bool materialize_file(int source_rootfd, int target_rootfd, const StagingEntry& entry,
-                       std::string* error) {
+                      std::string* error) {
   std::string source_parent_path, source_leaf, target_parent_path, target_leaf;
   split_parent(entry.staging_path, &source_parent_path, &source_leaf);
   split_parent(entry.destination, &target_parent_path, &target_leaf);
   int source_parent = -1;
   int target_parent = -1;
-  if (!open_relative_directory(source_rootfd, source_parent_path, false, &source_parent, error)) return false;
+  if (!open_relative_directory(source_rootfd, source_parent_path, false, &source_parent, error))
+    return false;
   if (!open_relative_directory(target_rootfd, target_parent_path, true, &target_parent, error)) {
     close(source_parent);
     return false;
@@ -255,8 +258,9 @@ bool materialize_file(int source_rootfd, int target_rootfd, const StagingEntry& 
     close(source_parent);
     return fail(error, "staging source is not a regular file: " + entry.staging_path);
   }
-  auto copy = wcl::materialize_regular_file_at(
-      source, target_parent, target_leaf, entry.mode, static_cast<time_t>(entry.mtime_sec), entry.mtime_nsec);
+  auto copy =
+      wcl::materialize_regular_file_at(source, target_parent, target_leaf, entry.mode,
+                                       static_cast<time_t>(entry.mtime_sec), entry.mtime_nsec);
   close(source);
   if (!copy) {
     close(target_parent);
@@ -290,14 +294,13 @@ bool regular_destination_exists(int target_rootfd, const StagingEntry& entry, st
 }
 
 // Atomically replace a target-root-relative leaf with the manifest's symlink target.
-bool materialize_symlink(int target_rootfd, const StagingEntry& entry,
-                           std::string* error) {
+bool materialize_symlink(int target_rootfd, const StagingEntry& entry, std::string* error) {
   std::string parent_path, leaf;
   split_parent(entry.destination, &parent_path, &leaf);
   int parent = -1;
   if (!open_relative_directory(target_rootfd, parent_path, true, &parent, error)) return false;
-  auto result = wcl::materialize_symlink_at(
-      parent, leaf, entry.target, static_cast<time_t>(entry.mtime_sec), entry.mtime_nsec);
+  auto result = wcl::materialize_symlink_at(parent, leaf, entry.target,
+                                            static_cast<time_t>(entry.mtime_sec), entry.mtime_nsec);
   close(parent);
   if (!result) {
     errno = result.error();
@@ -307,8 +310,8 @@ bool materialize_symlink(int target_rootfd, const StagingEntry& entry,
 }
 
 // Ensure a target-root-relative directory exists, optionally applying final metadata.
-bool materialize_directory(int target_rootfd, const StagingEntry& entry,
-                           bool apply_metadata, std::string* error) {
+bool materialize_directory(int target_rootfd, const StagingEntry& entry, bool apply_metadata,
+                           std::string* error) {
   std::string parent_path, leaf;
   split_parent(entry.destination, &parent_path, &leaf);
   int parent = -1;
@@ -320,8 +323,8 @@ bool materialize_directory(int target_rootfd, const StagingEntry& entry,
     return fail(error, errno_message("create directory " + entry.destination));
   }
   if (apply_metadata) {
-    auto metadata = wcl::apply_directory_metadata(directory->fd, entry.mode,
-                                                   static_cast<time_t>(entry.mtime_sec), entry.mtime_nsec);
+    auto metadata = wcl::apply_directory_metadata(
+        directory->fd, entry.mode, static_cast<time_t>(entry.mtime_sec), entry.mtime_nsec);
     if (!metadata) {
       const int saved = metadata.error();
       close(directory->fd);
@@ -371,10 +374,13 @@ bool consume_regular_source(int source_rootfd, const StagingEntry& entry, std::s
 
 bool entry_before(const StagingEntry& left, const StagingEntry& right) {
   return left.destination.size() < right.destination.size() ||
-         (left.destination.size() == right.destination.size() && left.destination < right.destination);
+         (left.destination.size() == right.destination.size() &&
+          left.destination < right.destination);
 }
 
-bool entry_is_directory(const StagingEntry& entry) { return entry.type == StagingEntryType::Directory; }
+bool entry_is_directory(const StagingEntry& entry) {
+  return entry.type == StagingEntryType::Directory;
+}
 
 // Bind manifest roots to their current canonical directories and reject a workspace in staging.
 bool validate_roots(const StagingManifest& manifest, std::string* staging, std::string* workspace,
@@ -415,24 +421,27 @@ StagingEntrySummary* find_summary(StagingMaterializationSummary* summary,
 }  // namespace
 
 // Parse a versioned manifest and reject schema or lexical-safety violations.
-bool parse_staging_manifest(const std::string& text, StagingManifest* manifest, std::string* error) {
+bool parse_staging_manifest(const std::string& text, StagingManifest* manifest,
+                            std::string* error) {
   std::stringstream parse_errors;
   JAST root;
   if (!JAST::parse(text, parse_errors, root) || root.kind != JSON_OBJECT)
     return fail(error, "invalid staging manifest: " + parse_errors.str());
-  if (!has_only_fields(root, {"version", "workspace_root", "cas_staging_root", "job_key", "daemon_pid",
-                               "created_at_ns", "wake_run_id", "wake_job_id", "materialization_complete",
-                               "entries"}, error))
+  if (!has_only_fields(
+          root,
+          {"version", "workspace_root", "cas_staging_root", "job_key", "daemon_pid",
+           "created_at_ns", "wake_run_id", "wake_job_id", "materialization_complete", "entries"},
+          error))
     return false;
   int64_t version;
   if (!required_integer(root, "version", &version, error)) return false;
   if (version != 1) return fail(error, "unsupported staging manifest version");
   StagingManifest parsed;
   if (!required_string(root, "workspace_root", &parsed.workspace_root, error) ||
-       !required_string(root, "cas_staging_root", &parsed.cas_staging_root, error) ||
-       !required_string(root, "job_key", &parsed.job_key, error) ||
-       !required_integer(root, "created_at_ns", &parsed.created_at_ns, error) ||
-       !required_boolean(root, "materialization_complete", &parsed.materialization_complete, error))
+      !required_string(root, "cas_staging_root", &parsed.cas_staging_root, error) ||
+      !required_string(root, "job_key", &parsed.job_key, error) ||
+      !required_integer(root, "created_at_ns", &parsed.created_at_ns, error) ||
+      !required_boolean(root, "materialization_complete", &parsed.materialization_complete, error))
     return false;
   auto daemon_pid = root.get_opt("daemon_pid");
   if (daemon_pid && !parse_integer(**daemon_pid, &parsed.daemon_pid))
@@ -450,7 +459,8 @@ bool parse_staging_manifest(const std::string& text, StagingManifest* manifest, 
     parsed.wake_job_id = job_id;
   }
   auto entries = root.get_opt("entries");
-  if (!entries || (*entries)->kind != JSON_ARRAY) return fail(error, "manifest field 'entries' must be an array");
+  if (!entries || (*entries)->kind != JSON_ARRAY)
+    return fail(error, "manifest field 'entries' must be an array");
   for (const JChild& child : (*entries)->children) {
     const JAST& json = child.second;
     if (json.kind != JSON_OBJECT) return fail(error, "manifest entry must be an object");
@@ -465,9 +475,9 @@ bool parse_staging_manifest(const std::string& text, StagingManifest* manifest, 
       return fail(error, "entry mtime_nsec is outside its valid range");
     entry.mtime_nsec = static_cast<long>(nsec);
     if (type == "file") {
-      if (!has_only_fields(json,
-                           {"destination", "type", "staging_path", "mode", "mtime_sec", "mtime_nsec"},
-                           error))
+      if (!has_only_fields(
+              json, {"destination", "type", "staging_path", "mode", "mtime_sec", "mtime_nsec"},
+              error))
         return false;
       entry.type = StagingEntryType::File;
       int64_t mode;
@@ -476,7 +486,8 @@ bool parse_staging_manifest(const std::string& text, StagingManifest* manifest, 
         return fail(error, "file entry has invalid staging_path or mode");
       entry.mode = static_cast<mode_t>(mode);
     } else if (type == "symlink") {
-      if (!has_only_fields(json, {"destination", "type", "target", "mtime_sec", "mtime_nsec"}, error))
+      if (!has_only_fields(json, {"destination", "type", "target", "mtime_sec", "mtime_nsec"},
+                           error))
         return false;
       entry.type = StagingEntryType::Symlink;
       if (!required_string(json, "target", &entry.target, error)) return false;
@@ -547,8 +558,8 @@ bool write_staging_manifest_atomic(const std::string& path, const StagingManifes
   const size_t slash = path.rfind('/');
   const std::string parent = slash == std::string::npos ? "" : path.substr(0, slash + 1);
   const std::string filename = slash == std::string::npos ? path : path.substr(slash + 1);
-  const std::string temporary = parent + "." + filename + ".tmp." +
-                                std::to_string(getpid()) + "." + std::to_string(manifest_counter.fetch_add(1));
+  const std::string temporary = parent + "." + filename + ".tmp." + std::to_string(getpid()) + "." +
+                                std::to_string(manifest_counter.fetch_add(1));
   int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
   if (fd < 0) return fail(error, errno_message("create manifest temporary"));
   int saved = 0;
@@ -576,11 +587,11 @@ bool materialize_completed_workspace(const std::string& manifest_path,
   // Bind this manifest to its original staging and workspace directories before
   // opening descriptor-relative roots for all later source and target access.
   std::string canonical_staging, canonical_workspace;
-  if (!validate_roots(manifest, &canonical_staging, &canonical_workspace, error))
-    return false;
+  if (!validate_roots(manifest, &canonical_staging, &canonical_workspace, error)) return false;
   int source_root = -1;
   int workspace_root = -1;
-  if (!open_roots(canonical_staging, canonical_workspace, &source_root, &workspace_root, error)) return false;
+  if (!open_roots(canonical_staging, canonical_workspace, &source_root, &workspace_root, error))
+    return false;
 
   // Keep processing independent entries after a failure, while preserving the
   // first error that explains why each destination could not be recovered.
@@ -593,12 +604,13 @@ bool materialize_completed_workspace(const std::string& manifest_path,
     std::vector<StagingEntry> pending = manifest.entries;
     // Create parent directories before their children; final directory metadata
     // waits until every child has been placed.
-    std::stable_sort(pending.begin(), pending.end(), [](const StagingEntry& left, const StagingEntry& right) {
-      const bool left_directory = entry_is_directory(left);
-      const bool right_directory = entry_is_directory(right);
-      if (left_directory != right_directory) return left_directory;
-      return entry_before(left, right);
-    });
+    std::stable_sort(pending.begin(), pending.end(),
+                     [](const StagingEntry& left, const StagingEntry& right) {
+                       const bool left_directory = entry_is_directory(left);
+                       const bool right_directory = entry_is_directory(right);
+                       if (left_directory != right_directory) return left_directory;
+                       return entry_before(left, right);
+                     });
     for (const StagingEntry& entry : pending) {
       std::string placement_error;
       bool placed = false;
@@ -627,9 +639,10 @@ bool materialize_completed_workspace(const std::string& manifest_path,
     // Do not apply restrictive final directory metadata when another entry
     // failed: the uncompleted manifest must remain retryable.
     if (summary->failed == 0) {
-      std::stable_sort(pending.begin(), pending.end(), [](const StagingEntry& left, const StagingEntry& right) {
-        return entry_before(right, left);
-      });
+      std::stable_sort(pending.begin(), pending.end(),
+                       [](const StagingEntry& left, const StagingEntry& right) {
+                         return entry_before(right, left);
+                       });
       for (const StagingEntry& entry : pending) {
         if (entry.type != StagingEntryType::Directory) continue;
         std::string metadata_error;

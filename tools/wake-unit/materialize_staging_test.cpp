@@ -8,6 +8,8 @@
  *     http://www.apache.org/licenses/LICENSE-2.0
  */
 
+#include "wakefs/materialize_staging.h"
+
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -15,7 +17,6 @@
 #include <filesystem>
 #include <fstream>
 
-#include "wakefs/materialize_staging.h"
 #include "unit.h"
 
 namespace fs = std::filesystem;
@@ -241,7 +242,6 @@ TEST(staging_manifest_requires_completion_state, "cas") {
       R"({"version":1,"workspace_root":"/workspace","cas_staging_root":"/staging","job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[{"destination":"out","type":"file","staging_path":"source","mode":420,"mtime_sec":0,"mtime_nsec":0,"placed":true}]})",
       &manifest, &error));
 }
-
 
 TEST(staging_manifest_materializes_symlink_with_mtime, "cas") {
   const std::string root = test_root("symlink_mtime");
