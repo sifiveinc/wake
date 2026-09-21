@@ -293,8 +293,8 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
     }
   }
 
-  auto copy_result =
-      wcl::materialize_regular_file(src_path, dest_path, mode, mtime_sec, mtime_nsec, reflink_supported_);
+  auto copy_result = wcl::materialize_regular_file(src_path, dest_path, mode, mtime_sec, mtime_nsec,
+                                                   reflink_supported_);
   if (!copy_result) {
     return wcl::make_error<bool, CASError>(CASError::IOError);
   }

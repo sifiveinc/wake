@@ -47,7 +47,8 @@ result<CopyResult, posix_error_t> reflink_or_copy_fd(int src_fd, int dst_fd, boo
 #ifdef HAS_FICLONE
   if (attempt_reflink && ioctl(dst_fd, FICLONE, src_fd) == 0)
     return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Reflink, 0});
-  if (attempt_reflink && errno != EOPNOTSUPP && errno != ENOTTY && errno != EINVAL && errno != EXDEV)
+  if (attempt_reflink && errno != EOPNOTSUPP && errno != ENOTTY && errno != EINVAL &&
+      errno != EXDEV)
     return make_errno<CopyResult>();
 #else
   (void)attempt_reflink;
@@ -75,7 +76,8 @@ result<CopyResult, posix_error_t> reflink_or_copy_fd(int src_fd, int dst_fd, boo
   return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Copy, copied});
 }
 
-result<bool, posix_error_t> try_reflink(const std::string& src, const std::string& dst, mode_t mode) {
+result<bool, posix_error_t> try_reflink(const std::string& src, const std::string& dst,
+                                        mode_t mode) {
 #ifdef HAS_FICLONE
   auto src_fd = unique_fd::open(src.c_str(), O_RDONLY);
   if (!src_fd) return make_error<bool, posix_error_t>(src_fd.error());
@@ -97,11 +99,13 @@ result<bool, posix_error_t> try_reflink(const std::string& src, const std::strin
 #endif
 }
 
-result<CopyResult, posix_error_t> reflink_or_copy_file(const std::string& src, const std::string& dst,
-                                                        mode_t mode, bool attempt_reflink) {
+result<CopyResult, posix_error_t> reflink_or_copy_file(const std::string& src,
+                                                       const std::string& dst, mode_t mode,
+                                                       bool attempt_reflink) {
   if (attempt_reflink) {
     auto reflink = try_reflink(src, dst, mode);
-    if (reflink) return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Reflink, 0});
+    if (reflink)
+      return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Reflink, 0});
     const int error = reflink.error();
     if (error != EOPNOTSUPP && error != ENOTTY && error != EINVAL && error != EXDEV)
       return make_error<CopyResult, posix_error_t>(error);

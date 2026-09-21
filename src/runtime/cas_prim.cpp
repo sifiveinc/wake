@@ -37,8 +37,8 @@
 #include "types/primfn.h"
 #include "util/mkdir_parents.h"
 #include "value.h"
-#include "wcl/materialize.h"
 #include "wcl/filepath.h"
+#include "wcl/materialize.h"
 
 namespace {
 
@@ -185,7 +185,8 @@ static PRIMFN(prim_cas_materialize_item) {
 
     auto materialized = wcl::materialize_symlink(dest_str, *target_result, mtime_sec, mtime_nsec);
     if (!materialized) {
-      std::string msg = "Failed to materialize symlink " + dest_str + ": " + strerror(materialized.error());
+      std::string msg =
+          "Failed to materialize symlink " + dest_str + ": " + strerror(materialized.error());
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));
@@ -197,7 +198,8 @@ static PRIMFN(prim_cas_materialize_item) {
     long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
     auto materialized = wcl::materialize_directory(dest_str, mode, mtime_sec, mtime_nsec);
     if (!materialized) {
-      std::string msg = "Failed to materialize directory " + dest_str + ": " + strerror(materialized.error());
+      std::string msg =
+          "Failed to materialize directory " + dest_str + ": " + strerror(materialized.error());
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));
@@ -257,7 +259,8 @@ static PRIMFN(prim_materialize_staged_workspace_item) {
   if (type == "file") {
     std::string staging_path = staging_path_or_target->c_str();
     mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
-    auto materialized = wcl::materialize_regular_file(staging_path, dest_str, mode, mtime_sec, mtime_nsec);
+    auto materialized =
+        wcl::materialize_regular_file(staging_path, dest_str, mode, mtime_sec, mtime_nsec);
     if (!materialized) {
       std::string msg = "Failed to materialize staged file " + staging_path + " to " + dest_str +
                         ": " + strerror(materialized.error());
@@ -272,7 +275,8 @@ static PRIMFN(prim_materialize_staged_workspace_item) {
     std::string target = staging_path_or_target->c_str();
     auto materialized = wcl::materialize_symlink(dest_str, target, mtime_sec, mtime_nsec);
     if (!materialized) {
-      std::string msg = "Failed to materialize symlink " + dest_str + ": " + strerror(materialized.error());
+      std::string msg =
+          "Failed to materialize symlink " + dest_str + ": " + strerror(materialized.error());
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));
@@ -282,7 +286,8 @@ static PRIMFN(prim_materialize_staged_workspace_item) {
     mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
     auto materialized = wcl::materialize_directory(dest_str, mode, mtime_sec, mtime_nsec);
     if (!materialized) {
-      std::string msg = "Failed to materialize directory " + dest_str + ": " + strerror(materialized.error());
+      std::string msg =
+          "Failed to materialize directory " + dest_str + ": " + strerror(materialized.error());
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));

@@ -52,7 +52,7 @@ bool set_file_mtime(int fd, time_t seconds, long nanoseconds) {
 }
 
 result<int, posix_error_t> open_destination_parent(const std::string& destination,
-                                                    std::string* name) {
+                                                   std::string* name) {
   fs::path path(destination);
   *name = path.filename().string();
   fs::path parent = path.parent_path();
@@ -63,9 +63,11 @@ result<int, posix_error_t> open_destination_parent(const std::string& destinatio
 
 }  // namespace
 
-result<CopyResult, posix_error_t> materialize_regular_file_at(
-    int src_fd, int destination_parent_fd, const std::string& destination_name, mode_t mode,
-    time_t mtime_sec, long mtime_nsec, bool attempt_reflink) {
+result<CopyResult, posix_error_t> materialize_regular_file_at(int src_fd, int destination_parent_fd,
+                                                              const std::string& destination_name,
+                                                              mode_t mode, time_t mtime_sec,
+                                                              long mtime_nsec,
+                                                              bool attempt_reflink) {
   // Copy to a unique sibling first so rename publishes either the complete file
   // or the previous destination, never a partially materialized file.
   const std::string temporary = temporary_name();
@@ -90,9 +92,10 @@ result<CopyResult, posix_error_t> materialize_regular_file_at(
   return copy;
 }
 
-result<CopyResult, posix_error_t> materialize_regular_file(
-    const std::string& src, const std::string& destination, mode_t mode, time_t mtime_sec,
-    long mtime_nsec, bool attempt_reflink) {
+result<CopyResult, posix_error_t> materialize_regular_file(const std::string& src,
+                                                           const std::string& destination,
+                                                           mode_t mode, time_t mtime_sec,
+                                                           long mtime_nsec, bool attempt_reflink) {
   int source = open(src.c_str(), O_RDONLY | O_CLOEXEC);
   if (source < 0) return make_errno<CopyResult>();
   std::string name;
@@ -102,17 +105,20 @@ result<CopyResult, posix_error_t> materialize_regular_file(
     close(source);
     return make_error<CopyResult, posix_error_t>(saved);
   }
-  auto result = materialize_regular_file_at(source, *parent, name, mode, mtime_sec, mtime_nsec, attempt_reflink);
+  auto result = materialize_regular_file_at(source, *parent, name, mode, mtime_sec, mtime_nsec,
+                                            attempt_reflink);
   close(*parent);
   close(source);
   return result;
 }
 
-result<bool, posix_error_t> materialize_symlink_at(
-    int destination_parent_fd, const std::string& destination_name, const std::string& target,
-    time_t mtime_sec, long mtime_nsec) {
+result<bool, posix_error_t> materialize_symlink_at(int destination_parent_fd,
+                                                   const std::string& destination_name,
+                                                   const std::string& target, time_t mtime_sec,
+                                                   long mtime_nsec) {
   const std::string temporary = temporary_name();
-  if (symlinkat(target.c_str(), destination_parent_fd, temporary.c_str()) != 0) return make_errno<bool>();
+  if (symlinkat(target.c_str(), destination_parent_fd, temporary.c_str()) != 0)
+    return make_errno<bool>();
   if (mtime_sec != 0 || mtime_nsec != 0) {
     struct timespec times[2] = {{0, UTIME_OMIT}, {mtime_sec, mtime_nsec}};
     // Symlink timestamps are not supported consistently across filesystems.
@@ -127,8 +133,8 @@ result<bool, posix_error_t> materialize_symlink_at(
 }
 
 result<bool, posix_error_t> materialize_symlink(const std::string& destination,
-                                                 const std::string& target, time_t mtime_sec,
-                                                 long mtime_nsec) {
+                                                const std::string& target, time_t mtime_sec,
+                                                long mtime_nsec) {
   std::string name;
   auto parent = open_destination_parent(destination, &name);
   if (!parent) return make_error<bool, posix_error_t>(parent.error());
@@ -138,8 +144,8 @@ result<bool, posix_error_t> materialize_symlink(const std::string& destination,
 }
 
 result<DirectoryResult, posix_error_t> ensure_directory_at(int destination_parent_fd,
-                                                            const std::string& destination_name,
-                                                            mode_t initial_mode) {
+                                                           const std::string& destination_name,
+                                                           mode_t initial_mode) {
   bool created = false;
   if (mkdirat(destination_parent_fd, destination_name.c_str(), initial_mode & 07777) == 0) {
     created = true;
@@ -163,7 +169,7 @@ result<DirectoryResult, posix_error_t> ensure_directory_at(int destination_paren
 }
 
 result<bool, posix_error_t> apply_directory_metadata(int directory_fd, mode_t mode,
-                                                      time_t mtime_sec, long mtime_nsec) {
+                                                     time_t mtime_sec, long mtime_nsec) {
   if (fchmod(directory_fd, mode & 07777) != 0) return make_errno<bool>();
   if (mtime_sec == 0 && mtime_nsec == 0) return make_result<bool, posix_error_t>(true);
   struct timespec times[2] = {{0, UTIME_OMIT}, {mtime_sec, mtime_nsec}};
@@ -172,7 +178,7 @@ result<bool, posix_error_t> apply_directory_metadata(int directory_fd, mode_t mo
 }
 
 result<bool, posix_error_t> materialize_directory(const std::string& destination, mode_t mode,
-                                                   time_t mtime_sec, long mtime_nsec) {
+                                                  time_t mtime_sec, long mtime_nsec) {
   std::string name;
   auto parent = open_destination_parent(destination, &name);
   if (!parent) return make_error<bool, posix_error_t>(parent.error());

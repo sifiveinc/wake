@@ -37,12 +37,12 @@ struct CopyResult {
 // Clone or copy between already-open regular files. The source descriptor stays
 // pinned through the operation, avoiding path races in confined materializers.
 result<CopyResult, posix_error_t> reflink_or_copy_fd(int src_fd, int dst_fd,
-                                                       bool attempt_reflink = true);
+                                                     bool attempt_reflink = true);
 
 // Tries reflink first, then falls back to std::filesystem::copy_file.
 result<CopyResult, posix_error_t> reflink_or_copy_file(const std::string& src,
-                                                        const std::string& dst, mode_t mode,
-                                                        bool attempt_reflink = true);
+                                                       const std::string& dst, mode_t mode,
+                                                       bool attempt_reflink = true);
 
 // Try to reflink a file (copy-on-write clone) into an exclusive destination.
 result<bool, posix_error_t> try_reflink(const std::string& src, const std::string& dst,
