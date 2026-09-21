@@ -1,4 +1,4 @@
-/* Wake FUSE driver to capture file outputs
+/* Wake FUSE driver to capture file access and outputs
  *
  * Copyright 2019 SiFive, Inc.
  * Copyright 2001-2007  Miklos Szeredi <miklos@szeredi.hu>

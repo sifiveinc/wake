@@ -259,9 +259,7 @@ def finalizeJob job outputs cleanable reality runnerError =
 
     def preparedOutputStrings = map pstr preparedOutputStagingItems
 
-    wait
-    (\_ primJobFinish job preparedOutputStrings.implode cleanable.implode reality)
-    clResult
+    wait (\_ primJobFinish job preparedOutputStrings.implode cleanable.implode reality) clResult
 
 def isSourceOrClaimJob (cmd: List String): Boolean = match cmd
     prefix, _ if prefix ==* sourceJobCommandPrefix -> True
