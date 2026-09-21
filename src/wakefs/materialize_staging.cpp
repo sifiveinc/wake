@@ -269,6 +269,26 @@ bool materialize_file(int source_rootfd, int target_rootfd, const StagingEntry& 
   return true;
 }
 
+// After an interrupted placement, a missing source is safe to accept only when
+// its exact destination is already a regular file below non-symlink parents.
+bool regular_destination_exists(int target_rootfd, const StagingEntry& entry, std::string* error) {
+  std::string parent_path, leaf;
+  split_parent(entry.destination, &parent_path, &leaf);
+  int parent = -1;
+  if (!open_relative_directory(target_rootfd, parent_path, false, &parent, error)) return false;
+  struct stat destination_stat;
+  const bool present = fstatat(parent, leaf.c_str(), &destination_stat, AT_SYMLINK_NOFOLLOW) == 0;
+  if (!present) {
+    const int saved = errno;
+    close(parent);
+    if (saved == ENOENT) return false;
+    errno = saved;
+    return fail(error, errno_message("inspect materialized destination " + entry.destination));
+  }
+  close(parent);
+  return S_ISREG(destination_stat.st_mode);
+}
+
 // Atomically replace a target-root-relative leaf with the manifest's symlink target.
 bool materialize_symlink(int target_rootfd, const StagingEntry& entry,
                            std::string* error) {
@@ -588,6 +608,13 @@ bool materialize_completed_workspace(const std::string& manifest_path,
         placed = materialize_symlink(workspace_root, entry, &placement_error);
       } else {
         placed = materialize_file(source_root, workspace_root, entry, &placement_error);
+        if (!placed && errno == ENOENT) {
+          placement_error.clear();
+          placed = regular_destination_exists(workspace_root, entry, &placement_error);
+          if (!placed && placement_error.empty())
+            placement_error = "staging source and materialized destination are both missing: " +
+                              entry.staging_path;
+        }
       }
       if (!placed) {
         record_failure(entry.destination, placement_error);

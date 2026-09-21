@@ -119,6 +119,42 @@ TEST(staging_manifest_workspace_materialization_retries, "cas") {
   fs::remove_all(root);
 }
 
+TEST(staging_manifest_accepts_missing_source_with_existing_destination, "cas") {
+  const std::string root = test_root("missing_source_destination");
+  fs::create_directories(root + "/workspace");
+  fs::create_directories(root + "/staging");
+  write_file(root + "/workspace/output", "already materialized");
+  wakefs::StagingManifest manifest = basic_manifest(root);
+  manifest.entries = {{"output", wakefs::StagingEntryType::File, "missing-source", "", 0644, 1, 2}};
+  const std::string path = root + "/staging/recovery.json";
+  std::string error;
+  ASSERT_TRUE(wakefs::write_staging_manifest_atomic(path, manifest, &error));
+
+  wakefs::StagingMaterializationSummary summary;
+  ASSERT_TRUE(wakefs::materialize_completed_workspace(path, &summary, &error));
+  EXPECT_EQUAL(summary.materialized, 1U);
+  EXPECT_EQUAL(summary.consumed, 1U);
+  EXPECT_EQUAL(read_file(root + "/workspace/output"), std::string("already materialized"));
+  EXPECT_FALSE(fs::exists(path));
+  fs::remove_all(root);
+}
+
+TEST(staging_manifest_rejects_missing_source_without_destination, "cas") {
+  const std::string root = test_root("missing_source");
+  fs::create_directories(root + "/workspace");
+  fs::create_directories(root + "/staging");
+  wakefs::StagingManifest manifest = basic_manifest(root);
+  manifest.entries = {{"output", wakefs::StagingEntryType::File, "missing-source", "", 0644, 1, 2}};
+  const std::string path = root + "/staging/recovery.json";
+  std::string error;
+  ASSERT_TRUE(wakefs::write_staging_manifest_atomic(path, manifest, &error));
+
+  wakefs::StagingMaterializationSummary summary;
+  EXPECT_FALSE(wakefs::materialize_completed_workspace(path, &summary, &error));
+  EXPECT_TRUE(fs::exists(path));
+  fs::remove_all(root);
+}
+
 TEST(staging_manifest_blocks_destination_symlinks, "cas") {
   const std::string root = test_root("symlink");
   fs::create_directories(root + "/workspace");
