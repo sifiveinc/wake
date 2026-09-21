@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -168,7 +169,7 @@ int materialize_previous_workspace(const char *requested_run_id) {
   }
   bool success = true;
   size_t selected = 0;
-  for (const wakefs::CompletedStagingManifest &manifest : manifests) {
+  for (const wakefs::CompletedStagingManifest& manifest : manifests) {
     if (!manifest.manifest.wake_run_id || *manifest.manifest.wake_run_id != run_id) continue;
     ++selected;
     wakefs::StagingMaterializationSummary summary;
@@ -189,12 +190,6 @@ int materialize_previous_workspace(const char *requested_run_id) {
 }
 
 int materialize_manifest(const char *path) {
-  std::string workspace;
-  std::string error;
-  if (!resolve_workspace(&workspace, &error)) {
-    std::cerr << error << std::endl;
-    return 1;
-  }
   std::error_code ec;
   const fs::file_status status = fs::symlink_status(path, ec);
   if (ec || !fs::is_regular_file(status)) {
@@ -204,6 +199,7 @@ int materialize_manifest(const char *path) {
     return 1;
   }
   wakefs::StagingManifest manifest;
+  std::string error;
   if (!wakefs::read_staging_manifest(path, &manifest, &error)) {
     std::cerr << path << ": " << error << std::endl;
     return 1;
