@@ -60,8 +60,7 @@ volatile sig_atomic_t cancellation_repeated = 0;
 extern "C" void record_cancellation_signal(int signal) {
   if (cancellation_signal == 0) {
     cancellation_signal = signal;
-  }
-  else {
+  } else {
     cancellation_repeated = 1;
   }
 }
@@ -99,16 +98,14 @@ class CancellationSignalHandlers {
   bool installed_ = false;
 };
 
-bool cancellation_deadline_passed(const struct timespec& deadline) {
+bool cancellation_deadline_passed(const struct timespec &deadline) {
   struct timespec now;
   clock_gettime(CLOCK_MONOTONIC, &now);
   return now.tv_sec > deadline.tv_sec ||
          (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec);
 }
 
-bool process_group_exists(pid_t leader) {
-  return kill(-leader, 0) == 0 || errno == EPERM;
-}
+bool process_group_exists(pid_t leader) { return kill(-leader, 0) == 0 || errno == EPERM; }
 
 }  // namespace
 
@@ -266,9 +263,9 @@ int execve_wrapper(const std::vector<std::string> &command,
 }
 
 static bool collect_result_metadata(const std::string daemon_output, const struct timeval &start,
-                                     const struct timeval &stop, const pid_t pid, const int status,
-                                     const RUsage &rusage, bool timed_out, int canceled_signal,
-                                     std::string &result_json) {
+                                    const struct timeval &stop, const pid_t pid, const int status,
+                                    const RUsage &rusage, bool timed_out, int canceled_signal,
+                                    std::string &result_json) {
   JAST from_daemon;
   std::stringstream ss;
   if (!JAST::parse(daemon_output, ss, from_daemon)) {
@@ -311,8 +308,7 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
   return !result_ss.fail();
 }
 
-bool run_in_fuse(fuse_args &args, int &status, std::string &result_json,
-                 FuseRunOutcome &outcome) {
+bool run_in_fuse(fuse_args &args, int &status, std::string &result_json, FuseRunOutcome &outcome) {
   if (0 != chdir(args.working_dir.c_str())) {
     std::cerr << "chdir " << args.working_dir << ": " << strerror(errno) << std::endl;
     return false;
@@ -470,7 +466,8 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json,
       RUsage usage = {};
       status = 124;
       outcome = FuseRunOutcome::TimedOut;
-      return collect_result_metadata(output, start, stop, payload_pid, 124, usage, true, 0, result_json);
+      return collect_result_metadata(output, start, stop, payload_pid, 124, usage, true, 0,
+                                     result_json);
     } else if (wait_pid == payload_pid && !WIFSTOPPED(status)) {
       // The direct payload exited; descendants are handled below if cancellation began.
       payload_wait_status = status;

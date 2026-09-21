@@ -1058,10 +1058,9 @@ bool JobTable::wait(Runtime &runtime) {
     if (imp->draining && !imp->escalated) {
       struct timespec drain_now;
       clock_gettime(CLOCK_MONOTONIC, &drain_now);
-      const bool deadline_passed =
-          drain_now.tv_sec > imp->drain_deadline.tv_sec ||
-          (drain_now.tv_sec == imp->drain_deadline.tv_sec &&
-           drain_now.tv_nsec >= imp->drain_deadline.tv_nsec);
+      const bool deadline_passed = drain_now.tv_sec > imp->drain_deadline.tv_sec ||
+                                   (drain_now.tv_sec == imp->drain_deadline.tv_sec &&
+                                    drain_now.tv_nsec >= imp->drain_deadline.tv_nsec);
       if (exit_repeated || deadline_passed) {
         for (auto &entry : imp->pidmap) kill(entry.first, SIGKILL);
         imp->escalated = true;

@@ -405,8 +405,7 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
       }
     }
 
-    if (isolate_retcode && !canceled)
-      return 0;
+    if (isolate_retcode && !canceled) return 0;
     return canceled && retcode == 0 ? 1 : retcode;
   }
 
