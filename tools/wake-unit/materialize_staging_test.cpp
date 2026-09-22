@@ -56,7 +56,8 @@ std::string read_file(const std::string& path) {
 }
 
 bool materialize_from_workspace(const std::string& root, const std::string& manifest_path,
-                                wakefs::StagingMaterializationSummary* summary, std::string* error) {
+                                wakefs::StagingMaterializationSummary* summary,
+                                std::string* error) {
   const fs::path previous = fs::current_path();
   fs::current_path(workspace(root));
   const bool result = wakefs::materialize_completed_workspace(manifest_path, summary, error);
@@ -105,21 +106,22 @@ TEST(staging_manifest_rejects_unsafe_input, "cas") {
 TEST(staging_manifest_requires_exact_roots, "cas") {
   wakefs::StagingManifest manifest;
   std::string error;
-  for (const char* workspace_root : {"/workspace", "./", ".//", "workspace", "workspace/",
-                                    "../workspace", "//"}) {
+  for (const char* workspace_root :
+       {"/workspace", "./", ".//", "workspace", "workspace/", "../workspace", "//"}) {
     const std::string text =
         std::string("{\"version\":1,\"workspace_root\":\"") + workspace_root +
         "\",\"cas_staging_root\":\".build/cas/staging\",\"job_key\":\"job\","
         "\"created_at_ns\":1,\"materialization_complete\":false,\"entries\":[]}";
     EXPECT_FALSE(wakefs::parse_staging_manifest(text, &manifest, &error));
   }
-  for (const char* staging_root : {"/staging", "./.build/cas/staging", ".build//cas/staging",
-                                   ".build/cas/./staging", ".build/cas/staging/",
-                                   ".build/cas/staging//", "../.build/cas/staging"}) {
+  for (const char* staging_root :
+       {"/staging", "./.build/cas/staging", ".build//cas/staging", ".build/cas/./staging",
+        ".build/cas/staging/", ".build/cas/staging//", "../.build/cas/staging"}) {
     const std::string text =
         std::string("{\"version\":1,\"workspace_root\":\".\",\"cas_staging_root\":\"") +
-        staging_root + "\",\"job_key\":\"job\",\"created_at_ns\":1,"
-                       "\"materialization_complete\":false,\"entries\":[]}";
+        staging_root +
+        "\",\"job_key\":\"job\",\"created_at_ns\":1,"
+        "\"materialization_complete\":false,\"entries\":[]}";
     EXPECT_FALSE(wakefs::parse_staging_manifest(text, &manifest, &error));
   }
   manifest = basic_manifest("");

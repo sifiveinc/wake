@@ -519,8 +519,8 @@ bool Job::snapshot_recovery_manifest(const std::string &job_id) {
                 assert(result == 0);
                 manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::File,
                                             file.staging_path.substr(g_staging_dir.size() + 1), "",
-                                            *file.mode & 07777,
-                                            st.st_mtim.tv_sec, st.st_mtim.tv_nsec});
+                                            *file.mode & 07777, st.st_mtim.tv_sec,
+                                            st.st_mtim.tv_nsec});
               },
               [&manifest, &sf](const StagedSymlinkData &link) {
                 manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::Symlink, "",

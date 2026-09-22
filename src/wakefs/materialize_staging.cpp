@@ -117,8 +117,7 @@ bool has_only_fields(const JAST& object, std::initializer_list<const char*> allo
 
 // Validate the serialized manifest contract before trusting any paths or metadata.
 bool validate_metadata(const StagingManifest& manifest, std::string* error) {
-  if (manifest.workspace_root != ".")
-    return fail(error, "workspace_root must be exactly .");
+  if (manifest.workspace_root != ".") return fail(error, "workspace_root must be exactly .");
   if (manifest.cas_staging_root != ".build/cas/staging")
     return fail(error, "cas_staging_root must be exactly .build/cas/staging");
   if (manifest.job_key.empty() || manifest.job_key.find('/') != std::string::npos ||
