@@ -85,14 +85,15 @@ struct CompletedStagingManifest {
 // first by creation time, then pathname, so processing deterministically lets a
 // newer manifest replace an older projection at the same destination.
 bool discover_completed_staging_manifests(const std::string& recovery_dir,
-                                           std::vector<CompletedStagingManifest>* manifests,
-                                           std::string* error);
+                                          std::vector<CompletedStagingManifest>* manifests,
+                                          std::string* error);
 
 // Restore outputs to their recorded workspace, then remove their staging sources
 // and completed manifest entries.
-bool materialize_completed_workspace(const std::string& manifest_path, const StagingManifest& manifest,
-                                      StagingMaterializationSummary* summary, std::string* error);
 bool materialize_completed_workspace(const std::string& manifest_path,
-                                      StagingMaterializationSummary* summary, std::string* error);
+                                     const StagingManifest& manifest,
+                                     StagingMaterializationSummary* summary, std::string* error);
+bool materialize_completed_workspace(const std::string& manifest_path,
+                                     StagingMaterializationSummary* summary, std::string* error);
 
 }  // namespace wakefs
