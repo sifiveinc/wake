@@ -33,6 +33,8 @@
 #include "wcl/file_ops.h"
 #include "wcl/materialize.h"
 
+namespace fs = std::filesystem;
+
 namespace wakefs {
 
 namespace fs = std::filesystem;

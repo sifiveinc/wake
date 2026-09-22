@@ -83,7 +83,7 @@ void print_help() {
       "                             Materialize only the staging files with the specified runID. \n"
       "    -M --materialize-manifest PATH                                                        \n"
       "                             Materialize only the staging files specified by the recovery \n"
-      "                             manifest path.                                               \n"
+      "                             manifest path using the current workspace layout.            \n"
       "                                                                                          \n"
       "Other options                                                                             \n"
       "    -h --help                Print usage                                                  \n"
@@ -171,12 +171,6 @@ int materialize_previous_workspace(const char *requested_run_id) {
   for (const wakefs::CompletedStagingManifest &manifest : manifests) {
     if (!manifest.manifest.wake_run_id || *manifest.manifest.wake_run_id != run_id) continue;
     ++selected;
-    if (manifest.manifest.workspace_root != workspace) {
-      std::cerr << manifest.path << ": recorded workspace " << manifest.manifest.workspace_root
-                << " does not match selected workspace " << workspace << std::endl;
-      success = false;
-      continue;
-    }
     wakefs::StagingMaterializationSummary summary;
     std::string materialize_error;
     if (!wakefs::materialize_completed_workspace(manifest.path, manifest.manifest, &summary,
@@ -195,6 +189,12 @@ int materialize_previous_workspace(const char *requested_run_id) {
 }
 
 int materialize_manifest(const char *path) {
+  std::string workspace;
+  std::string error;
+  if (!resolve_workspace(&workspace, &error)) {
+    std::cerr << error << std::endl;
+    return 1;
+  }
   std::error_code ec;
   const fs::file_status status = fs::symlink_status(path, ec);
   if (ec || !fs::is_regular_file(status)) {
@@ -204,7 +204,6 @@ int materialize_manifest(const char *path) {
     return 1;
   }
   wakefs::StagingManifest manifest;
-  std::string error;
   if (!wakefs::read_staging_manifest(path, &manifest, &error)) {
     std::cerr << path << ": " << error << std::endl;
     return 1;
@@ -228,8 +227,7 @@ struct ImmediateMaterialization {
   std::string error;
 };
 
-ImmediateMaterialization materialize_returned_manifest(const fuse_args &args,
-                                                       const std::string &result_json) {
+ImmediateMaterialization materialize_returned_manifest(const std::string &result_json) {
   ImmediateMaterialization result;
   std::stringstream parse_errors;
   JAST metadata;
@@ -244,21 +242,19 @@ ImmediateMaterialization materialize_returned_manifest(const fuse_args &args,
   }
   result.manifest_path = (*manifest_field)->value;
 
+  std::string workspace_text;
+  if (!resolve_workspace(&workspace_text, &result.error)) return result;
+  const fs::path workspace = workspace_text;
+  const fs::path recovery_dir = workspace / ".build" / "cas" / "staging" / "recovery";
+  const fs::path manifest_relative = result.manifest_path;
+  const fs::path recovery_relative = ".build/cas/staging/recovery";
+  if (manifest_relative.is_absolute() || manifest_relative.parent_path() != recovery_relative ||
+      manifest_relative.filename().empty()) {
+    result.error = "recovery manifest must be a direct workspace-relative recovery child";
+    return result;
+  }
+  const fs::path manifest = workspace / manifest_relative;
   std::error_code ec;
-  const fs::path workspace = fs::canonical(args.working_dir, ec);
-  if (ec) {
-    result.error = "canonicalize workspace: " + ec.message();
-    return result;
-  }
-  fs::path cas_root = args.cas_dir;
-  if (cas_root.is_relative()) cas_root = workspace / cas_root;
-  cas_root = fs::canonical(cas_root, ec);
-  if (ec) {
-    result.error = "canonicalize CAS root: " + ec.message();
-    return result;
-  }
-  const fs::path recovery_dir = cas_root / "staging" / "recovery";
-  const fs::path manifest = fs::path(result.manifest_path);
   const fs::file_status status = fs::symlink_status(manifest, ec);
   if (ec || !fs::is_regular_file(status)) {
     result.error = ec ? "inspect recovery manifest: " + ec.message()
@@ -266,19 +262,16 @@ ImmediateMaterialization materialize_returned_manifest(const fuse_args &args,
     return result;
   }
   const fs::path manifest_parent = fs::canonical(manifest.parent_path(), ec);
-  if (ec || manifest_parent != recovery_dir) {
+  const fs::path canonical_recovery_dir = fs::canonical(recovery_dir, ec);
+  if (ec || manifest_parent != canonical_recovery_dir) {
     result.error = ec ? "canonicalize recovery manifest directory: " + ec.message()
                       : "recovery manifest is outside the recovery directory";
     return result;
   }
 
   wakefs::StagingManifest parsed;
+  result.manifest_path = manifest.string();
   if (!wakefs::read_staging_manifest(result.manifest_path, &parsed, &result.error)) return result;
-  if (parsed.workspace_root != workspace.string() ||
-      parsed.cas_staging_root != (cas_root / "staging").string()) {
-    result.error = "recovery manifest roots do not match this wakebox invocation";
-    return result;
-  }
 
   wakefs::StagingMaterializationSummary summary;
   result.success = wakefs::materialize_completed_workspace(result.manifest_path, parsed, &summary,
@@ -398,7 +391,7 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
   if (!has_output) {
     if (!run_in_fuse(args, retcode, result)) return 1;
     if (materialize_staging) {
-      const ImmediateMaterialization materialization = materialize_returned_manifest(args, result);
+      const ImmediateMaterialization materialization = materialize_returned_manifest(result);
       if (!materialization.success) {
         std::cerr << "materialize staging: " << materialization.error << std::endl;
         if (retcode == 0) return 1;
@@ -429,7 +422,7 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
 
   ImmediateMaterialization materialization;
   if (materialize_staging) {
-    materialization = materialize_returned_manifest(args, result);
+    materialization = materialize_returned_manifest(result);
     if (!materialization.success) {
       std::cerr << "materialize staging: " << materialization.error << std::endl;
     } else {
