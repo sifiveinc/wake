@@ -19,11 +19,16 @@ echo "$OUTPUT" | grep -q "hello world" || { echo "FAIL: expected 'hello world' i
 grep -q '"test_output.txt"' "$STATS_FILE" || { echo "FAIL: test_output.txt missing from staging_files"; cat "$STATS_FILE"; exit 1; }
 grep -q '"type":"file"'     "$STATS_FILE" || { echo "FAIL: test_output.txt type is not file"; cat "$STATS_FILE"; exit 1; }
 grep -q '"staging_path"'    "$STATS_FILE" || { echo "FAIL: staging_path missing from staging_files"; cat "$STATS_FILE"; exit 1; }
+grep -q '"staging_path":".build/cas/staging/' "$STATS_FILE" || { echo "FAIL: staging_path is not workspace-relative"; cat "$STATS_FILE"; exit 1; }
 MANIFEST=$(sed -n 's/.*"recovery_manifest":"\([^"]*\)".*/\1/p' "$STATS_FILE")
 [ -n "$MANIFEST" ] || { echo "FAIL: recovery manifest missing from result"; cat "$STATS_FILE"; exit 1; }
+[ "$MANIFEST" = ".build/cas/staging/recovery/${MANIFEST##*/}" ] || { echo "FAIL: recovery manifest is not workspace-relative: $MANIFEST"; exit 1; }
 [ -f "$MANIFEST" ] || { echo "FAIL: recovery manifest was not written"; exit 1; }
 grep -q '"version":1' "$MANIFEST" || { echo "FAIL: recovery manifest version missing"; cat "$MANIFEST"; exit 1; }
+grep -q '"workspace_root":"\."' "$MANIFEST" || { echo "FAIL: workspace root is not relocatable"; cat "$MANIFEST"; exit 1; }
+grep -q '"cas_staging_root":"\.build/cas/staging"' "$MANIFEST" || { echo "FAIL: staging root is not relocatable"; cat "$MANIFEST"; exit 1; }
 grep -q '"destination":"test_output.txt"' "$MANIFEST" || { echo "FAIL: recovery manifest output missing"; cat "$MANIFEST"; exit 1; }
+grep -q '"staging_path":"[0-9][0-9]*_[0-9][0-9]*"' "$MANIFEST" || { echo "FAIL: manifest staging_path is not relative to staging root"; cat "$MANIFEST"; exit 1; }
 case "$MANIFEST" in
   */wakebox-*-*.json) ;;
   *) echo "FAIL: standalone manifest has unexpected name: $MANIFEST"; exit 1 ;;

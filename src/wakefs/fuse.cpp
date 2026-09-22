@@ -124,6 +124,10 @@ bool json_as_struct(const std::string &json, json_args &result) {
   if (result.cas_dir.empty()) {
     result.cas_dir = ".build/cas";
   }
+  if (result.cas_dir != ".build/cas") {
+    std::cerr << "cas-dir must be exactly .build/cas" << std::endl;
+    return false;
+  }
 
   JAST timeout_entry = jast.get("command-timeout");
   if (timeout_entry.kind == JSON_INTEGER) {

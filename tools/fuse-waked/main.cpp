@@ -38,7 +38,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <filesystem>
 #include <fstream>
 #include <map>
 #include <optional>
@@ -67,7 +66,6 @@ static int linger_timeout;
 
 // Staging directory for CAS
 static std::string g_staging_dir;
-static std::string g_workspace_root;
 
 // Helper for std::visit with multiple lambdas
 template <class... Ts>
@@ -374,16 +372,6 @@ void Job::parse() {
     fprintf(stderr, "fuse-waked: failed to create CAS staging directory '%s': %s\n",
             g_staging_dir.c_str(), strerror(err));
   }
-  std::error_code canonical_error;
-  std::filesystem::path canonical_staging =
-      std::filesystem::canonical(g_staging_dir, canonical_error);
-  if (canonical_error) {
-    fprintf(stderr, "fuse-waked: failed to canonicalize CAS staging directory: %s\n",
-            canonical_error.message().c_str());
-  } else {
-    g_staging_dir = canonical_staging.string();
-  }
-
   // We only need to make the relative paths visible; absolute paths are already
   files_visible.clear();
   visible_entries.clear();
@@ -517,7 +505,7 @@ static bool atomic_write_file(const std::string &temporary_path, const std::stri
 // Repeated calls reuse the same immutable record; special nodes and FUSE artifacts are excluded.
 bool Job::snapshot_recovery_manifest(const std::string &job_id) {
   if (!recovery_manifest.empty()) return true;
-  if (g_workspace_root.empty() || g_staging_dir.empty()) return false;
+  if (g_staging_dir.empty()) return false;
 
   const std::string recovery_dir = g_staging_dir + "/recovery";
   int mkdir_error = mkdir_with_parents(recovery_dir, 0755);
@@ -539,8 +527,8 @@ bool Job::snapshot_recovery_manifest(const std::string &job_id) {
   // Increment this for incompatible manifest schema changes; materializers must reject unknown
   // versions.
   manifest.add("version", 1);
-  manifest.add("workspace_root", g_workspace_root);
-  manifest.add("cas_staging_root", g_staging_dir);
+  manifest.add("workspace_root", ".");
+  manifest.add("cas_staging_root", ".build/cas/staging");
   manifest.add("job_key", job_id);
   manifest.add("daemon_pid", static_cast<long>(getpid()));
   manifest.add("created_at_ns", static_cast<long long>(now.tv_sec) * 1000000000LL + now.tv_nsec);
@@ -566,35 +554,33 @@ bool Job::snapshot_recovery_manifest(const std::string &job_id) {
       }
       JAST &manifest_entry = entries.add("", JSON_OBJECT);
       manifest_entry.add("destination", sf.dest_path);
-      std::visit(
-          overloaded{
-              [&manifest_entry](const StagedFileData &file) {
-                struct stat st;
-                int result = stat(file.staging_path.c_str(), &st);
-                assert(result == 0);
-                std::filesystem::path relative =
-                    std::filesystem::path(file.staging_path).lexically_relative(g_staging_dir);
-                manifest_entry.add("type", "file");
-                manifest_entry.add("staging_path", relative.string());
-                manifest_entry.add("mode", static_cast<long>(*file.mode & 07777));
-                manifest_entry.add("mtime_sec", static_cast<long>(st.st_mtim.tv_sec));
-                manifest_entry.add("mtime_nsec", static_cast<long>(st.st_mtim.tv_nsec));
-              },
-              [&manifest_entry](const StagedSymlinkData &link) {
-                manifest_entry.add("type", "symlink");
-                manifest_entry.add("target", link.target);
-                manifest_entry.add("mtime_sec", static_cast<long>(link.mtime.tv_sec));
-                manifest_entry.add("mtime_nsec", static_cast<long>(link.mtime.tv_nsec));
-              },
-              [&manifest_entry](const StagedDirectoryData &directory) {
-                manifest_entry.add("type", "directory");
-                manifest_entry.add("mode", static_cast<long>(directory.mode & 07777));
-                manifest_entry.add("mtime_sec", static_cast<long>(directory.mtime.tv_sec));
-                manifest_entry.add("mtime_nsec", static_cast<long>(directory.mtime.tv_nsec));
-              },
-              [](const StagedSpecialData &) {},
-          },
-          sf.data);
+      std::visit(overloaded{
+                     [&manifest_entry](const StagedFileData &file) {
+                       struct stat st;
+                       int result = stat(file.staging_path.c_str(), &st);
+                       assert(result == 0);
+                       manifest_entry.add("type", "file");
+                       manifest_entry.add("staging_path",
+                                          file.staging_path.substr(g_staging_dir.size() + 1));
+                       manifest_entry.add("mode", static_cast<long>(*file.mode & 07777));
+                       manifest_entry.add("mtime_sec", static_cast<long>(st.st_mtim.tv_sec));
+                       manifest_entry.add("mtime_nsec", static_cast<long>(st.st_mtim.tv_nsec));
+                     },
+                     [&manifest_entry](const StagedSymlinkData &link) {
+                       manifest_entry.add("type", "symlink");
+                       manifest_entry.add("target", link.target);
+                       manifest_entry.add("mtime_sec", static_cast<long>(link.mtime.tv_sec));
+                       manifest_entry.add("mtime_nsec", static_cast<long>(link.mtime.tv_nsec));
+                     },
+                     [&manifest_entry](const StagedDirectoryData &directory) {
+                       manifest_entry.add("type", "directory");
+                       manifest_entry.add("mode", static_cast<long>(directory.mode & 07777));
+                       manifest_entry.add("mtime_sec", static_cast<long>(directory.mtime.tv_sec));
+                       manifest_entry.add("mtime_nsec", static_cast<long>(directory.mtime.tv_nsec));
+                     },
+                     [](const StagedSpecialData &) {},
+                 },
+                 sf.data);
     }
   }
   std::stringstream serialized_manifest;
@@ -2575,7 +2561,6 @@ int main(int argc, char *argv[]) {
   bool madedir;
   int loop_status;
   struct rlimit rlim;
-  std::error_code workspace_error;
 
   if (argc != 3) {
     fprintf(stderr, "Syntax: fuse-waked <mount-point> <min-timeout-seconds>\n");
@@ -2613,13 +2598,6 @@ int main(int argc, char *argv[]) {
     perror("open .");
     goto term;
   }
-  g_workspace_root = std::filesystem::canonical(".", workspace_error).string();
-  if (workspace_error) {
-    fprintf(stderr, "fuse-waked: failed to canonicalize workspace root: %s\n",
-            workspace_error.message().c_str());
-    goto term;
-  }
-
   madedir = mkdir(path.c_str(), 0775) == 0;
   if (!madedir && errno != EEXIST) {
     fprintf(stderr, "mkdir %s: %s\n", path.c_str(), strerror(errno));
