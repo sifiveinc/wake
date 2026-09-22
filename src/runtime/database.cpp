@@ -124,6 +124,7 @@ struct Database::detail {
 
   long run_id;
   long gc_watermark;
+  std::unordered_set<long> unfinished_current_run_jobs;
   std::optional<RunLock> run_lock;
   detail(bool debugdb_)
       : debugdb(debugdb_),
@@ -945,6 +946,10 @@ void Database::prepare(const std::string &cmdline) {
 
 long Database::current_run_id() const { return imp->run_id; }
 
+std::vector<long> Database::unfinished_current_run_jobs() const {
+  return {imp->unfinished_current_run_jobs.begin(), imp->unfinished_current_run_jobs.end()};
+}
+
 void Database::finish_run() {
   auto ts = gettime_ns();
 
@@ -1560,6 +1565,8 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   finish_stmt(why, imp->detect_overlap, imp->debugdb);
 
   end_txn();
+
+  imp->unfinished_current_run_jobs.erase(job);
 
   if (fail) exit(1);
 
@@ -2843,6 +2850,7 @@ void Database::start_job(long job, int64_t starttime) {
   bind_integer(why, imp->set_starttime, 2, job);
   single_step(why, imp->set_starttime, imp->debugdb);
   end_txn();
+  imp->unfinished_current_run_jobs.insert(job);
 }
 
 void Database::start_job(long job, int64_t starttime, pid_t pid) {
@@ -2857,6 +2865,7 @@ void Database::start_job(long job, int64_t starttime, pid_t pid) {
   bind_integer(why, imp->insert_live_job, 3, pid);
   single_step(why, imp->insert_live_job, imp->debugdb);
   end_txn();
+  imp->unfinished_current_run_jobs.insert(job);
 }
 
 std::optional<LiveJobInfo> Database::get_live_job(long job_id) const {

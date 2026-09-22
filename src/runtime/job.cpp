@@ -334,7 +334,7 @@ struct JobTable::detail {
   bool batch;
   bool draining;
   bool escalated;
-  bool deadline_escalated;
+  bool deadline_exceeded;
   struct timespec drain_deadline;
   struct timespec wall;
   RUsage childrenUsage;
@@ -512,7 +512,7 @@ JobTable::JobTable(Database *db, ResourceBudget memory, ResourceBudget cpu, bool
   imp->batch = batch;
   imp->draining = false;
   imp->escalated = false;
-  imp->deadline_escalated = false;
+  imp->deadline_exceeded = false;
   imp->drain_deadline = {};
   imp->db = db;
   imp->active = 0;
@@ -1064,7 +1064,7 @@ bool JobTable::wait(Runtime &runtime) {
       if (exit_repeated || deadline_passed) {
         for (auto &entry : imp->pidmap) kill(entry.first, SIGKILL);
         imp->escalated = true;
-        imp->deadline_escalated = deadline_passed;
+        imp->deadline_exceeded = deadline_passed;
       }
     }
 
@@ -1219,7 +1219,7 @@ bool JobTable::drain(Runtime &runtime) {
   for (auto &entry : imp->pidmap) kill(entry.first, SIGTERM);
 
   while (!imp->pidmap.empty()) wait(runtime);
-  return imp->deadline_escalated;
+  return imp->deadline_exceeded;
 }
 
 Job::Job(Database *db_, String *label_, String *dir_, String *stdin_file_, String *environ,
