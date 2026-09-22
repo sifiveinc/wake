@@ -22,7 +22,6 @@
 #include <atomic>
 #include <climits>
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <set>
@@ -32,8 +31,6 @@
 #include "json/json5.h"
 #include "wcl/file_ops.h"
 #include "wcl/materialize.h"
-
-namespace fs = std::filesystem;
 
 namespace wakefs {
 
@@ -62,11 +59,6 @@ bool is_safe_relative_path(const std::string& path) {
     begin = end + 1;
   }
   return path.back() != '/';
-}
-
-bool is_absolute_normal_path(const std::string& path) {
-  if (path.empty() || path.front() != '/' || path.find('\0') != std::string::npos) return false;
-  return fs::path(path).lexically_normal().string() == path;
 }
 
 bool parse_integer(const JAST& json, int64_t* value) {
@@ -125,10 +117,10 @@ bool has_only_fields(const JAST& object, std::initializer_list<const char*> allo
 
 // Validate the serialized manifest contract before trusting any paths or metadata.
 bool validate_metadata(const StagingManifest& manifest, std::string* error) {
-  if (!is_absolute_normal_path(manifest.workspace_root))
-    return fail(error, "workspace_root must be an absolute normalized path");
-  if (!is_absolute_normal_path(manifest.cas_staging_root))
-    return fail(error, "cas_staging_root must be an absolute normalized path");
+  if (manifest.workspace_root != ".")
+    return fail(error, "workspace_root must be exactly .");
+  if (manifest.cas_staging_root != ".build/cas/staging")
+    return fail(error, "cas_staging_root must be exactly .build/cas/staging");
   if (manifest.job_key.empty() || manifest.job_key.find('/') != std::string::npos ||
       manifest.job_key.find('\0') != std::string::npos)
     return fail(error, "job_key must be a nonempty path component");
@@ -382,32 +374,32 @@ bool entry_is_directory(const StagingEntry& entry) {
   return entry.type == StagingEntryType::Directory;
 }
 
-// Bind manifest roots to their current canonical directories and reject a workspace in staging.
-bool validate_roots(const StagingManifest& manifest, std::string* staging, std::string* workspace,
-                    std::string* error) {
-  if (!canonical_existing_directory(manifest.cas_staging_root, staging, error) ||
-      !canonical_existing_directory(manifest.workspace_root, workspace, error))
-    return false;
-  if (*staging != manifest.cas_staging_root || *workspace != manifest.workspace_root)
-    return fail(error, "manifest roots no longer match their canonical filesystem locations");
-  const std::string workspace_from_staging =
-      fs::path(*workspace).lexically_relative(fs::path(*staging)).string();
-  if (*workspace == *staging ||
-      (workspace_from_staging != ".." && workspace_from_staging.rfind("../", 0) != 0))
-    return fail(error, "workspace root must not be inside the staging root");
-  return true;
-}
+// Resolve the fixed staging layout below the current workspace. Each component
+// is opened without following symlinks before it is used as a descriptor root.
+bool validate_roots(int* source_root, int* target_root, std::string* error) {
+  char current[PATH_MAX];
+  if (!getcwd(current, sizeof(current))) return fail(error, errno_message("get current workspace"));
+  std::string workspace;
+  if (!canonical_existing_directory(current, &workspace, error)) return false;
 
-bool open_roots(const std::string& staging, const std::string& destination, int* source_root,
-                int* target_root, std::string* error) {
-  *source_root = open(staging.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-  *target_root = open(destination.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-  if (*source_root >= 0 && *target_root >= 0) return true;
-  const int saved = errno;
-  if (*source_root >= 0) close(*source_root);
-  if (*target_root >= 0) close(*target_root);
-  errno = saved;
-  return fail(error, errno_message("open materialization roots"));
+  int workspace_fd = open(workspace.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (workspace_fd < 0) return fail(error, errno_message("open current workspace"));
+  int build_fd = -1;
+  int cas_fd = -1;
+  int staging_fd = -1;
+  if (!open_directory_at(workspace_fd, ".build", &build_fd, error) ||
+      !open_directory_at(build_fd, "cas", &cas_fd, error) ||
+      !open_directory_at(cas_fd, "staging", &staging_fd, error)) {
+    if (build_fd >= 0) close(build_fd);
+    if (cas_fd >= 0) close(cas_fd);
+    close(workspace_fd);
+    return false;
+  }
+  close(build_fd);
+  close(cas_fd);
+  *source_root = staging_fd;
+  *target_root = workspace_fd;
+  return true;
 }
 
 StagingEntrySummary* find_summary(StagingMaterializationSummary* summary,
@@ -574,7 +566,7 @@ bool write_staging_manifest_atomic(const std::string& path, const StagingManifes
   return true;
 }
 
-// Recover one completed manifest into its recorded workspace and consume its staging sources.
+// Recover one manifest into the current workspace and consume its staging sources.
 bool materialize_completed_workspace(const std::string& manifest_path,
                                      StagingMaterializationSummary* summary, std::string* error) {
   if (!summary) return fail(error, "materialization summary is required");
@@ -584,14 +576,10 @@ bool materialize_completed_workspace(const std::string& manifest_path,
   for (const StagingEntry& entry : manifest.entries)
     summary->entries.push_back({entry.destination, false, false, ""});
 
-  // Bind this manifest to its original staging and workspace directories before
-  // opening descriptor-relative roots for all later source and target access.
-  std::string canonical_staging, canonical_workspace;
-  if (!validate_roots(manifest, &canonical_staging, &canonical_workspace, error)) return false;
+  // Resolve manifest-relative paths from the current workspace.
   int source_root = -1;
   int workspace_root = -1;
-  if (!open_roots(canonical_staging, canonical_workspace, &source_root, &workspace_root, error))
-    return false;
+  if (!validate_roots(&source_root, &workspace_root, error)) return false;
 
   // Keep processing independent entries after a failure, while preserving the
   // first error that explains why each destination could not be recovered.

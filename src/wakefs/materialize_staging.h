@@ -75,7 +75,7 @@ struct StagingMaterializationSummary {
   bool success() const { return failed == 0; }
 };
 
-// Restore every output to its recorded workspace, persist a manifest-level
+// Restore every output beneath the current workspace, persist a manifest-level
 // completion checkpoint, then consume only its named regular staging sources.
 bool materialize_completed_workspace(const std::string& manifest_path,
                                      StagingMaterializationSummary* summary, std::string* error);
