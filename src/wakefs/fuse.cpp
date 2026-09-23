@@ -148,11 +148,19 @@ bool json_as_struct(const std::string &json, json_args &result) {
 
   JAST wake_run_id = jast.get("wake_run_id");
   JAST wake_job_id = jast.get("wake_job_id");
-  if (wake_run_id.kind != wake_job_id.kind) {
+  if ((wake_run_id.kind == JSON_NULLVAL) != (wake_job_id.kind == JSON_NULLVAL)) {
     std::cerr << "wake_run_id and wake_job_id must be provided together" << std::endl;
     return false;
   }
-  if (wake_run_id.kind == JSON_INTEGER) {
+  if (wake_run_id.kind != JSON_NULLVAL) {
+    if (wake_run_id.kind != JSON_INTEGER) {
+      std::cerr << "wake_run_id must be an integer value" << std::endl;
+      return false;
+    }
+    if (wake_job_id.kind != JSON_INTEGER) {
+      std::cerr << "wake_job_id must be an integer value" << std::endl;
+      return false;
+    }
     try {
       result.wake_run_id = std::stol(wake_run_id.value);
       result.wake_job_id = std::stol(wake_job_id.value);
@@ -160,9 +168,6 @@ bool json_as_struct(const std::string &json, json_args &result) {
       std::cerr << "wake_run_id and wake_job_id must be integer values: " << e.what() << std::endl;
       return false;
     }
-  } else if (wake_run_id.kind != JSON_NULLVAL) {
-    std::cerr << "wake_run_id and wake_job_id must be integer values" << std::endl;
-    return false;
   }
 
   result.isolate_network = jast.get("isolate-network").kind == JSON_TRUE;

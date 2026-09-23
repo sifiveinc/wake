@@ -337,11 +337,19 @@ void Job::parse() {
 
   JAST run_id = jast.get("wake_run_id");
   JAST job_id = jast.get("wake_job_id");
-  if (run_id.kind != job_id.kind) {
+  if ((run_id.kind == JSON_NULLVAL) != (job_id.kind == JSON_NULLVAL)) {
     fprintf(stderr, "fuse-waked: wake_run_id and wake_job_id must be provided together\n");
     return;
   }
-  if (run_id.kind == JSON_INTEGER) {
+  if (run_id.kind != JSON_NULLVAL) {
+    if (run_id.kind != JSON_INTEGER) {
+      fprintf(stderr, "fuse-waked: wake_run_id must be an integer value\n");
+      return;
+    }
+    if (job_id.kind != JSON_INTEGER) {
+      fprintf(stderr, "fuse-waked: wake_job_id must be an integer value\n");
+      return;
+    }
     try {
       wake_run_id = std::stol(run_id.value);
       wake_job_id = std::stol(job_id.value);
@@ -349,9 +357,6 @@ void Job::parse() {
       fprintf(stderr, "fuse-waked: invalid Wake identity: %s\n", e.what());
       return;
     }
-  } else if (run_id.kind != JSON_NULLVAL) {
-    fprintf(stderr, "fuse-waked: wake_run_id and wake_job_id must be integer values\n");
-    return;
   }
 
   std::string cas_dir = jast.get("cas_dir").value;
