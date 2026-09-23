@@ -6,11 +6,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build empty_dir
+RM_ARTIFACTS="empty_dir"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
-    rm -rf empty_dir
+    rm -rf $RM_ARTIFACTS
     exit 1
 }
 
@@ -30,4 +31,4 @@ test -d empty_dir && fail "empty_dir still exists after --rm -r"
 echo "PASS: empty directory removed cleanly" >&2
 
 # Clean up
-rm -rf empty_dir
+rm -rf $RM_ARTIFACTS

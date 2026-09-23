@@ -6,10 +6,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
+RM_ARTIFACTS="output.txt"
 cleanup() {
-  rm -rf wake.db* wake.log .wake output.txt
+  rm -rf $RM_ARTIFACTS
 }
 trap cleanup EXIT
+rm -rf wake.db* wake.log .wake
 cleanup
 
 # --- Test 1: deleted output is pruned ---

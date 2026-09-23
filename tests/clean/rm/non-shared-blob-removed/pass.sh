@@ -6,11 +6,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build unique.txt
+RM_ARTIFACTS="unique.txt"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
-    rm -f unique.txt
+    rm -f $RM_ARTIFACTS
     exit 1
 }
 
@@ -37,4 +38,4 @@ test "$BLOBS_BEFORE" -gt "$BLOBS_AFTER" || fail "CAS blob not removed (had $BLOB
 echo "PASS: CAS blob removed with last reference" >&2
 
 # Clean up
-rm -f unique.txt
+rm -f $RM_ARTIFACTS

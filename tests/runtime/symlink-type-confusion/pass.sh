@@ -8,7 +8,8 @@
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db .wake input
+RM_ARTIFACTS="input"
+rm -rf wake.db .wake $RM_ARTIFACTS
 
 # Step 1: Create symlink and run wake
 ln -sf target input
@@ -25,5 +26,5 @@ echo "=== Run 2: file ==="
 
 # Clean up
 err=$?
-rm -f input
+rm -f $RM_ARTIFACTS
 exit $err

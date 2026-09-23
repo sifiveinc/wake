@@ -6,11 +6,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build generated.txt
+RM_ARTIFACTS="generated.txt"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
-    rm -rf generated.txt
+    rm -rf $RM_ARTIFACTS
     exit 1
 }
 
@@ -29,4 +30,4 @@ test -f generated.txt && fail "generated.txt still exists after removal"
 echo "PASS: unsafe_removeFiles skips sources" >&2
 
 # Clean up
-rm -rf generated.txt
+rm -rf $RM_ARTIFACTS

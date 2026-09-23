@@ -12,7 +12,8 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf .build .fuse wake.db* wake.log output.txt
+RM_ARTIFACTS="output.txt"
+rm -rf .build .fuse wake.db* wake.log $RM_ARTIFACTS
 
 "${WAKE}" -x "go Unit"
 
@@ -29,6 +30,4 @@ if [ "$actual" != "$expected" ]; then
 fi
 
 # Clean up
-err=$?
-rm -f output.txt
-exit $err
+rm -f $RM_ARTIFACTS

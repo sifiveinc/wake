@@ -6,7 +6,8 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -f wake.db* wake.log shared.txt
+RM_ARTIFACTS="shared.txt"
+rm -f wake.db* wake.log $RM_ARTIFACTS
 
 # Run 1: job1 creates shared.txt
 "${WAKE}" -q -x 'job1 Unit'
@@ -34,4 +35,4 @@ if [ "$content" != "job2" ]; then
   exit 1
 fi
 
-rm -f wake.db* wake.log shared.txt
+rm -f $RM_ARTIFACTS

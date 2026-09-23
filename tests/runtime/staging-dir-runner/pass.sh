@@ -18,10 +18,12 @@ ARTIFACTS="basic-in.txt basic-out.txt \
     does-not-exist.txt \
     filter-declared.txt"
 
+RM_ARTIFACTS="$ARTIFACTS"
 cleanup() {
-    rm -rf .build wake.db* wake.log $ARTIFACTS
+    rm -rf $RM_ARTIFACTS
 }
 trap cleanup EXIT
+rm -rf .build wake.db* wake.log
 cleanup
 
 "${WAKE}" -x 'test Unit'

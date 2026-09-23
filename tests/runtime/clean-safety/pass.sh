@@ -6,14 +6,16 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
+RM_ARTIFACTS=".started"
 cleanup() {
   if [ -n "${WAKE_PID:-}" ]; then
     kill $WAKE_PID 2>/dev/null || true
     wait $WAKE_PID 2>/dev/null || true
   fi
-  rm -rf wake.db* wake.log .wake .started
+  rm -rf $RM_ARTIFACTS
 }
 trap cleanup EXIT
+rm -rf wake.db* wake.log .wake
 cleanup
 
 # longRunningBuild: first job creates .started, second sleeps forever

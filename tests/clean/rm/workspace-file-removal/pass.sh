@@ -6,11 +6,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build output.txt
+RM_ARTIFACTS="output.txt"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
-    rm -f output.txt
+    rm -f $RM_ARTIFACTS
     exit 1
 }
 
@@ -30,4 +31,4 @@ test -f output.txt && fail "output.txt still exists after --rm"
 echo "PASS: workspace file removed" >&2
 
 # Clean up
-rm -f output.txt
+rm -f $RM_ARTIFACTS

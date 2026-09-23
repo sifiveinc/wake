@@ -3,7 +3,8 @@
 set -e
 WAKE="${1:+$1/wake}"
 
-rm -f .build/tmp/disable_remote_cache
+RM_ARTIFACTS=".build/tmp/disable_remote_cache"
+rm -f $RM_ARTIFACTS
 
 "${WAKE:-wake}" -x "test Unit"
 
@@ -14,6 +15,4 @@ if [ ! -f .build/tmp/disable_remote_cache ]; then
 fi
 
 # Clean up
-rm -f .build/tmp/disable_remote_cache
-
-exit 0
+rm -f $RM_ARTIFACTS

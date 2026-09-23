@@ -6,7 +6,8 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf .build wake.db* wake.log shared.txt
+RM_ARTIFACTS="shared.txt"
+rm -rf .build wake.db* wake.log $RM_ARTIFACTS
 
 "${WAKE}" -q -x 'job2 Unit'
 echo "After job2"
@@ -21,4 +22,4 @@ echo "After nuking DB and running job1"
 [ -e .build/cas/blobs/4a/89eb54e03e4e519e659ac83101df1e9773409425193964610cc52bee4fd06f ]
 
 # Clean up
-rm -f shared.txt
+rm -f $RM_ARTIFACTS
