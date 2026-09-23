@@ -51,6 +51,9 @@ bool set_file_mtime(int fd, time_t seconds, long nanoseconds) {
   return futimens(fd, times) == 0;
 }
 
+// Opens the parent directory of destination and returns its file descriptor.
+// Writes only destination's final path component to name; it does not open the
+// file identified by name within destination.
 result<int, posix_error_t> open_destination_parent(const std::string& destination,
                                                    std::string* name) {
   fs::path path(destination);
@@ -76,9 +79,9 @@ result<CopyResult, posix_error_t> materialize_regular_file_at(int src_fd, int de
   if (destination < 0) return make_errno<CopyResult>();
   auto copy = reflink_or_copy_fd(src_fd, destination, attempt_reflink);
   int failure = copy ? 0 : copy.error();
-  if (copy && fchmod(destination, mode & 07777) != 0) failure = errno;
+  if (failure == 0 && fchmod(destination, mode & 07777) != 0) failure = errno;
   // Apply mtime before replacement so observers never see a new file with stale metadata.
-  if (copy && !set_file_mtime(destination, mtime_sec, mtime_nsec)) failure = errno;
+  if (failure == 0 && !set_file_mtime(destination, mtime_sec, mtime_nsec)) failure = errno;
   if (close(destination) != 0 && failure == 0) failure = errno;
   if (failure != 0) {
     unlinkat(destination_parent_fd, temporary.c_str(), 0);
@@ -119,6 +122,8 @@ result<bool, posix_error_t> materialize_symlink_at(int destination_parent_fd,
   const std::string temporary = temporary_name();
   if (symlinkat(target.c_str(), destination_parent_fd, temporary.c_str()) != 0)
     return make_errno<bool>();
+  // (0, 0) means retain the mtime assigned when the symlink was created rather than
+  // forcing the symlink's timestamp to the Unix epoch.
   if (mtime_sec != 0 || mtime_nsec != 0) {
     struct timespec times[2] = {{0, UTIME_OMIT}, {mtime_sec, mtime_nsec}};
     // Symlink timestamps are not supported consistently across filesystems.
@@ -171,6 +176,8 @@ result<DirectoryResult, posix_error_t> ensure_directory_at(int destination_paren
 result<bool, posix_error_t> apply_directory_metadata(int directory_fd, mode_t mode,
                                                      time_t mtime_sec, long mtime_nsec) {
   if (fchmod(directory_fd, mode & 07777) != 0) return make_errno<bool>();
+  // (0, 0) means retain the directory's existing mtime rather than forcing it
+  // to the Unix epoch.
   if (mtime_sec == 0 && mtime_nsec == 0) return make_result<bool, posix_error_t>(true);
   struct timespec times[2] = {{0, UTIME_OMIT}, {mtime_sec, mtime_nsec}};
   if (futimens(directory_fd, times) != 0) return make_errno<bool>();

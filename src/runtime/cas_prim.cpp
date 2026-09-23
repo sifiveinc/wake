@@ -57,7 +57,6 @@ bool parse_hash_string(const std::string& id, cas::ContentHash& out, std::string
   return true;
 }
 
-// Unique temp path for atomic rename. PID + counter avoids races across concurrent processes.
 // Place temp at dest via a single rename().
 // Returns nullopt on success, error string on failure. Always cleans up temp on failure.
 // Unlink staging_path only if it differs from dest (i.e. it's a temp copy, not the workspace file).

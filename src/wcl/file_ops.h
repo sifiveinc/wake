@@ -34,6 +34,9 @@ struct CopyResult {
   size_t bytes_copied;  // 0 for reflink, actual bytes for copy
 };
 
+// Write the complete buffer, retrying interrupted and partial writes.
+bool write_all(int fd, const void* data, size_t size);
+
 // Clone or copy between already-open regular files. The source descriptor stays
 // pinned through the operation, avoiding path races in confined materializers.
 result<CopyResult, posix_error_t> reflink_or_copy_fd(int src_fd, int dst_fd,
