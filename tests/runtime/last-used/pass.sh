@@ -7,10 +7,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
+RM_ARTIFACTS="output.txt output2.txt"
 cleanup() {
-  rm -f wake.db* wake.log output.txt output2.txt
+  rm -f $RM_ARTIFACTS
 }
 trap cleanup EXIT
+rm -f wake.db* wake.log
 cleanup
 
 # Run 1: execute job1 (creates it)

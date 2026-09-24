@@ -8,11 +8,12 @@ WAKE="${WAKE:-wake}"
 
 export WAKE_CAS=1
 
-rm -rf wake.db* wake.log .wake .build registered.txt unregistered.txt
+RM_ARTIFACTS="registered.txt unregistered.txt"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
-    rm -rf registered.txt unregistered.txt
+    rm -rf $RM_ARTIFACTS
     exit 1
 }
 
@@ -36,4 +37,4 @@ test -f unregistered.txt || fail "unregistered.txt was incorrectly removed"
 echo "PASS: unregistered paths warning issued correctly" >&2
 
 # Clean up
-rm -rf registered.txt unregistered.txt
+rm -rf $RM_ARTIFACTS

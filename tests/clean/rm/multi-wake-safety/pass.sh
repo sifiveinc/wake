@@ -8,14 +8,15 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build shared.txt shared.caspath
+RM_ARTIFACTS="shared.txt shared.caspath"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
     if [ -n "${RUN_A_PID:-}" ]; then
         kill "$RUN_A_PID" 2>/dev/null || true
     fi
-    rm -rf shared.txt shared.caspath
+    rm -rf $RM_ARTIFACTS
     exit 1
 }
 
@@ -59,4 +60,4 @@ kill "$RUN_A_PID" 2>/dev/null || true
 echo "PASS: unsafe_removeFiles skipped the file while another run was active" >&2
 
 # Clean up
-rm -rf shared.txt shared.caspath
+rm -rf $RM_ARTIFACTS

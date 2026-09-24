@@ -5,7 +5,8 @@
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf .cas wake.db* wake.log output.txt result-a.txt result-b.txt
+RM_ARTIFACTS="output.txt result-a.txt result-b.txt"
+rm -rf .cas wake.db* wake.log $RM_ARTIFACTS
 
 echo "Fresh concurrent runs:"
 
@@ -27,3 +28,6 @@ wait
 
 # (output.txt can have either value)
 tail result-a.txt result-b.txt
+
+# Clean up
+rm -f $RM_ARTIFACTS

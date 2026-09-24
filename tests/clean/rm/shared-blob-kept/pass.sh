@@ -6,11 +6,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build shared1.txt shared2.txt
+RM_ARTIFACTS="shared1.txt shared2.txt"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
-    rm -f shared1.txt shared2.txt
+    rm -f $RM_ARTIFACTS
     exit 1
 }
 
@@ -46,4 +47,4 @@ test "$BLOBS_BEFORE" -gt "$BLOBS_AFTER" || fail "CAS blob was *not* removed afte
 echo "PASS: shared CAS blob kept" >&2
 
 # Clean up
-rm -f shared1.txt shared2.txt
+rm -f $RM_ARTIFACTS

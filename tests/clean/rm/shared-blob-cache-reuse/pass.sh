@@ -6,11 +6,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build shared1.txt shared2.txt
+RM_ARTIFACTS="shared1.txt shared2.txt"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
-    rm -f shared1.txt shared2.txt
+    rm -f $RM_ARTIFACTS
     exit 1
 }
 
@@ -36,4 +37,4 @@ test "$DELETED" = "0" || fail "After rematerialization, deleted should be 0, got
 echo "PASS: cache reused with shared blob" >&2
 
 # Clean up
-rm -f shared1.txt shared2.txt
+rm -f $RM_ARTIFACTS

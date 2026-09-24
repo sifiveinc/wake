@@ -12,7 +12,8 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf .build .fuse wake.db* wake.log output.txt
+RM_ARTIFACTS="output.txt"
+rm -rf .build .fuse wake.db* wake.log $RM_ARTIFACTS
 
 "${WAKE}" -x "go Unit"
 
@@ -24,5 +25,9 @@ actual=$(date -Isec -ur output.txt)
 expected="2000-01-01T00:00:00+00:00"
 if [ "$actual" != "$expected" ]; then
     echo "FAIL: workspace output.txt mtime is '$actual', expected '$expected'" >&2
+    rm -f output.txt
     exit 1
 fi
+
+# Clean up
+rm -f $RM_ARTIFACTS

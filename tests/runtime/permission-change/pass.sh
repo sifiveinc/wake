@@ -10,7 +10,8 @@
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db .wake script
+RM_ARTIFACTS="script"
+rm -rf wake.db .wake $RM_ARTIFACTS
 
 # Step 1: Create non-executable file and run wake
 echo "#!/bin/sh" > script
@@ -25,3 +26,8 @@ touch script
 # Step 3: Run wake again
 echo "=== Run 2: executable ==="
 "${WAKE}" --no-tty -x 'test Unit'
+
+# Clean up
+err=$?
+rm -f $RM_ARTIFACTS
+exit $err
