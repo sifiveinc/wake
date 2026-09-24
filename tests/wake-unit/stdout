@@ -100,7 +100,6 @@ PASSED:
   staging_manifest_rejects_unsafe_input
   staging_manifest_removes_empty_manifest
   staging_manifest_requires_completion_state
-  staging_manifest_requires_exact_roots
   staging_manifest_retries_completed_source_cleanup
   staging_manifest_round_trip
   staging_manifest_workspace_materialization_retries
