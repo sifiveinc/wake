@@ -467,7 +467,7 @@ void Job::parse() {
 }
 
 // Persist the final output map before in-memory job state disappears:
-// {"version":1,"workspace_root":"...","cas_staging_root":"...","job_key":"...",
+// {"version":1,"job_key":"...",
 //  "entries":[{"destination":"...","type":"file|symlink|directory",...}]}
 // Repeated calls reuse the same immutable record; special nodes and FUSE artifacts are excluded.
 bool Job::snapshot_recovery_manifest(const std::string &job_id) {
@@ -489,8 +489,6 @@ bool Job::snapshot_recovery_manifest(const std::string &job_id) {
           : "wakebox-" + std::to_string(getpid()) + "-" + job_id + ".json";
   const std::string final_path = recovery_dir + "/" + name;
   wakefs::StagingManifest manifest;
-  manifest.workspace_root = ".";
-  manifest.cas_staging_root = ".build/cas/staging";
   manifest.job_key = job_id;
   manifest.daemon_pid = getpid();
   manifest.created_at_ns = static_cast<long long>(now.tv_sec) * 1000000000LL + now.tv_nsec;

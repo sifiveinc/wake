@@ -36,8 +36,6 @@ std::string staging(const std::string& root) { return workspace(root) + "/.build
 wakefs::StagingManifest basic_manifest(const std::string& root) {
   (void)root;
   wakefs::StagingManifest manifest;
-  manifest.workspace_root = ".";
-  manifest.cas_staging_root = ".build/cas/staging";
   manifest.job_key = "job-1";
   manifest.created_at_ns = 1;
   manifest.daemon_pid = getpid();
@@ -90,43 +88,17 @@ TEST(staging_manifest_rejects_unsafe_input, "cas") {
   wakefs::StagingManifest manifest;
   std::string error;
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":2,"workspace_root":".","cas_staging_root":".build/cas/staging","job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[]})",
+      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[]})",
       &manifest, &error));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":1,"workspace_root":".","cas_staging_root":".build/cas/staging","job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[{"destination":"../escape","type":"file","staging_path":"source","mode":420,"mtime_sec":0,"mtime_nsec":0}]})",
+      R"({"version":1,"job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[{"destination":"../escape","type":"file","staging_path":"source","mode":420,"mtime_sec":0,"mtime_nsec":0}]})",
       &manifest, &error));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":1,"workspace_root":".","cas_staging_root":".build/cas/staging","job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[{"destination":"out","type":"file","staging_path":"../source","mode":420,"mtime_sec":0,"mtime_nsec":0}]})",
+      R"({"version":1,"job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[{"destination":"out","type":"file","staging_path":"../source","mode":420,"mtime_sec":0,"mtime_nsec":0}]})",
       &manifest, &error));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":1,"workspace_root":".","cas_staging_root":".build/cas/staging","job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[{"destination":"out","type":"directory","mode":493,"mtime_sec":0,"mtime_nsec":0},{"destination":"out","type":"directory","mode":493,"mtime_sec":0,"mtime_nsec":0}]})",
+      R"({"version":1,"job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[{"destination":"out","type":"directory","mode":493,"mtime_sec":0,"mtime_nsec":0},{"destination":"out","type":"directory","mode":493,"mtime_sec":0,"mtime_nsec":0}]})",
       &manifest, &error));
-}
-
-TEST(staging_manifest_requires_exact_roots, "cas") {
-  wakefs::StagingManifest manifest;
-  std::string error;
-  for (const char* workspace_root :
-       {"/workspace", "./", ".//", "workspace", "workspace/", "../workspace", "//"}) {
-    const std::string text =
-        std::string("{\"version\":1,\"workspace_root\":\"") + workspace_root +
-        "\",\"cas_staging_root\":\".build/cas/staging\",\"job_key\":\"job\","
-        "\"created_at_ns\":1,\"materialization_complete\":false,\"entries\":[]}";
-    EXPECT_FALSE(wakefs::parse_staging_manifest(text, &manifest, &error));
-  }
-  for (const char* staging_root :
-       {"/staging", "./.build/cas/staging", ".build//cas/staging", ".build/cas/./staging",
-        ".build/cas/staging/", ".build/cas/staging//", "../.build/cas/staging"}) {
-    const std::string text =
-        std::string("{\"version\":1,\"workspace_root\":\".\",\"cas_staging_root\":\"") +
-        staging_root +
-        "\",\"job_key\":\"job\",\"created_at_ns\":1,"
-        "\"materialization_complete\":false,\"entries\":[]}";
-    EXPECT_FALSE(wakefs::parse_staging_manifest(text, &manifest, &error));
-  }
-  manifest = basic_manifest("");
-  manifest.workspace_root = std::string(".\0", 2);
-  EXPECT_FALSE(wakefs::write_staging_manifest_atomic("invalid-manifest", manifest, &error));
 }
 
 TEST(staging_manifest_workspace_materialization_retries, "cas") {
@@ -266,13 +238,12 @@ TEST(staging_manifest_requires_completion_state, "cas") {
   wakefs::StagingManifest manifest;
   std::string error;
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":1,"workspace_root":".","cas_staging_root":".build/cas/staging","job_key":"job","created_at_ns":1,"entries":[]})",
+      R"({"version":1,"job_key":"job","created_at_ns":1,"entries":[]})", &manifest, &error));
+  EXPECT_FALSE(wakefs::parse_staging_manifest(
+      R"({"version":1,"job_key":"job","created_at_ns":1,"materialization_complete":1,"entries":[]})",
       &manifest, &error));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":1,"workspace_root":".","cas_staging_root":".build/cas/staging","job_key":"job","created_at_ns":1,"materialization_complete":1,"entries":[]})",
-      &manifest, &error));
-  EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":1,"workspace_root":".","cas_staging_root":".build/cas/staging","job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[{"destination":"out","type":"file","staging_path":"source","mode":420,"mtime_sec":0,"mtime_nsec":0,"placed":true}]})",
+      R"({"version":1,"job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[{"destination":"out","type":"file","staging_path":"source","mode":420,"mtime_sec":0,"mtime_nsec":0,"placed":true}]})",
       &manifest, &error));
 }
 

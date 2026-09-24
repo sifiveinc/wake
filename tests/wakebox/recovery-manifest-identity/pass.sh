@@ -16,8 +16,6 @@ MANIFEST=$(sed -n 's/.*"recovery_manifest":"\([^"]*\)".*/\1/p' "$STATS_FILE")
   echo "FAIL: recovery manifest is not workspace-relative: $MANIFEST"
   exit 1
 }
-grep -q '"workspace_root":"\."' "$MANIFEST" || { echo "FAIL: workspace root is not relocatable"; cat "$MANIFEST"; exit 1; }
-grep -q '"cas_staging_root":"\.build/cas/staging"' "$MANIFEST" || { echo "FAIL: staging root is not relocatable"; cat "$MANIFEST"; exit 1; }
 grep -q '"wake_run_id":42' "$MANIFEST" || { echo "FAIL: wake_run_id missing"; cat "$MANIFEST"; exit 1; }
 grep -q '"wake_job_id":7' "$MANIFEST" || { echo "FAIL: wake_job_id missing"; cat "$MANIFEST"; exit 1; }
 

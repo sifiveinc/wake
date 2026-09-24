@@ -34,8 +34,6 @@ struct StagingEntry {
 
 // The persisted per-job mapping from staging sources to workspace projections.
 struct StagingManifest {
-  std::string workspace_root;
-  std::string cas_staging_root;
   std::string job_key;
   int64_t created_at_ns = 0;
   int64_t daemon_pid = 0;

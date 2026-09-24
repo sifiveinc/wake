@@ -52,16 +52,15 @@ bool fail(std::string* error, const std::string& message) {
 std::string errno_message(const std::string& action) { return action + ": " + strerror(errno); }
 
 bool is_safe_relative_path(const std::string& path) {
-  if (path.empty() || path.front() == '/' || path.find('\0') != std::string::npos) return false;
-  size_t begin = 0;
-  while (begin < path.size()) {
-    size_t end = path.find('/', begin);
-    if (end == std::string::npos) end = path.size();
-    const std::string component = path.substr(begin, end - begin);
-    if (component.empty() || component == "." || component == "..") return false;
-    begin = end + 1;
+  if (path.empty() || path.find('\0') != std::string::npos) return false;
+
+  const fs::path value(path);
+  if (!value.is_relative() || path.back() == '/' || value != value.lexically_normal()) return false;
+
+  for (const fs::path& component : value) {
+    if (component == fs::path(".") || component == fs::path("..")) return false;
   }
-  return path.back() != '/';
+  return true;
 }
 
 bool required_string(const JAST& object, const char* key, std::string* value, std::string* error) {
@@ -92,26 +91,8 @@ bool required_boolean(const JAST& object, const char* key, bool* value, std::str
   return true;
 }
 
-bool has_only_fields(const JAST& object, std::initializer_list<const char*> allowed,
-                     std::string* error) {
-  for (const JChild& child : object.children) {
-    bool known = false;
-    for (const char* field : allowed) {
-      if (child.first == field) {
-        known = true;
-        break;
-      }
-    }
-    if (!known) return fail(error, "manifest contains an unknown field: " + child.first);
-  }
-  return true;
-}
-
 // Validate the serialized manifest contract before trusting any paths or metadata.
 bool validate_metadata(const StagingManifest& manifest, std::string* error) {
-  if (manifest.workspace_root != ".") return fail(error, "workspace_root must be exactly .");
-  if (manifest.cas_staging_root != ".build/cas/staging")
-    return fail(error, "cas_staging_root must be exactly .build/cas/staging");
   if (manifest.job_key.empty() || manifest.job_key.find('/') != std::string::npos ||
       manifest.job_key.find('\0') != std::string::npos)
     return fail(error, "job_key must be a nonempty path component");
@@ -385,19 +366,11 @@ bool parse_staging_manifest(const std::string& text, StagingManifest* manifest,
   JAST root;
   if (!JAST::parse(text, parse_errors, root) || root.kind != JSON_OBJECT)
     return fail(error, "invalid staging manifest: " + parse_errors.str());
-  if (!has_only_fields(
-          root,
-          {"version", "workspace_root", "cas_staging_root", "job_key", "daemon_pid",
-           "created_at_ns", "wake_run_id", "wake_job_id", "materialization_complete", "entries"},
-          error))
-    return false;
   int64_t version;
   if (!required_integer(root, "version", &version, error)) return false;
   if (version != 1) return fail(error, "unsupported staging manifest version");
   StagingManifest parsed;
-  if (!required_string(root, "workspace_root", &parsed.workspace_root, error) ||
-      !required_string(root, "cas_staging_root", &parsed.cas_staging_root, error) ||
-      !required_string(root, "job_key", &parsed.job_key, error) ||
+  if (!required_string(root, "job_key", &parsed.job_key, error) ||
       !required_integer(root, "created_at_ns", &parsed.created_at_ns, error) ||
       !required_boolean(root, "materialization_complete", &parsed.materialization_complete, error))
     return false;
@@ -435,10 +408,6 @@ bool parse_staging_manifest(const std::string& text, StagingManifest* manifest,
       return fail(error, "entry mtime_nsec is outside its valid range");
     entry.mtime_nsec = static_cast<long>(nsec);
     if (type == "file") {
-      if (!has_only_fields(
-              json, {"destination", "type", "staging_path", "mode", "mtime_sec", "mtime_nsec"},
-              error))
-        return false;
       entry.type = StagingEntryType::File;
       int64_t mode;
       if (!required_string(json, "staging_path", &entry.staging_path, error) ||
@@ -446,14 +415,9 @@ bool parse_staging_manifest(const std::string& text, StagingManifest* manifest,
         return fail(error, "file entry has invalid staging_path or mode");
       entry.mode = static_cast<mode_t>(mode);
     } else if (type == "symlink") {
-      if (!has_only_fields(json, {"destination", "type", "target", "mtime_sec", "mtime_nsec"},
-                           error))
-        return false;
       entry.type = StagingEntryType::Symlink;
       if (!required_string(json, "target", &entry.target, error)) return false;
     } else if (type == "directory") {
-      if (!has_only_fields(json, {"destination", "type", "mode", "mtime_sec", "mtime_nsec"}, error))
-        return false;
       entry.type = StagingEntryType::Directory;
       int64_t mode;
       if (!required_integer(json, "mode", &mode, error) || mode < 0 || mode > 07777)
@@ -485,8 +449,6 @@ bool write_staging_manifest_atomic(const std::string& path, const StagingManifes
   if (!validate_metadata(manifest, error)) return false;
   JAST root(JSON_OBJECT);
   root.add("version", 1);
-  root.add("workspace_root", manifest.workspace_root);
-  root.add("cas_staging_root", manifest.cas_staging_root);
   root.add("job_key", manifest.job_key);
   root.add("daemon_pid", static_cast<long long>(manifest.daemon_pid));
   root.add("created_at_ns", static_cast<long long>(manifest.created_at_ns));
