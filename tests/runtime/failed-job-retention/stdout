@@ -1,0 +1,4 @@
+# failed-job-retention: no-output (1)
+$ sh -c exit 7
+# failed-job-retention: no-output (1)
+$ sh -c exit 7
