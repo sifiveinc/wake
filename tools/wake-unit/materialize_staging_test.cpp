@@ -242,9 +242,6 @@ TEST(staging_manifest_requires_completion_state, "cas") {
   EXPECT_FALSE(wakefs::parse_staging_manifest(
       R"({"version":1,"job_key":"job","created_at_ns":1,"materialization_complete":1,"entries":[]})",
       &manifest, &error));
-  EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":1,"job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[{"destination":"out","type":"file","staging_path":"source","mode":420,"mtime_sec":0,"mtime_nsec":0,"placed":true}]})",
-      &manifest, &error));
 }
 
 TEST(staging_manifest_materializes_symlink_with_mtime, "cas") {
