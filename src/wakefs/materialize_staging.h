@@ -48,7 +48,7 @@ struct StagingManifest {
   std::vector<StagingEntry> entries;
 };
 
-// Parse and validate the version-1 final-staging manifest schema. This validates
+// Parse and validate the final-staging manifest schema. This validates
 // lexical path safety; filesystem ownership and confinement are checked when
 // materializing.
 bool parse_staging_manifest(const std::string& text, StagingManifest* manifest, std::string* error);

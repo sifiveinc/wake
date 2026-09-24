@@ -15,11 +15,12 @@
 #include <string>
 
 #include "file_ops.h"
+#include "unique_fd.h"
 
 namespace wcl {
 
 struct DirectoryResult {
-  int fd;
+  unique_fd fd;
   bool created;
 };
 

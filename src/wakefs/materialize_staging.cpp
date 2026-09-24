@@ -22,6 +22,7 @@
 #include <atomic>
 #include <climits>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <set>
@@ -33,6 +34,8 @@
 #include "wcl/materialize.h"
 
 namespace wakefs {
+
+namespace fs = std::filesystem;
 
 bool write_staging_manifest_atomic(const std::string& path, const StagingManifest& manifest,
                                    std::string* error);
@@ -61,19 +64,6 @@ bool is_safe_relative_path(const std::string& path) {
   return path.back() != '/';
 }
 
-bool parse_integer(const JAST& json, int64_t* value) {
-  if (json.kind != JSON_INTEGER) return false;
-  try {
-    size_t index = 0;
-    long long parsed = std::stoll(json.value, &index);
-    if (index != json.value.size()) return false;
-    *value = parsed;
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
 bool required_string(const JAST& object, const char* key, std::string* value, std::string* error) {
   auto child = object.get_opt(key);
   if (!child || (*child)->kind != JSON_STR || (*child)->value.empty()) {
@@ -85,9 +75,11 @@ bool required_string(const JAST& object, const char* key, std::string* value, st
 
 bool required_integer(const JAST& object, const char* key, int64_t* value, std::string* error) {
   auto child = object.get_opt(key);
-  if (!child || !parse_integer(**child, value)) {
+  auto parsed = child ? (*child)->expect_integer() : std::nullopt;
+  if (!parsed) {
     return fail(error, std::string("manifest field '") + key + "' must be an integer");
   }
+  *value = *parsed;
   return true;
 }
 
@@ -146,27 +138,11 @@ bool validate_metadata(const StagingManifest& manifest, std::string* error) {
   return true;
 }
 
-bool write_all(int fd, const std::string& data) {
-  size_t offset = 0;
-  while (offset < data.size()) {
-    ssize_t wrote = write(fd, data.data() + offset, data.size() - offset);
-    if (wrote < 0) {
-      if (errno == EINTR) continue;
-      return false;
-    }
-    if (wrote == 0) {
-      errno = EIO;
-      return false;
-    }
-    offset += static_cast<size_t>(wrote);
-  }
-  return true;
-}
-
 bool canonical_existing_directory(const std::string& path, std::string* canonical,
                                   std::string* error) {
   char resolved[PATH_MAX];
-  if (!realpath(path.c_str(), resolved)) return fail(error, errno_message("canonicalize " + path));
+  if (!realpath(path.c_str(), resolved))
+    return fail(error, errno_message("failed to canonicalize " + path));
   struct stat st;
   if (stat(resolved, &st) != 0 || !S_ISDIR(st.st_mode))
     return fail(error, "path is not a directory: " + path);
@@ -174,52 +150,55 @@ bool canonical_existing_directory(const std::string& path, std::string* canonica
   return true;
 }
 
-bool open_directory_at(int parent, const std::string& name, int* fd, std::string* error) {
+bool open_directory_at(int parent, const std::string& name, wcl::unique_fd* fd,
+                       std::string* error) {
   int opened = openat(parent, name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-  if (opened < 0) return fail(error, errno_message("open directory " + name));
-  *fd = opened;
+  if (opened < 0) return fail(error, errno_message("failed to open directory " + name));
+  *fd = wcl::unique_fd(opened);
   return true;
 }
 
 // Walk a validated relative path below rootfd without following directory symlinks.
-bool open_relative_directory(int rootfd, const std::string& relative, bool create, int* fd,
-                             std::string* error) {
-  int current = dup(rootfd);
-  if (current < 0) return fail(error, errno_message("duplicate root directory"));
+// For example, relative "a/b" returns a descriptor for rootfd/a/b.
+bool open_relative_directory(int rootfd, const std::string& relative, bool create,
+                             wcl::unique_fd* fd, std::string* error) {
+  // Work on a duplicate so walking the path never closes the caller's root FD.
+  wcl::unique_fd current(dup(rootfd));
+  if (!current.valid()) return fail(error, errno_message("failed to duplicate root directory"));
+
+  // Walk from the root one validated path component at a time.
   size_t begin = 0;
   while (begin < relative.size()) {
     size_t end = relative.find('/', begin);
     if (end == std::string::npos) end = relative.size();
-    const std::string component = relative.substr(begin, end - begin);
-    if (create && mkdirat(current, component.c_str(), 0755) != 0 && errno != EEXIST) {
+    const std::string directory_name = relative.substr(begin, end - begin);
+
+    // Create missing parent directories when requested.
+    if (create && mkdirat(current.get(), directory_name.c_str(), 0755) != 0 && errno != EEXIST) {
       const int saved = errno;
-      close(current);
       errno = saved;
-      return fail(error, errno_message("create directory " + component));
+      return fail(error, errno_message("failed to create directory " + directory_name));
     }
-    int next = -1;
-    if (!open_directory_at(current, component, &next, error)) {
-      close(current);
-      return false;
-    }
-    close(current);
-    current = next;
+
+    // Open without following symlinks, keeping traversal inside the directory tree.
+    wcl::unique_fd next;
+    if (!open_directory_at(current.get(), directory_name, &next, error)) return false;
+
+    // The new descriptor becomes the base for the next component.
+    current = std::move(next);
     begin = end + 1;
   }
-  *fd = current;
+
+  // Return ownership of the final directory descriptor to the caller.
+  *fd = std::move(current);
   return true;
 }
 
-bool split_parent(const std::string& path, std::string* parent, std::string* leaf) {
-  size_t slash = path.rfind('/');
-  if (slash == std::string::npos) {
-    parent->clear();
-    *leaf = path;
-  } else {
-    *parent = path.substr(0, slash);
-    *leaf = path.substr(slash + 1);
-  }
-  return !leaf->empty();
+// Splits a validated path into its parent directory and file or directory name.
+void split_parent(const std::string& path, std::string* parent, std::string* leaf) {
+  const fs::path filesystem_path(path);
+  *parent = filesystem_path.parent_path().string();
+  *leaf = filesystem_path.filename().string();
 }
 
 // Safely open a regular staging source and atomically place it below target_rootfd.
@@ -228,39 +207,31 @@ bool materialize_file(int source_rootfd, int target_rootfd, const StagingEntry& 
   std::string source_parent_path, source_leaf, target_parent_path, target_leaf;
   split_parent(entry.staging_path, &source_parent_path, &source_leaf);
   split_parent(entry.destination, &target_parent_path, &target_leaf);
-  int source_parent = -1;
-  int target_parent = -1;
+  wcl::unique_fd source_parent;
   if (!open_relative_directory(source_rootfd, source_parent_path, false, &source_parent, error))
     return false;
-  if (!open_relative_directory(target_rootfd, target_parent_path, true, &target_parent, error)) {
-    close(source_parent);
+
+  wcl::unique_fd target_parent;
+  if (!open_relative_directory(target_rootfd, target_parent_path, true, &target_parent, error))
     return false;
-  }
-  int source = openat(source_parent, source_leaf.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-  if (source < 0) {
-    close(target_parent);
-    close(source_parent);
-    return fail(error, errno_message("open staging source " + entry.staging_path));
-  }
+
+  int source_fd =
+      openat(source_parent.get(), source_leaf.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (source_fd < 0)
+    return fail(error, errno_message("failed to open staging source " + entry.staging_path));
+  wcl::unique_fd source(source_fd);
+
   struct stat source_stat;
-  if (fstat(source, &source_stat) != 0 || !S_ISREG(source_stat.st_mode)) {
-    close(source);
-    close(target_parent);
-    close(source_parent);
+  if (fstat(source.get(), &source_stat) != 0 || !S_ISREG(source_stat.st_mode))
     return fail(error, "staging source is not a regular file: " + entry.staging_path);
-  }
+
   auto copy =
-      wcl::materialize_regular_file_at(source, target_parent, target_leaf, entry.mode,
+      wcl::materialize_regular_file_at(source.get(), target_parent.get(), target_leaf, entry.mode,
                                        static_cast<time_t>(entry.mtime_sec), entry.mtime_nsec);
-  close(source);
   if (!copy) {
-    close(target_parent);
-    close(source_parent);
     errno = copy.error();
-    return fail(error, errno_message("copy staging source " + entry.staging_path));
+    return fail(error, errno_message("failed to copy staging source " + entry.staging_path));
   }
-  close(target_parent);
-  close(source_parent);
   return true;
 }
 
@@ -269,18 +240,18 @@ bool materialize_file(int source_rootfd, int target_rootfd, const StagingEntry& 
 bool regular_destination_exists(int target_rootfd, const StagingEntry& entry, std::string* error) {
   std::string parent_path, leaf;
   split_parent(entry.destination, &parent_path, &leaf);
-  int parent = -1;
+  wcl::unique_fd parent;
   if (!open_relative_directory(target_rootfd, parent_path, false, &parent, error)) return false;
   struct stat destination_stat;
-  const bool present = fstatat(parent, leaf.c_str(), &destination_stat, AT_SYMLINK_NOFOLLOW) == 0;
+  const bool present =
+      fstatat(parent.get(), leaf.c_str(), &destination_stat, AT_SYMLINK_NOFOLLOW) == 0;
   if (!present) {
     const int saved = errno;
-    close(parent);
     if (saved == ENOENT) return false;
     errno = saved;
-    return fail(error, errno_message("inspect materialized destination " + entry.destination));
+    return fail(error,
+                errno_message("failed to inspect materialized destination " + entry.destination));
   }
-  close(parent);
   return S_ISREG(destination_stat.st_mode);
 }
 
@@ -288,14 +259,13 @@ bool regular_destination_exists(int target_rootfd, const StagingEntry& entry, st
 bool materialize_symlink(int target_rootfd, const StagingEntry& entry, std::string* error) {
   std::string parent_path, leaf;
   split_parent(entry.destination, &parent_path, &leaf);
-  int parent = -1;
+  wcl::unique_fd parent;
   if (!open_relative_directory(target_rootfd, parent_path, true, &parent, error)) return false;
-  auto result = wcl::materialize_symlink_at(parent, leaf, entry.target,
+  auto result = wcl::materialize_symlink_at(parent.get(), leaf, entry.target,
                                             static_cast<time_t>(entry.mtime_sec), entry.mtime_nsec);
-  close(parent);
   if (!result) {
     errno = result.error();
-    return fail(error, errno_message("create symlink " + entry.destination));
+    return fail(error, errno_message("failed to create symlink " + entry.destination));
   }
   return true;
 }
@@ -305,25 +275,22 @@ bool materialize_directory(int target_rootfd, const StagingEntry& entry, bool ap
                            std::string* error) {
   std::string parent_path, leaf;
   split_parent(entry.destination, &parent_path, &leaf);
-  int parent = -1;
+  wcl::unique_fd parent;
   if (!open_relative_directory(target_rootfd, parent_path, true, &parent, error)) return false;
-  auto directory = wcl::ensure_directory_at(parent, leaf, 0700);
-  close(parent);
+  auto directory = wcl::ensure_directory_at(parent.get(), leaf, 0700);
   if (!directory) {
     errno = directory.error();
-    return fail(error, errno_message("create directory " + entry.destination));
+    return fail(error, errno_message("failed to create directory " + entry.destination));
   }
   if (apply_metadata) {
     auto metadata = wcl::apply_directory_metadata(
-        directory->fd, entry.mode, static_cast<time_t>(entry.mtime_sec), entry.mtime_nsec);
+        directory->fd.get(), entry.mode, static_cast<time_t>(entry.mtime_sec), entry.mtime_nsec);
     if (!metadata) {
       const int saved = metadata.error();
-      close(directory->fd);
       errno = saved;
-      return fail(error, errno_message("apply directory metadata " + entry.destination));
+      return fail(error, errno_message("failed to apply directory metadata " + entry.destination));
     }
   }
-  close(directory->fd);
   return true;
 }
 
@@ -332,38 +299,35 @@ bool materialize_directory(int target_rootfd, const StagingEntry& entry, bool ap
 bool consume_regular_source(int source_rootfd, const StagingEntry& entry, std::string* error) {
   std::string parent_path, leaf;
   split_parent(entry.staging_path, &parent_path, &leaf);
-  int parent = -1;
+  wcl::unique_fd parent;
   if (!open_relative_directory(source_rootfd, parent_path, false, &parent, error)) {
     if (errno == ENOENT) return true;
     return false;
   }
   struct stat source_stat;
-  const bool valid = fstatat(parent, leaf.c_str(), &source_stat, AT_SYMLINK_NOFOLLOW) == 0;
+  const bool valid = fstatat(parent.get(), leaf.c_str(), &source_stat, AT_SYMLINK_NOFOLLOW) == 0;
   if (!valid && errno == ENOENT) {
-    close(parent);
     return true;
   }
   if (!valid) {
     const int saved = errno;
-    close(parent);
     errno = saved;
-    return fail(error, errno_message("inspect staging source " + entry.staging_path));
+    return fail(error, errno_message("failed to inspect staging source " + entry.staging_path));
   }
   if (!S_ISREG(source_stat.st_mode)) {
-    close(parent);
     return fail(error, "staging source is not a regular file: " + entry.staging_path);
   }
-  if (unlinkat(parent, leaf.c_str(), 0) != 0 && errno != ENOENT) {
+  if (unlinkat(parent.get(), leaf.c_str(), 0) != 0 && errno != ENOENT) {
     const int saved = errno;
-    close(parent);
     errno = saved;
-    return fail(error, errno_message("consume staging source " + entry.staging_path));
+    return fail(error, errno_message("failed to consume staging source " + entry.staging_path));
   }
-  close(parent);
   return true;
 }
 
-bool entry_before(const StagingEntry& left, const StagingEntry& right) {
+// Orders paths by length, then lexicographically. This puts parent paths before
+// their children; unrelated paths have no meaningful traversal order.
+bool parent_path_before(const StagingEntry& left, const StagingEntry& right) {
   return left.destination.size() < right.destination.size() ||
          (left.destination.size() == right.destination.size() &&
           left.destination < right.destination);
@@ -375,30 +339,33 @@ bool entry_is_directory(const StagingEntry& entry) {
 
 // Resolve the fixed staging layout below the current workspace. Each component
 // is opened without following symlinks before it is used as a descriptor root.
-bool validate_roots(int* source_root, int* target_root, std::string* error) {
+struct MaterializationRoots {
+  wcl::unique_fd source;
+  wcl::unique_fd workspace;
+};
+
+std::optional<MaterializationRoots> validate_roots(std::string* error) {
   char current[PATH_MAX];
-  if (!getcwd(current, sizeof(current))) return fail(error, errno_message("get current workspace"));
+  if (!getcwd(current, sizeof(current))) {
+    fail(error, errno_message("failed to get current workspace"));
+    return std::nullopt;
+  }
   std::string workspace;
-  if (!canonical_existing_directory(current, &workspace, error)) return false;
+  if (!canonical_existing_directory(current, &workspace, error)) return std::nullopt;
 
   int workspace_fd = open(workspace.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-  if (workspace_fd < 0) return fail(error, errno_message("open current workspace"));
-  int build_fd = -1;
-  int cas_fd = -1;
-  int staging_fd = -1;
-  if (!open_directory_at(workspace_fd, ".build", &build_fd, error) ||
-      !open_directory_at(build_fd, "cas", &cas_fd, error) ||
-      !open_directory_at(cas_fd, "staging", &staging_fd, error)) {
-    if (build_fd >= 0) close(build_fd);
-    if (cas_fd >= 0) close(cas_fd);
-    close(workspace_fd);
-    return false;
+  if (workspace_fd < 0) {
+    fail(error, errno_message("failed to open current workspace"));
+    return std::nullopt;
   }
-  close(build_fd);
-  close(cas_fd);
-  *source_root = staging_fd;
-  *target_root = workspace_fd;
-  return true;
+  wcl::unique_fd workspace_root(workspace_fd);
+  wcl::unique_fd build;
+  if (!open_directory_at(workspace_root.get(), ".build", &build, error)) return std::nullopt;
+  wcl::unique_fd cas;
+  if (!open_directory_at(build.get(), "cas", &cas, error)) return std::nullopt;
+  wcl::unique_fd staging;
+  if (!open_directory_at(cas.get(), "staging", &staging, error)) return std::nullopt;
+  return MaterializationRoots{std::move(staging), std::move(workspace_root)};
 }
 
 StagingEntrySummary* find_summary(StagingMaterializationSummary* summary,
@@ -435,19 +402,21 @@ bool parse_staging_manifest(const std::string& text, StagingManifest* manifest,
       !required_boolean(root, "materialization_complete", &parsed.materialization_complete, error))
     return false;
   auto daemon_pid = root.get_opt("daemon_pid");
-  if (daemon_pid && !parse_integer(**daemon_pid, &parsed.daemon_pid))
-    return fail(error, "manifest field 'daemon_pid' must be an integer");
+  if (daemon_pid) {
+    auto value = (*daemon_pid)->expect_integer();
+    if (!value) return fail(error, "manifest field 'daemon_pid' must be an integer");
+    parsed.daemon_pid = *value;
+  }
   auto wake_run_id = root.get_opt("wake_run_id");
   auto wake_job_id = root.get_opt("wake_job_id");
   if (wake_run_id.has_value() != wake_job_id.has_value())
     return fail(error, "wake_run_id and wake_job_id must be provided together");
   if (wake_run_id) {
-    int64_t run_id;
-    int64_t job_id;
-    if (!parse_integer(**wake_run_id, &run_id) || !parse_integer(**wake_job_id, &job_id))
-      return fail(error, "wake_run_id and wake_job_id must be integers");
-    parsed.wake_run_id = run_id;
-    parsed.wake_job_id = job_id;
+    auto run_id = (*wake_run_id)->expect_integer();
+    auto job_id = (*wake_job_id)->expect_integer();
+    if (!run_id || !job_id) return fail(error, "wake_run_id and wake_job_id must be integers");
+    parsed.wake_run_id = *run_id;
+    parsed.wake_job_id = *job_id;
   }
   auto entries = root.get_opt("entries");
   if (!entries || (*entries)->kind != JSON_ARRAY)
@@ -552,15 +521,16 @@ bool write_staging_manifest_atomic(const std::string& path, const StagingManifes
   const std::string temporary = parent + "." + filename + ".tmp." + std::to_string(getpid()) + "." +
                                 std::to_string(manifest_counter.fetch_add(1));
   int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-  if (fd < 0) return fail(error, errno_message("create manifest temporary"));
+  if (fd < 0) return fail(error, errno_message("failed to create manifest temporary"));
   int saved = 0;
-  if (!write_all(fd, serialized.str())) saved = errno;
+  const std::string data = serialized.str();
+  if (!wcl::write_all(fd, data.data(), data.size())) saved = errno;
   if (close(fd) != 0 && saved == 0) saved = errno;
   if (saved == 0 && rename(temporary.c_str(), path.c_str()) != 0) saved = errno;
   if (saved != 0) {
     unlink(temporary.c_str());
     errno = saved;
-    return fail(error, errno_message("publish manifest " + path));
+    return fail(error, errno_message("failed to publish manifest " + path));
   }
   return true;
 }
@@ -576,9 +546,10 @@ bool materialize_completed_workspace(const std::string& manifest_path,
     summary->entries.push_back({entry.destination, false, false, ""});
 
   // Resolve manifest-relative paths from the current workspace.
-  int source_root = -1;
-  int workspace_root = -1;
-  if (!validate_roots(&source_root, &workspace_root, error)) return false;
+  auto roots = validate_roots(error);
+  if (!roots) return false;
+  const int source_root = roots->source.get();
+  const int workspace_root = roots->workspace.get();
 
   // Keep processing independent entries after a failure, while preserving the
   // first error that explains why each destination could not be recovered.
@@ -596,7 +567,7 @@ bool materialize_completed_workspace(const std::string& manifest_path,
                        const bool left_directory = entry_is_directory(left);
                        const bool right_directory = entry_is_directory(right);
                        if (left_directory != right_directory) return left_directory;
-                       return entry_before(left, right);
+                       return parent_path_before(left, right);
                      });
     for (const StagingEntry& entry : pending) {
       std::string placement_error;
@@ -628,7 +599,7 @@ bool materialize_completed_workspace(const std::string& manifest_path,
     if (summary->failed == 0) {
       std::stable_sort(pending.begin(), pending.end(),
                        [](const StagingEntry& left, const StagingEntry& right) {
-                         return entry_before(right, left);
+                         return parent_path_before(right, left);
                        });
       for (const StagingEntry& entry : pending) {
         if (entry.type != StagingEntryType::Directory) continue;
@@ -660,13 +631,11 @@ bool materialize_completed_workspace(const std::string& manifest_path,
   }
   if (summary->failed == 0 && manifest.materialization_complete) {
     if (unlink(manifest_path.c_str()) != 0 && errno != ENOENT) {
-      record_failure("", errno_message("remove completed manifest"));
+      record_failure("", errno_message("failed to remove completed manifest"));
     } else {
       summary->manifest_removed = true;
     }
   }
-  close(source_root);
-  close(workspace_root);
   return summary->success();
 }
 
