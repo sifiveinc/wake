@@ -26,7 +26,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -169,7 +168,7 @@ int materialize_previous_workspace(const char *requested_run_id) {
   }
   bool success = true;
   size_t selected = 0;
-  for (const wakefs::CompletedStagingManifest& manifest : manifests) {
+  for (const wakefs::CompletedStagingManifest &manifest : manifests) {
     if (!manifest.manifest.wake_run_id || *manifest.manifest.wake_run_id != run_id) continue;
     ++selected;
     wakefs::StagingMaterializationSummary summary;
