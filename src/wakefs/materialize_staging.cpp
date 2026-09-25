@@ -526,6 +526,7 @@ bool write_staging_manifest_atomic(const std::string& path, const StagingManifes
   int saved = 0;
   const std::string data = serialized.str();
   if (!wcl::write_all(fd, data.data(), data.size())) saved = errno;
+  if (saved == 0 && fchmod(fd, 0644) != 0) saved = errno;
   if (close(fd) != 0 && saved == 0) saved = errno;
   if (saved == 0 && rename(temporary.c_str(), path.c_str()) != 0) saved = errno;
   if (saved != 0) {

@@ -236,6 +236,9 @@ struct Database {
   //    of the removed files
   std::vector<std::string> clear_jobs();
 
+  // Returns started jobs in the current run that have not completed finalization.
+  std::vector<long> unfinished_current_run_jobs() const;
+
   // Like clear_jobs(), but first checks for active builds atomically.
   // Returns false if there are incomplete runs (active builds).
   // The check, DB clear, and file deletion (via callback) all happen

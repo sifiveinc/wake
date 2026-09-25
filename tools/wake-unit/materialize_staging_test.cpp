@@ -74,7 +74,13 @@ TEST(staging_manifest_round_trip, "cas") {
                       {"out", wakefs::StagingEntryType::Directory, "", "", 0750, 125, 458}};
   const std::string path = staging(root) + "/recovery.json";
   std::string error;
-  ASSERT_TRUE(wakefs::write_staging_manifest_atomic(path, manifest, &error));
+  const mode_t previous_umask = umask(0077);
+  const bool written = wakefs::write_staging_manifest_atomic(path, manifest, &error);
+  umask(previous_umask);
+  ASSERT_TRUE(written);
+  struct stat st;
+  ASSERT_TRUE(stat(path.c_str(), &st) == 0);
+  EXPECT_EQUAL(st.st_mode & 07777, static_cast<mode_t>(0644));
   wakefs::StagingManifest parsed;
   ASSERT_TRUE(wakefs::read_staging_manifest(path, &parsed, &error));
   EXPECT_EQUAL(parsed.entries.size(), 3U);

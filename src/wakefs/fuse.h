@@ -96,9 +96,15 @@ struct fuse_args : public json_args {
       : working_dir(cwd), use_stdin_file(use_stdin_file), daemon(cwd) {}
 };
 
+enum class FuseRunOutcome {
+  Completed,
+  TimedOut,
+  Canceled,
+};
+
 bool json_as_struct(const std::string &json, json_args &result);
 
-bool run_in_fuse(fuse_args &args, int &retcode, std::string &result_json);
+bool run_in_fuse(fuse_args &args, int &retcode, std::string &result_json, FuseRunOutcome &outcome);
 
 int execve_wrapper(const std::vector<std::string> &command,
                    const std::vector<std::string> &environment);
