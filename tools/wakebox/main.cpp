@@ -24,17 +24,25 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "gopt/gopt-arg.h"
 #include "gopt/gopt.h"
+#include "json/json5.h"
 #include "util/execpath.h"
 #include "util/shell.h"
 #include "wakefs/fuse.h"
+#include "wakefs/materialize_staging.h"
+
+namespace fs = std::filesystem;
 
 void print_help() {
   const std::string interactive =
@@ -68,6 +76,14 @@ void print_help() {
 #endif
       "    -I --isolate-retcode     Don't allow COMMAND's return code to impact wakebox's return \n"
       "                             code.                                                        \n"
+      "    -m --materialize-staging Materialize the staged files, and consumes them immediately  \n"
+      "                             after the job specified by --params is complete. Requires    \n"
+      "                             the --params argument.                                       \n"
+      "    -P --materialize-previous RUN-ID                                                      \n"
+      "                             Materialize only the staging files with the specified runID. \n"
+      "    -M --materialize-manifest PATH                                                        \n"
+      "                             Materialize only the staging files specified by the recovery \n"
+      "                             manifest path using the current workspace layout.            \n"
       "                                                                                          \n"
       "Other options                                                                             \n"
       "    -h --help                Print usage                                                  \n"
@@ -83,6 +99,189 @@ void print_help() {
       << "      will be ignored.\n\n"
       << batch_and_help;
 #endif
+}
+
+// Use the directory where wakebox was invoked as the recovery workspace.
+bool resolve_workspace(std::string *workspace, std::string *error) {
+  std::error_code ec;
+  const fs::path current = fs::canonical(fs::current_path(), ec);
+  if (ec) {
+    *error = "canonicalize workspace: " + ec.message();
+    return false;
+  }
+  if (!fs::is_directory(current, ec)) {
+    *error = ec ? "inspect workspace: " + ec.message()
+                : "workspace is not a directory: " + current.string();
+    return false;
+  }
+  *workspace = current.string();
+  return true;
+}
+
+bool discover_completed_manifests(const std::string &workspace,
+                                  std::vector<wakefs::CompletedStagingManifest> *manifests,
+                                  std::string *error) {
+  const fs::path recovery = fs::path(workspace) / ".build" / "cas" / "staging" / "recovery";
+  return wakefs::discover_completed_staging_manifests(recovery.string(), manifests, error);
+}
+
+void print_materialization_summary(const std::string &manifest_path,
+                                   const wakefs::StagingMaterializationSummary &summary) {
+  std::cout << manifest_path << ": materialized " << summary.materialized << ", consumed "
+            << summary.consumed << ", failed " << summary.failed
+            << (summary.manifest_removed ? ", manifest removed" : ", manifest retained")
+            << std::endl;
+}
+
+bool parse_run_id(const char *text, int64_t *run_id) {
+  if (!text || !*text) return false;
+  try {
+    size_t parsed = 0;
+    const long long value = std::stoll(text, &parsed);
+    if (parsed != std::strlen(text) || value < std::numeric_limits<int64_t>::min() ||
+        value > std::numeric_limits<int64_t>::max())
+      return false;
+    *run_id = value;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+int materialize_previous_workspace(const char *requested_run_id) {
+  int64_t run_id;
+  if (!parse_run_id(requested_run_id, &run_id)) {
+    std::cerr << "--materialize-previous requires an integer Wake run ID." << std::endl;
+    return 1;
+  }
+  std::string workspace;
+  std::string error;
+  if (!resolve_workspace(&workspace, &error)) {
+    std::cerr << error << std::endl;
+    return 1;
+  }
+
+  std::vector<wakefs::CompletedStagingManifest> manifests;
+  if (!discover_completed_manifests(workspace, &manifests, &error)) {
+    std::cerr << error << std::endl;
+    return 1;
+  }
+  bool success = true;
+  size_t selected = 0;
+  for (const wakefs::CompletedStagingManifest &manifest : manifests) {
+    if (!manifest.manifest.wake_run_id || *manifest.manifest.wake_run_id != run_id) continue;
+    ++selected;
+    wakefs::StagingMaterializationSummary summary;
+    std::string materialize_error;
+    if (!wakefs::materialize_completed_workspace(manifest.path, manifest.manifest, &summary,
+                                                 &materialize_error)) {
+      success = false;
+      std::cerr << manifest.path << ": "
+                << (materialize_error.empty() ? "one or more entries failed" : materialize_error)
+                << std::endl;
+    }
+    print_materialization_summary(manifest.path, summary);
+  }
+  if (selected == 0)
+    std::cout << "No recovery manifests match Wake run " << run_id << " in " << workspace
+              << std::endl;
+  return success ? 0 : 1;
+}
+
+int materialize_manifest(const char *path) {
+  std::string workspace;
+  std::string error;
+  if (!resolve_workspace(&workspace, &error)) {
+    std::cerr << error << std::endl;
+    return 1;
+  }
+  std::error_code ec;
+  const fs::file_status status = fs::symlink_status(path, ec);
+  if (ec || !fs::is_regular_file(status)) {
+    std::cerr << (ec ? "inspect recovery manifest: " + ec.message()
+                     : "recovery manifest is not a regular file")
+              << std::endl;
+    return 1;
+  }
+  wakefs::StagingManifest manifest;
+  if (!wakefs::read_staging_manifest(path, &manifest, &error)) {
+    std::cerr << path << ": " << error << std::endl;
+    return 1;
+  }
+  wakefs::StagingMaterializationSummary summary;
+  const bool success = wakefs::materialize_completed_workspace(path, manifest, &summary, &error);
+  if (!success)
+    std::cerr << path << ": " << (error.empty() ? "one or more entries failed" : error)
+              << std::endl;
+  print_materialization_summary(path, summary);
+  return success ? 0 : 1;
+}
+
+struct ImmediateMaterialization {
+  bool success = false;
+  bool manifest_removed = false;
+  size_t materialized = 0;
+  size_t consumed = 0;
+  size_t failed = 0;
+  std::string manifest_path;
+  std::string error;
+};
+
+ImmediateMaterialization materialize_returned_manifest(const std::string &result_json) {
+  ImmediateMaterialization result;
+  std::stringstream parse_errors;
+  JAST metadata;
+  if (!JAST::parse(result_json, parse_errors, metadata) || metadata.kind != JSON_OBJECT) {
+    result.error = "parse wakebox result metadata";
+    return result;
+  }
+  auto manifest_field = metadata.get_opt("recovery_manifest");
+  if (!manifest_field || (*manifest_field)->kind != JSON_STR || (*manifest_field)->value.empty()) {
+    result.error = "wakebox result does not contain a recovery manifest";
+    return result;
+  }
+  result.manifest_path = (*manifest_field)->value;
+
+  std::string workspace_text;
+  if (!resolve_workspace(&workspace_text, &result.error)) return result;
+  const fs::path workspace = workspace_text;
+  const fs::path recovery_dir = workspace / ".build" / "cas" / "staging" / "recovery";
+  const fs::path manifest_relative = result.manifest_path;
+  const fs::path recovery_relative = ".build/cas/staging/recovery";
+  if (manifest_relative.is_absolute() || manifest_relative.parent_path() != recovery_relative ||
+      manifest_relative.filename().empty()) {
+    result.error = "recovery manifest must be a direct workspace-relative recovery child";
+    return result;
+  }
+  const fs::path manifest = workspace / manifest_relative;
+  std::error_code ec;
+  const fs::file_status status = fs::symlink_status(manifest, ec);
+  if (ec || !fs::is_regular_file(status)) {
+    result.error = ec ? "inspect recovery manifest: " + ec.message()
+                      : "recovery manifest is not a regular file";
+    return result;
+  }
+  const fs::path manifest_parent = fs::canonical(manifest.parent_path(), ec);
+  const fs::path canonical_recovery_dir = fs::canonical(recovery_dir, ec);
+  if (ec || manifest_parent != canonical_recovery_dir) {
+    result.error = ec ? "canonicalize recovery manifest directory: " + ec.message()
+                      : "recovery manifest is outside the recovery directory";
+    return result;
+  }
+
+  wakefs::StagingManifest parsed;
+  result.manifest_path = manifest.string();
+  if (!wakefs::read_staging_manifest(result.manifest_path, &parsed, &result.error)) return result;
+
+  wakefs::StagingMaterializationSummary summary;
+  result.success = wakefs::materialize_completed_workspace(result.manifest_path, parsed, &summary,
+                                                           &result.error);
+  result.materialized = summary.materialized;
+  result.consumed = summary.consumed;
+  result.failed = summary.failed;
+  result.manifest_removed = summary.manifest_removed;
+  if (result.success) result.error.clear();
+  return result;
 }
 
 // Decide the default working directory for the new process.
@@ -147,7 +346,8 @@ int run_interactive(const std::string &rootfs, const std::vector<std::string> &t
 }
 
 int run_batch(const char *params_path, bool has_output, bool use_stdin_file, bool use_shell,
-              bool isolate_retcode, const char *result_path, const std::vector<mount_op> &binds) {
+              bool isolate_retcode, bool materialize_staging, const char *result_path,
+              const std::vector<mount_op> &binds) {
   // Read the params file
   std::ifstream ifs(params_path);
   const std::string json((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
@@ -190,6 +390,20 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
   std::string result;
   if (!has_output) {
     if (!run_in_fuse(args, retcode, result)) return 1;
+    if (materialize_staging) {
+      const ImmediateMaterialization materialization = materialize_returned_manifest(result);
+      if (!materialization.success) {
+        std::cerr << "materialize staging: " << materialization.error << std::endl;
+        if (retcode == 0) return 1;
+      } else {
+        wakefs::StagingMaterializationSummary summary;
+        summary.materialized = materialization.materialized;
+        summary.consumed = materialization.consumed;
+        summary.failed = materialization.failed;
+        summary.manifest_removed = materialization.manifest_removed;
+        print_materialization_summary(materialization.manifest_path, summary);
+      }
+    }
 
     if (isolate_retcode)
       return 0;
@@ -206,12 +420,29 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
 
   if (!run_in_fuse(args, retcode, result)) return 1;
 
+  ImmediateMaterialization materialization;
+  if (materialize_staging) {
+    materialization = materialize_returned_manifest(result);
+    if (!materialization.success) {
+      std::cerr << "materialize staging: " << materialization.error << std::endl;
+    } else {
+      wakefs::StagingMaterializationSummary summary;
+      summary.materialized = materialization.materialized;
+      summary.consumed = materialization.consumed;
+      summary.failed = materialization.failed;
+      summary.manifest_removed = materialization.manifest_removed;
+      print_materialization_summary(materialization.manifest_path, summary);
+    }
+  }
+
   // write output stats as json
   ssize_t wrote = write(out_fd, result.c_str(), result.length());
   if (wrote == -1) return errno;
   if (0 != close(out_fd)) return errno;
 
-  if (isolate_retcode)
+  if (materialize_staging && !materialization.success && retcode == 0)
+    return 1;
+  else if (isolate_retcode)
     return 0;
   else
     return retcode;
@@ -233,6 +464,9 @@ int main(int argc, char *argv[]) {
         {'s', "force-shell", GOPT_ARGUMENT_FORBIDDEN},
         {'i', "interactive", GOPT_ARGUMENT_FORBIDDEN},
         {'I', "isolate-retcode", GOPT_ARGUMENT_FORBIDDEN},
+        {'m', "materialize-staging", GOPT_ARGUMENT_FORBIDDEN},
+        {'P', "materialize-previous", GOPT_ARGUMENT_REQUIRED},
+        {'M', "materialize-manifest", GOPT_ARGUMENT_REQUIRED},
 
         {'h', "help", GOPT_ARGUMENT_FORBIDDEN}, {
       0, 0, GOPT_LAST
@@ -246,10 +480,42 @@ int main(int argc, char *argv[]) {
   bool has_params_file = arg(options, "params")->count > 0;
   bool has_positional_cmd = argc > 1;
   bool isolate_retcode = arg(options, "isolate-retcode")->count > 0;
+  bool materialize_staging = arg(options, "materialize-staging")->count > 0;
+  bool materialize_previous = arg(options, "materialize-previous")->count > 0;
+  bool materialize_manifest_path = arg(options, "materialize-manifest")->count > 0;
 
   if (has_help) {
     print_help();
     return 1;
+  }
+
+  if (materialize_staging && !has_params_file) {
+    std::cerr << "--materialize-staging requires --params." << std::endl;
+    return 1;
+  }
+
+  if (materialize_previous || materialize_manifest_path) {
+    bool has_execution_options = has_params_file || has_positional_cmd || materialize_staging ||
+                                 arg(options, "output-stats")->count > 0 || isolate_retcode ||
+                                 arg(options, "force-shell")->count > 0 ||
+                                 arg(options, "interactive")->count > 0;
+#ifdef __linux__
+    has_execution_options = has_execution_options || arg(options, "rootfs")->count > 0 ||
+                            arg(options, "toolchain")->count > 0 ||
+                            arg(options, "bind")->count > 0 || arg(options, "bind-cwd")->count > 0;
+#endif
+    if (materialize_previous && materialize_manifest_path) {
+      std::cerr << "Choose only one recovery command." << std::endl;
+      return 1;
+    }
+    if (has_execution_options) {
+      std::cerr << "Recovery commands cannot be combined with payload execution options."
+                << std::endl;
+      return 1;
+    }
+    if (materialize_previous)
+      return materialize_previous_workspace(arg(options, "materialize-previous")->argument);
+    return materialize_manifest(arg(options, "materialize-manifest")->argument);
   }
 
   if (has_positional_cmd && has_params_file) {
@@ -300,8 +566,8 @@ int main(int argc, char *argv[]) {
     bool use_stdin_file = arg(options, "interactive")->count == 0;
     bool use_shell = arg(options, "force-shell")->count > 0;
     const char *result_path = arg(options, "output-stats")->argument;
-    return run_batch(params, has_output, use_stdin_file, use_shell, isolate_retcode, result_path,
-                     bind_ops);
+    return run_batch(params, has_output, use_stdin_file, use_shell, isolate_retcode,
+                     materialize_staging, result_path, bind_ops);
   }
   print_help();
   return 1;

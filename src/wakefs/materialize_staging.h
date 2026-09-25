@@ -73,8 +73,26 @@ struct StagingMaterializationSummary {
   bool success() const { return failed == 0; }
 };
 
-// Restore every output beneath the current workspace, persist a manifest-level
-// completion checkpoint, then consume only its named regular staging sources.
+// A parsed completed manifest. Wakebox processes recovered manifests in creation
+// time and filename order.
+struct CompletedStagingManifest {
+  std::string path;
+  StagingManifest manifest;
+};
+
+// Scan only direct regular-file children of recovery_dir, parse each final
+// manifest, and return its path and parsed contents. Results are sorted oldest
+// first by creation time, then pathname, so processing deterministically lets a
+// newer manifest replace an older projection at the same destination.
+bool discover_completed_staging_manifests(const std::string& recovery_dir,
+                                          std::vector<CompletedStagingManifest>* manifests,
+                                          std::string* error);
+
+// Restore outputs to their recorded workspace, then remove their staging sources
+// and completed manifest entries.
+bool materialize_completed_workspace(const std::string& manifest_path,
+                                     const StagingManifest& manifest,
+                                     StagingMaterializationSummary* summary, std::string* error);
 bool materialize_completed_workspace(const std::string& manifest_path,
                                      StagingMaterializationSummary* summary, std::string* error);
 
