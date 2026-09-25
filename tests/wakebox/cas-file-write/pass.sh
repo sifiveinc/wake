@@ -10,7 +10,12 @@ set -eu
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
 
 STATS_FILE=$(mktemp)
-trap 'rm -rf test_output.txt "$STATS_FILE" .build/cas/staging/recovery' EXIT
+RM_ARTIFACTS="test_output.txt .build/cas/staging/recovery"
+cleanup() {
+    rm -rf $RM_ARTIFACTS "$STATS_FILE"
+}
+trap cleanup EXIT
+rm -rf $RM_ARTIFACTS
 
 OUTPUT=$(${1}/wakebox -o "$STATS_FILE" -p input.json 2>&1)
 
