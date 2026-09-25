@@ -34,14 +34,20 @@ struct CopyResult {
   size_t bytes_copied;  // 0 for reflink, actual bytes for copy
 };
 
-// Tries reflink first, then falls back to std::filesystem::copy_file
-// Returns the strategy that was used
-// If attempt_reflink is false, skips reflink attempt and goes straight to copy
+// Write the complete buffer, retrying interrupted and partial writes.
+bool write_all(int fd, const void* data, size_t size);
+
+// Clone or copy between already-open regular files. The source descriptor stays
+// pinned through the operation, avoiding path races in confined materializers.
+result<CopyResult, posix_error_t> reflink_or_copy_fd(int src_fd, int dst_fd,
+                                                     bool attempt_reflink = true);
+
+// Tries reflink first, then falls back to std::filesystem::copy_file.
 result<CopyResult, posix_error_t> reflink_or_copy_file(const std::string& src,
                                                        const std::string& dst, mode_t mode,
                                                        bool attempt_reflink = true);
 
-// Try to reflink a file (copy-on-write clone)
+// Try to reflink a file (copy-on-write clone) into an exclusive destination.
 result<bool, posix_error_t> try_reflink(const std::string& src, const std::string& dst,
                                         mode_t mode);
 

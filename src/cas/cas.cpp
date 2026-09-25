@@ -30,7 +30,7 @@
 #include <optional>
 #include <sstream>
 
-#include "wcl/file_ops.h"
+#include "wcl/materialize.h"
 
 namespace fs = std::filesystem;
 
@@ -293,38 +293,13 @@ wcl::result<bool, CASError> Cas::materialize_blob(const ContentHash& hash,
     }
   }
 
-  // Copy to temp file first, then atomically rename to destination.
-  std::string temp_path = dest_path + "." + std::to_string(getpid());
-  auto copy_result = wcl::reflink_or_copy_file(src_path, temp_path, mode, reflink_supported_);
+  auto copy_result = wcl::materialize_regular_file(src_path, dest_path, mode, mtime_sec, mtime_nsec,
+                                                   reflink_supported_);
   if (!copy_result) {
-    fs::remove(temp_path, ec);
     return wcl::make_error<bool, CASError>(CASError::IOError);
   }
   if (copy_result->strategy_used == wcl::CopyStrategy::Copy) {
     reflink_supported_ = false;
-  }
-
-  // Apply timestamp to temp file before rename. (0, 0) is a sentinel meaning
-  // "leave the kernel-set mtime from the reflink/copy" — matches the convention
-  // in cas_prim.cpp::apply_mtime.
-  if (mtime_sec != 0 || mtime_nsec != 0) {
-    struct timespec times[2];
-    times[0].tv_sec = 0;
-    times[0].tv_nsec = UTIME_OMIT;  // Don't change atime
-    times[1].tv_sec = mtime_sec;
-    times[1].tv_nsec = mtime_nsec;
-
-    if (utimensat(AT_FDCWD, temp_path.c_str(), times, 0) != 0) {
-      fs::remove(temp_path, ec);
-      return wcl::make_error<bool, CASError>(CASError::IOError);
-    }
-  }
-
-  // Atomically rename over destination - last one wins
-  fs::rename(temp_path, dest_path, ec);
-  if (ec) {
-    fs::remove(temp_path, ec);
-    return wcl::make_error<bool, CASError>(CASError::IOError);
   }
 
   return wcl::make_result<bool, CASError>(true);

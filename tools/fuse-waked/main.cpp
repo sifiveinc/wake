@@ -465,19 +465,6 @@ void Job::parse() {
   }
 }
 
-static bool write_all(int fd, const std::string &data) {
-  size_t offset = 0;
-  while (offset < data.size()) {
-    ssize_t wrote = write(fd, data.data() + offset, data.size() - offset);
-    if (wrote < 0) {
-      if (errno == EINTR) continue;
-      return false;
-    }
-    offset += static_cast<size_t>(wrote);
-  }
-  return true;
-}
-
 // Publish a complete file without exposing a partial final pathname.
 static bool atomic_write_file(const std::string &temporary_path, const std::string &final_path,
                               const std::string &data) {
@@ -485,7 +472,7 @@ static bool atomic_write_file(const std::string &temporary_path, const std::stri
   if (fd < 0) return false;
 
   int failure = 0;
-  if (!write_all(fd, data)) {
+  if (!wcl::write_all(fd, data.data(), data.size())) {
     failure = errno;
   }
   if (close(fd) != 0 && failure == 0) failure = errno;

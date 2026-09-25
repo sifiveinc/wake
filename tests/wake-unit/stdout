@@ -69,6 +69,7 @@ PASSED:
   iterator_split_by_no_delim
   iterator_split_by_nominal
   iterator_split_by_only_delim
+  materialize_directory_replaces_file_and_preserves_children
   reflink_or_copy_file_basic
   reflink_or_copy_file_src_not_found
   result_assign1
