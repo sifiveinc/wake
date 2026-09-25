@@ -18,6 +18,7 @@
 #ifndef JSON5_H
 #define JSON5_H
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <ostream>
@@ -149,10 +150,15 @@ struct JAST {
   }
 
   std::optional<int64_t> expect_integer() const {
-    if (kind == JSON_INTEGER) {
-      return std::optional<int64_t>{std::stol(value)};
+    if (kind != JSON_INTEGER) return std::nullopt;
+    try {
+      size_t index = 0;
+      const long long parsed = std::stoll(value, &index);
+      if (index != value.size()) return std::nullopt;
+      return static_cast<int64_t>(parsed);
+    } catch (...) {
+      return std::nullopt;
     }
-    return {};
   }
 
   std::optional<bool> expect_boolean() const {

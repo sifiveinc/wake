@@ -166,6 +166,7 @@ struct Database {
   void entropy(uint64_t *key, int words);
 
   void prepare(const std::string &cmdline);  // prepare for job execution
+  long current_run_id() const;               // Returns the current WakeDB run ID
   void finish_run();                         // mark run as complete (sets end_time)
   void clean();                              // finished execution; sweep stale jobs
 
@@ -234,6 +235,9 @@ struct Database {
   // 4) finishes the transaction and returns the paths
   //    of the removed files
   std::vector<std::string> clear_jobs();
+
+  // Returns started jobs in the current run that have not completed finalization.
+  std::vector<long> unfinished_current_run_jobs() const;
 
   // Like clear_jobs(), but first checks for active builds atomically.
   // Returns false if there are incomplete runs (active builds).

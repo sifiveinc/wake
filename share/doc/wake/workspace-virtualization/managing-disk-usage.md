@@ -92,9 +92,22 @@ removes the emptied directories.
 
 ## Cleaning up staging leftovers
 
-`.build/cas/staging/` can accumulate leftover files after a crash. If it grows
-large, it is safe to delete its contents **while no wake processes are
-running**.
+Since there is no automatic cleanup of staging leftovers yet, a crash or interrupted
+run can leave files and recovery manifests in `.build/cas/staging/`. If Wake
+reports that staged outputs remain after cancellation, recover that run with
+the command it prints, for example:
+
+```
+wakebox --materialize-previous <run-id>
+```
+
+This materializes the run's staged outputs and consumes their staging sources.
+Wakebox also provides `--materialize-staging` for materializing outputs from a
+job as it completes while running interactively with `--params`.
+
+Staging may still accumulate leftovers after a crash. If it grows large and
+you do not need to recover any staged outputs, it is safe to delete the
+contents of `.build/cas/staging/` **while no wake processes are running**.
 
 ---
 

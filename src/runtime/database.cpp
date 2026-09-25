@@ -124,6 +124,7 @@ struct Database::detail {
 
   long run_id;
   long gc_watermark;
+  std::unordered_set<long> unfinished_current_run_jobs;
   std::optional<RunLock> run_lock;
   detail(bool debugdb_)
       : debugdb(debugdb_),
@@ -948,6 +949,12 @@ void Database::prepare(const std::string &cmdline) {
   end_txn();
 }
 
+long Database::current_run_id() const { return imp->run_id; }
+
+std::vector<long> Database::unfinished_current_run_jobs() const {
+  return {imp->unfinished_current_run_jobs.begin(), imp->unfinished_current_run_jobs.end()};
+}
+
 void Database::finish_run() {
   auto ts = gettime_ns();
 
@@ -1563,6 +1570,8 @@ void Database::finish_job(long job, const std::string &inputs, const std::string
   finish_stmt(why, imp->detect_overlap, imp->debugdb);
 
   end_txn();
+
+  imp->unfinished_current_run_jobs.erase(job);
 
   if (fail) exit(1);
 
@@ -2506,6 +2515,15 @@ static PRIMFN(prim_rm_generated) {
   }
 }
 
+static PRIMTYPE(type_current_run_id) { return args.empty() && out->unify(Data::typeInteger); }
+
+static PRIMFN(prim_current_run_id) {
+  auto *db = static_cast<Database *>(data);
+  EXPECT(0);
+  MPZ result(db->current_run_id());
+  RETURN(Integer::alloc(runtime.heap, result));
+}
+
 static std::vector<FileDependency> get_all_file_dependencies_impl(const Database *db,
                                                                   sqlite3_stmt *query) {
   const char *why = "Could not get file dependencies";
@@ -2837,6 +2855,7 @@ void Database::start_job(long job, int64_t starttime) {
   bind_integer(why, imp->set_starttime, 2, job);
   single_step(why, imp->set_starttime, imp->debugdb);
   end_txn();
+  imp->unfinished_current_run_jobs.insert(job);
 }
 
 void Database::start_job(long job, int64_t starttime, pid_t pid) {
@@ -2851,6 +2870,7 @@ void Database::start_job(long job, int64_t starttime, pid_t pid) {
   bind_integer(why, imp->insert_live_job, 3, pid);
   single_step(why, imp->insert_live_job, imp->debugdb);
   end_txn();
+  imp->unfinished_current_run_jobs.insert(job);
 }
 
 std::optional<LiveJobInfo> Database::get_live_job(long job_id) const {
@@ -2925,4 +2945,5 @@ void Database::gc_if_dead(const std::vector<std::string> &hashes,
 void prim_register_database(Database *db, CASContext *cas_ctx, PrimMap &pmap) {
   static std::pair<Database *, CASContext *> rm_ctx(db, cas_ctx);
   prim_register(pmap, "rm_generated", prim_rm_generated, type_rm_generated, PRIM_IMPURE, &rm_ctx);
+  prim_register(pmap, "current_run_id", prim_current_run_id, type_current_run_id, PRIM_PURE, db);
 }

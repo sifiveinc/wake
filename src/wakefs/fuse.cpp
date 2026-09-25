@@ -52,6 +52,63 @@
 #define HOST_NAME_MAX 255
 #endif
 
+namespace {
+
+volatile sig_atomic_t cancellation_signal = 0;
+volatile sig_atomic_t cancellation_repeated = 0;
+
+extern "C" void record_cancellation_signal(int signal) {
+  if (cancellation_signal == 0) {
+    cancellation_signal = signal;
+  } else {
+    cancellation_repeated = 1;
+  }
+}
+
+class CancellationSignalHandlers {
+ public:
+  CancellationSignalHandlers() {
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = record_cancellation_signal;
+    sigemptyset(&action.sa_mask);
+    sigaddset(&action.sa_mask, SIGINT);
+    sigaddset(&action.sa_mask, SIGTERM);
+    action.sa_flags = 0;
+    interrupt_installed_ = sigaction(SIGINT, &action, &interrupt_) == 0;
+    installed_ = interrupt_installed_ && sigaction(SIGTERM, &action, &terminate_) == 0;
+    if (!installed_ && interrupt_installed_) sigaction(SIGINT, &interrupt_, nullptr);
+  }
+
+  ~CancellationSignalHandlers() {
+    if (!installed_) return;
+    sigaction(SIGINT, &interrupt_, nullptr);
+    sigaction(SIGTERM, &terminate_, nullptr);
+  }
+
+  bool installed() const { return installed_; }
+  bool requested() const { return cancellation_signal != 0; }
+  bool repeated() const { return cancellation_repeated != 0; }
+  int signal() const { return cancellation_signal; }
+
+ private:
+  struct sigaction interrupt_ = {};
+  struct sigaction terminate_ = {};
+  bool interrupt_installed_ = false;
+  bool installed_ = false;
+};
+
+bool cancellation_deadline_passed(const struct timespec &deadline) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return now.tv_sec > deadline.tv_sec ||
+         (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec);
+}
+
+bool process_group_exists(pid_t leader) { return kill(-leader, 0) == 0 || errno == EPERM; }
+
+}  // namespace
+
 bool json_as_struct(const std::string &json, json_args &result) {
   JAST jast;
   if (!JAST::parse(json, std::cerr, jast)) return false;
@@ -124,6 +181,10 @@ bool json_as_struct(const std::string &json, json_args &result) {
   if (result.cas_dir.empty()) {
     result.cas_dir = ".build/cas";
   }
+  if (result.cas_dir != ".build/cas") {
+    std::cerr << "cas-dir must be exactly .build/cas" << std::endl;
+    return false;
+  }
 
   JAST timeout_entry = jast.get("command-timeout");
   if (timeout_entry.kind == JSON_INTEGER) {
@@ -141,6 +202,30 @@ bool json_as_struct(const std::string &json, json_args &result) {
 
   result.directory = jast.get("directory").value;
   result.stdin_file = jast.get("stdin").value;
+
+  JAST wake_run_id = jast.get("wake_run_id");
+  JAST wake_job_id = jast.get("wake_job_id");
+  if ((wake_run_id.kind == JSON_NULLVAL) != (wake_job_id.kind == JSON_NULLVAL)) {
+    std::cerr << "wake_run_id and wake_job_id must be provided together" << std::endl;
+    return false;
+  }
+  if (wake_run_id.kind != JSON_NULLVAL) {
+    if (wake_run_id.kind != JSON_INTEGER) {
+      std::cerr << "wake_run_id must be an integer value" << std::endl;
+      return false;
+    }
+    if (wake_job_id.kind != JSON_INTEGER) {
+      std::cerr << "wake_job_id must be an integer value" << std::endl;
+      return false;
+    }
+    try {
+      result.wake_run_id = std::stol(wake_run_id.value);
+      result.wake_job_id = std::stol(wake_job_id.value);
+    } catch (const std::exception &e) {
+      std::cerr << "wake_run_id and wake_job_id must be integer values: " << e.what() << std::endl;
+      return false;
+    }
+  }
 
   result.isolate_network = jast.get("isolate-network").kind == JSON_TRUE;
   result.isolate_pids = jast.get("isolate-pids").kind == JSON_TRUE;
@@ -179,7 +264,7 @@ int execve_wrapper(const std::vector<std::string> &command,
 
 static bool collect_result_metadata(const std::string daemon_output, const struct timeval &start,
                                     const struct timeval &stop, const pid_t pid, const int status,
-                                    const RUsage &rusage, bool timed_out,
+                                    const RUsage &rusage, bool timed_out, int canceled_signal,
                                     std::string &result_json) {
   JAST from_daemon;
   std::stringstream ss;
@@ -201,11 +286,16 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
   result_jast.add("inputs", JSON_ARRAY).children = std::move(from_daemon.get("inputs").children);
   result_jast.add("outputs", JSON_ARRAY).children = std::move(from_daemon.get("outputs").children);
   result_jast.add_bool("timed-out", timed_out);
+  if (canceled_signal != 0) result_jast.add("canceled-signal", canceled_signal);
 
   auto staging_files_opt = from_daemon.get_opt("staging_files");
   if (staging_files_opt && (*staging_files_opt)->kind == JSON_OBJECT) {
     result_jast.add("staging_files", JSON_OBJECT).children =
         std::move((*staging_files_opt)->children);
+  }
+  auto recovery_manifest_opt = from_daemon.get_opt("recovery_manifest");
+  if (recovery_manifest_opt && (*recovery_manifest_opt)->kind == JSON_STR) {
+    result_jast.add("recovery_manifest", (*recovery_manifest_opt)->value);
   }
 
   char hostname[HOST_NAME_MAX + 1];
@@ -218,19 +308,36 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
   return !result_ss.fail();
 }
 
-bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
+bool run_in_fuse(fuse_args &args, int &status, std::string &result_json, FuseRunOutcome &outcome) {
   if (0 != chdir(args.working_dir.c_str())) {
     std::cerr << "chdir " << args.working_dir << ": " << strerror(errno) << std::endl;
     return false;
   }
 
-  if (!args.daemon.connect(args.visible, args.cas_dir, args.isolate_pids)) return false;
+  if (!args.daemon.connect(args.visible, args.cas_dir, args.isolate_pids, args.wake_run_id,
+                           args.wake_job_id))
+    return false;
+  cancellation_signal = 0;
+  cancellation_repeated = 0;
+  CancellationSignalHandlers signal_handlers;
+  if (!signal_handlers.installed()) {
+    std::cerr << "wakebox: install cancellation signal handler: " << strerror(errno) << std::endl;
+    return false;
+  }
 
   struct timeval start;
   gettimeofday(&start, 0);
 
   pid_t payload_pid = fork();
   if (payload_pid == 0) {
+    struct sigaction default_action;
+    memset(&default_action, 0, sizeof(default_action));
+    default_action.sa_handler = SIG_DFL;
+    sigemptyset(&default_action.sa_mask);
+    sigaction(SIGINT, &default_action, nullptr);
+    sigaction(SIGTERM, &default_action, nullptr);
+    // Isolate the payload and its descendants so wakebox can signal them as a group.
+    (void)setpgid(0, 0);
     std::vector<std::string> command = args.command;
     std::vector<std::string> envs_from_mounts;
 #ifdef __linux__
@@ -297,6 +404,12 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
 #endif
     exit(1);
   }
+  if (payload_pid < 0) {
+    std::cerr << "wakebox: fork payload: " << strerror(errno) << std::endl;
+    return false;
+  }
+  // Either side may run first; repeat the setup here to close that fork race.
+  (void)setpgid(payload_pid, payload_pid);
 
   // Don't hold IO open while waiting
   (void)close(STDIN_FILENO);
@@ -320,9 +433,30 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     }
   }
 
+  constexpr time_t cancellation_grace_seconds = 5;
+  bool payload_reaped = false;
+  bool cancellation_started = false;
+  bool payload_killed = false;
+  int payload_wait_status = 0;
+  struct timespec cancellation_deadline = {};
+  outcome = FuseRunOutcome::Completed;
   pid_t wait_pid;
-  while ((wait_pid = wait(&status)) != -1) {
-    if (wait_pid == timeout_pid && WIFEXITED(status)) {
+  while (!payload_reaped) {
+    // Poll after cancellation so we can enforce the grace deadline.
+    wait_pid = waitpid(-1, &status, cancellation_started ? WNOHANG : 0);
+    if (wait_pid == -1 && errno == EINTR) {
+      // The handler recorded cancellation; handle it below in normal control flow.
+    } else if (wait_pid == -1 && errno == ECHILD) {
+      // Nothing remains to reap; use the fallback status below.
+      break;
+    } else if (wait_pid == -1) {
+      return false;
+    } else if (wait_pid == 0) {
+      // The payload is still shutting down after cancellation.
+      struct timespec pause = {0, 100000000};
+      nanosleep(&pause, nullptr);
+    } else if (wait_pid == timeout_pid && WIFEXITED(status) && !signal_handlers.requested()) {
+      // Preserve the existing timeout behavior unless an external signal won the race.
       kill(payload_pid, SIGKILL);
 
       struct timeval stop;
@@ -330,24 +464,56 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
       std::string output;
       args.daemon.disconnect(output);
       RUsage usage = {};
-      return collect_result_metadata(output, start, stop, payload_pid, 124, usage, true,
+      status = 124;
+      outcome = FuseRunOutcome::TimedOut;
+      return collect_result_metadata(output, start, stop, payload_pid, 124, usage, true, 0,
                                      result_json);
-    }
-
-    if (wait_pid == payload_pid && !WIFSTOPPED(status)) {
+    } else if (wait_pid == payload_pid && !WIFSTOPPED(status)) {
+      // The direct payload exited; descendants are handled below if cancellation began.
+      payload_wait_status = status;
+      payload_reaped = true;
       if (args.command_timeout) {
         kill(timeout_pid, SIGKILL);
       }
-      // Note: must not wait on timeout pid in this codepath
-      // otherwise it'll pollute rusage.
-      break;
+    }
+
+    if (!signal_handlers.requested()) continue;
+    if (!cancellation_started) {
+      // First external signal: stop the timer and give the payload group time to exit.
+      cancellation_started = true;
+      clock_gettime(CLOCK_MONOTONIC, &cancellation_deadline);
+      cancellation_deadline.tv_sec += cancellation_grace_seconds;
+      if (timeout_pid != -1) (void)kill(timeout_pid, SIGKILL);
+      (void)kill(-payload_pid, SIGTERM);
+    }
+    if (!payload_killed &&
+        (signal_handlers.repeated() || cancellation_deadline_passed(cancellation_deadline))) {
+      // A repeated signal or expired grace period requires immediate termination.
+      (void)kill(-payload_pid, SIGKILL);
+      payload_killed = true;
     }
   }
 
-  if (WIFEXITED(status)) {
-    status = WEXITSTATUS(status);
+  if (WIFEXITED(payload_wait_status)) {
+    status = WEXITSTATUS(payload_wait_status);
   } else {
-    status = -WTERMSIG(status);
+    status = WIFSIGNALED(payload_wait_status) ? -WTERMSIG(payload_wait_status) : -SIGTERM;
+  }
+  if (cancellation_started && status == 0) status = -signal_handlers.signal();
+
+  // The process group can outlive its direct child. Keep the daemon live until
+  // every writer has exited so its final manifest cannot freeze mid-write.
+  if (cancellation_started && !args.isolate_pids) {
+    while (process_group_exists(payload_pid)) {
+      if (!payload_killed &&
+          (signal_handlers.repeated() || cancellation_deadline_passed(cancellation_deadline))) {
+        // The payload exited, but a descendant still needs escalation.
+        (void)kill(-payload_pid, SIGKILL);
+        payload_killed = true;
+      }
+      struct timespec pause = {0, 100000000};
+      nanosleep(&pause, nullptr);
+    }
   }
 
   // RUsage is calculated for all child processes that have 1) terminated and 2) been wait()ed on.
@@ -361,6 +527,8 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
   std::string output;
   args.daemon.disconnect(output);
 
+  if (cancellation_started) outcome = FuseRunOutcome::Canceled;
   return collect_result_metadata(output, start, stop, payload_pid, status, usage, false,
+                                 outcome == FuseRunOutcome::Canceled ? signal_handlers.signal() : 0,
                                  result_json);
 }

@@ -45,6 +45,51 @@ namespace fs = std::filesystem;
 
 namespace wcl {
 
+bool write_all(int fd, const void* data, size_t size) {
+  const char* buffer = static_cast<const char*>(data);
+  size_t offset = 0;
+  while (offset < size) {
+    ssize_t written = write(fd, buffer + offset, size - offset);
+    if (written < 0) {
+      if (errno == EINTR) continue;
+      return false;
+    }
+    if (written == 0) {
+      errno = EIO;
+      return false;
+    }
+    offset += static_cast<size_t>(written);
+  }
+  return true;
+}
+
+result<CopyResult, posix_error_t> reflink_or_copy_fd(int src_fd, int dst_fd, bool attempt_reflink) {
+#ifdef HAS_FICLONE
+  if (attempt_reflink && ioctl(dst_fd, FICLONE, src_fd) == 0)
+    return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Reflink, 0});
+  if (attempt_reflink && errno != EOPNOTSUPP && errno != ENOTTY && errno != EINVAL &&
+      errno != EXDEV)
+    return make_errno<CopyResult>();
+#else
+  (void)attempt_reflink;
+#endif
+  char buffer[64 * 1024];
+  size_t copied = 0;
+  for (;;) {
+    ssize_t read_bytes = read(src_fd, buffer, sizeof(buffer));
+    if (read_bytes == 0) break;
+    if (read_bytes < 0) {
+      if (errno == EINTR) continue;
+      return make_errno<CopyResult>();
+    }
+    if (!write_all(dst_fd, buffer, static_cast<size_t>(read_bytes))) {
+      return make_errno<CopyResult>();
+    }
+    copied += static_cast<size_t>(read_bytes);
+  }
+  return make_result<CopyResult, posix_error_t>(CopyResult{CopyStrategy::Copy, copied});
+}
+
 result<bool, posix_error_t> try_reflink(const std::string& src, const std::string& dst,
                                         mode_t mode) {
 #ifdef HAS_FICLONE

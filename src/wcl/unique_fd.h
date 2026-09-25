@@ -45,8 +45,11 @@ class unique_fd {
   explicit unique_fd(int fd) : fd(fd) {}
 
   unique_fd& operator=(unique_fd&& f) noexcept {
-    fd = f.fd;
-    f.fd = -1;
+    if (this != &f) {
+      close();
+      fd = f.fd;
+      f.fd = -1;
+    }
     return *this;
   }
   unique_fd(unique_fd&& f) noexcept : fd(f.fd) { f.fd = -1; }

@@ -54,6 +54,7 @@
 #include "util/execpath.h"
 #include "util/mkdir_parents.h"
 #include "util/unlink.h"
+#include "wakefs/materialize_staging.h"
 #include "wcl/file_ops.h"
 
 #define MAX_JSON (128 * 1024 * 1024)
@@ -311,11 +312,15 @@ struct Job {
   int json_in_uses;
   int json_out_uses;
   int uses;
+  std::string recovery_manifest;
+  std::optional<long> wake_run_id;
+  std::optional<long> wake_job_id;
 
   Job() : ibytes(0), obytes(0), json_in_uses(0), json_out_uses(0), uses(0) {}
 
   void parse();
   void dump(const std::string &job_id);
+  bool snapshot_recovery_manifest(const std::string &job_id);
 
   bool is_writeable(const std::string &path);
   bool is_readable(const std::string &path);
@@ -329,6 +334,30 @@ void Job::parse() {
   if (!JAST::parse(json_in, s, jast)) {
     fprintf(stderr, "Parse error: %s\n", s.str().c_str());
     return;
+  }
+
+  JAST run_id = jast.get("wake_run_id");
+  JAST job_id = jast.get("wake_job_id");
+  if ((run_id.kind == JSON_NULLVAL) != (job_id.kind == JSON_NULLVAL)) {
+    fprintf(stderr, "fuse-waked: wake_run_id and wake_job_id must be provided together\n");
+    return;
+  }
+  if (run_id.kind != JSON_NULLVAL) {
+    if (run_id.kind != JSON_INTEGER) {
+      fprintf(stderr, "fuse-waked: wake_run_id must be an integer value\n");
+      return;
+    }
+    if (job_id.kind != JSON_INTEGER) {
+      fprintf(stderr, "fuse-waked: wake_job_id must be an integer value\n");
+      return;
+    }
+    try {
+      wake_run_id = std::stol(run_id.value);
+      wake_job_id = std::stol(job_id.value);
+    } catch (const std::exception &e) {
+      fprintf(stderr, "fuse-waked: invalid Wake identity: %s\n", e.what());
+      return;
+    }
   }
 
   std::string cas_dir = jast.get("cas_dir").value;
@@ -349,7 +378,6 @@ void Job::parse() {
     fprintf(stderr, "fuse-waked: failed to create CAS staging directory '%s': %s\n",
             g_staging_dir.c_str(), strerror(err));
   }
-
   // We only need to make the relative paths visible; absolute paths are already
   files_visible.clear();
   visible_entries.clear();
@@ -438,6 +466,84 @@ void Job::parse() {
   }
 }
 
+// Persist the final output map before in-memory job state disappears:
+// {"version":1,"job_key":"...",
+//  "entries":[{"destination":"...","type":"file|symlink|directory",...}]}
+// Repeated calls reuse the same immutable record; special nodes and FUSE artifacts are excluded.
+bool Job::snapshot_recovery_manifest(const std::string &job_id) {
+  if (!recovery_manifest.empty()) return true;
+  if (g_staging_dir.empty()) return false;
+
+  const std::string recovery_dir = g_staging_dir + "/recovery";
+  int mkdir_error = mkdir_with_parents(recovery_dir, 0755);
+  if (mkdir_error != 0) {
+    fprintf(stderr, "fuse-waked: create recovery directory '%s': %s\n", recovery_dir.c_str(),
+            strerror(mkdir_error));
+    return false;
+  }
+  struct timespec now;
+  clock_gettime(CLOCK_REALTIME, &now);
+  const std::string name =
+      wake_run_id
+          ? "run-" + std::to_string(*wake_run_id) + "-job-" + std::to_string(*wake_job_id) + ".json"
+          : "wakebox-" + std::to_string(getpid()) + "-" + job_id + ".json";
+  const std::string final_path = recovery_dir + "/" + name;
+  wakefs::StagingManifest manifest;
+  manifest.job_key = job_id;
+  manifest.daemon_pid = getpid();
+  manifest.created_at_ns = static_cast<long long>(now.tv_sec) * 1000000000LL + now.tv_nsec;
+  manifest.wake_run_id = wake_run_id;
+  manifest.wake_job_id = wake_job_id;
+  if (auto *job_staged = g_staged_files.get_job(job_id)) {
+    for (const auto &entry : *job_staged) {
+      const StagedItem &sf = entry.second;
+      if (sf.is_special()) continue;
+      size_t slash = sf.dest_path.rfind('/');
+      size_t start = slash == std::string::npos ? 0 : slash + 1;
+      if (sf.dest_path.compare(start, 12, ".fuse_hidden") == 0) continue;
+      if (auto *file = std::get_if<StagedFileData>(&sf.data)) {
+        struct stat st;
+        if (stat(file->staging_path.c_str(), &st) != 0) {
+          fprintf(stderr, "fuse-waked: stat staging file '%s': %s\n", file->staging_path.c_str(),
+                  strerror(errno));
+          continue;
+        }
+      }
+      std::visit(
+          overloaded{
+              [&manifest, &sf](const StagedFileData &file) {
+                struct stat st;
+                int result = stat(file.staging_path.c_str(), &st);
+                assert(result == 0);
+                manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::File,
+                                            file.staging_path.substr(g_staging_dir.size() + 1), "",
+                                            *file.mode & 07777, st.st_mtim.tv_sec,
+                                            st.st_mtim.tv_nsec});
+              },
+              [&manifest, &sf](const StagedSymlinkData &link) {
+                manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::Symlink, "",
+                                            link.target, 0, link.mtime.tv_sec, link.mtime.tv_nsec});
+              },
+              [&manifest, &sf](const StagedDirectoryData &directory) {
+                manifest.entries.push_back({sf.dest_path, wakefs::StagingEntryType::Directory, "",
+                                            "", directory.mode & 07777, directory.mtime.tv_sec,
+                                            directory.mtime.tv_nsec});
+              },
+              [](const StagedSpecialData &) {},
+          },
+          sf.data);
+    }
+  }
+  std::string error;
+  if (!wakefs::write_staging_manifest_atomic(final_path, manifest, &error)) {
+    fprintf(stderr, "fuse-waked: write recovery manifest '%s': %s\n", final_path.c_str(),
+            error.c_str());
+    return false;
+  }
+  recovery_manifest = final_path;
+  return true;
+}
+
 static std::string cas_blob_path(const cas::ContentHash &hash) {
   std::string hex = hash.to_hex();
   assert(hex.size() >= 2);
@@ -465,6 +571,8 @@ static bool read_cas_blob_bytes(const cas::ContentHash &hash, std::string *data)
 
 void Job::dump(const std::string &job_id) {
   if (!json_out.empty()) return;
+
+  (void)snapshot_recovery_manifest(job_id);
 
   bool first;
   std::stringstream s;
@@ -553,7 +661,10 @@ void Job::dump(const std::string &job_id) {
       first = false;
     }
   }
-  s << "}}";
+  s << "}";
+  if (!recovery_manifest.empty())
+    s << ",\"recovery_manifest\":\"" << json_escape(recovery_manifest) << "\"";
+  s << "}";
 
   s << std::endl;
 
@@ -2139,6 +2250,7 @@ static int wakefuse_release(const char *path, struct fuse_file_info *fi) {
         return -EIO;
     }
     if ('f' != s.kind && s.job->second.should_erase()) {
+      (void)s.job->second.snapshot_recovery_manifest(s.job->first);
       g_staged_files.erase_job(s.job->first);
       context.jobs.erase(s.job);
     }
@@ -2396,6 +2508,7 @@ int main(int argc, char *argv[]) {
   pid_t pid;
   int log, null;
   bool madedir;
+  int loop_status;
   struct rlimit rlim;
 
   if (argc != 3) {
@@ -2434,7 +2547,6 @@ int main(int argc, char *argv[]) {
     perror("open .");
     goto term;
   }
-
   madedir = mkdir(path.c_str(), 0775) == 0;
   if (!madedir && errno != EEXIST) {
     fprintf(stderr, "mkdir %s: %s\n", path.c_str(), strerror(errno));
@@ -2568,7 +2680,15 @@ int main(int argc, char *argv[]) {
     close(null);
   }
 
-  if (fuse_loop(fh) != 0) {
+  loop_status = fuse_loop(fh);
+
+  // The loop has stopped in ordinary daemon context, so retain mappings that
+  // were not handed off before the daemon destroys its in-memory job table.
+  // This must not run from the signal handler, where filesystem operations are
+  // not safe.
+  for (auto &job : context.jobs) (void)job.second.snapshot_recovery_manifest(job.first);
+
+  if (loop_status != 0) {
     fprintf(stderr, "fuse_loop failed");
     goto unmount;
   }

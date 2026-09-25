@@ -141,7 +141,7 @@ bin/wake:	$(WAKE_OBJS)
 bin/wakebox:		tools/wakebox/main.cpp src/wakefs/*.cpp vendor/gopt/*.c $(COMMON_OBJS)
 	$(CXX) $(CFLAGS) $(LOCAL_CFLAGS) $(CXX_VERSION) $^ -o $@ $(LDFLAGS) $(CORE_LDFLAGS)
 
-lib/wake/fuse-waked:	tools/fuse-waked/main.cpp $(COMMON_OBJS) $(CAS_OBJS)
+lib/wake/fuse-waked:	tools/fuse-waked/main.cpp src/wakefs/materialize_staging.cpp $(COMMON_OBJS) $(CAS_OBJS)
 	$(CXX) $(CFLAGS) $(LOCAL_CFLAGS) $(FUSE_CFLAGS) $(CXX_VERSION) $^ -o $@ $(LDFLAGS)  $(CORE_LDFLAGS) $(FUSE_LDFLAGS)
 
 lib/wake/shim-wake:	tools/shim-wake/main.o $(COMMON_OBJS) $(CAS_OBJS)
