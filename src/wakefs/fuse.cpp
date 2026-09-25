@@ -124,6 +124,10 @@ bool json_as_struct(const std::string &json, json_args &result) {
   if (result.cas_dir.empty()) {
     result.cas_dir = ".build/cas";
   }
+  if (result.cas_dir != ".build/cas") {
+    std::cerr << "cas-dir must be exactly .build/cas" << std::endl;
+    return false;
+  }
 
   JAST timeout_entry = jast.get("command-timeout");
   if (timeout_entry.kind == JSON_INTEGER) {
@@ -141,6 +145,30 @@ bool json_as_struct(const std::string &json, json_args &result) {
 
   result.directory = jast.get("directory").value;
   result.stdin_file = jast.get("stdin").value;
+
+  JAST wake_run_id = jast.get("wake_run_id");
+  JAST wake_job_id = jast.get("wake_job_id");
+  if ((wake_run_id.kind == JSON_NULLVAL) != (wake_job_id.kind == JSON_NULLVAL)) {
+    std::cerr << "wake_run_id and wake_job_id must be provided together" << std::endl;
+    return false;
+  }
+  if (wake_run_id.kind != JSON_NULLVAL) {
+    if (wake_run_id.kind != JSON_INTEGER) {
+      std::cerr << "wake_run_id must be an integer value" << std::endl;
+      return false;
+    }
+    if (wake_job_id.kind != JSON_INTEGER) {
+      std::cerr << "wake_job_id must be an integer value" << std::endl;
+      return false;
+    }
+    try {
+      result.wake_run_id = std::stol(wake_run_id.value);
+      result.wake_job_id = std::stol(wake_job_id.value);
+    } catch (const std::exception &e) {
+      std::cerr << "wake_run_id and wake_job_id must be integer values: " << e.what() << std::endl;
+      return false;
+    }
+  }
 
   result.isolate_network = jast.get("isolate-network").kind == JSON_TRUE;
   result.isolate_pids = jast.get("isolate-pids").kind == JSON_TRUE;
@@ -207,6 +235,10 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
     result_jast.add("staging_files", JSON_OBJECT).children =
         std::move((*staging_files_opt)->children);
   }
+  auto recovery_manifest_opt = from_daemon.get_opt("recovery_manifest");
+  if (recovery_manifest_opt && (*recovery_manifest_opt)->kind == JSON_STR) {
+    result_jast.add("recovery_manifest", (*recovery_manifest_opt)->value);
+  }
 
   char hostname[HOST_NAME_MAX + 1];
   if (0 == gethostname(hostname, sizeof(hostname))) result_jast.add("run-host", hostname);
@@ -224,7 +256,9 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json) {
     return false;
   }
 
-  if (!args.daemon.connect(args.visible, args.cas_dir, args.isolate_pids)) return false;
+  if (!args.daemon.connect(args.visible, args.cas_dir, args.isolate_pids, args.wake_run_id,
+                           args.wake_job_id))
+    return false;
 
   struct timeval start;
   gettimeofday(&start, 0);

@@ -21,8 +21,10 @@ from wake import _
 #   [12] Version        : Option String
 #   [13] Runner         : Option String
 #   [14] CasDir         : String
-#   [15] MountOps       : List WakeboxMountOp
-#   [16] Visible        : List Path
+#   [15] WakeRunId      : Option Integer
+#   [16] WakeJobId      : Option Integer
+#   [17] MountOps       : List WakeboxMountOp
+#   [18] Visible        : List Path
 
 def baseSpec: WakeboxSpec =
     WakeboxSpec
@@ -41,6 +43,8 @@ def baseSpec: WakeboxSpec =
     None           # Version
     None           # Runner
     "/tmp/cas"     # CasDir
+    None           # WakeRunId
+    None           # WakeJobId
     Nil            # MountOps
     Nil            # Visible
 
@@ -71,6 +75,8 @@ def fullSpec: WakeboxSpec =
     (Some "1.0")                              # Version
     (Some "/bin/runner")                      # Runner
     "/cas"                                     # CasDir
+    (Some 42)                                  # WakeRunId
+    (Some 7)                                   # WakeJobId
     ops                                        # MountOps
     Nil                                        # Visible
 

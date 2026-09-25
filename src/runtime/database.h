@@ -166,6 +166,7 @@ struct Database {
   void entropy(uint64_t *key, int words);
 
   void prepare(const std::string &cmdline);  // prepare for job execution
+  long current_run_id() const;               // Returns the current WakeDB run ID
   void finish_run();                         // mark run as complete (sets end_time)
   void clean();                              // finished execution; sweep stale jobs
 
