@@ -170,7 +170,7 @@ result<DirectoryResult, posix_error_t> ensure_directory_at(int destination_paren
   int fd = openat(destination_parent_fd, destination_name.c_str(),
                   O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) return make_errno<DirectoryResult>();
-  return make_result<DirectoryResult, posix_error_t>(DirectoryResult{fd, created});
+  return make_result<DirectoryResult, posix_error_t>(DirectoryResult{unique_fd(fd), created});
 }
 
 result<bool, posix_error_t> apply_directory_metadata(int directory_fd, mode_t mode,
@@ -192,8 +192,7 @@ result<bool, posix_error_t> materialize_directory(const std::string& destination
   auto directory = ensure_directory_at(*parent, name, mode);
   close(*parent);
   if (!directory) return make_error<bool, posix_error_t>(directory.error());
-  auto result = apply_directory_metadata(directory->fd, mode, mtime_sec, mtime_nsec);
-  close(directory->fd);
+  auto result = apply_directory_metadata(directory->fd.get(), mode, mtime_sec, mtime_nsec);
   return result;
 }
 

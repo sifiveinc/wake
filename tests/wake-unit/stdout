@@ -90,6 +90,19 @@ PASSED:
   shell_escape_nominal
   shell_escape_spaces
   shell_escape_special
+  staging_manifest_accepts_missing_source_with_existing_destination
+  staging_manifest_blocks_destination_symlinks
+  staging_manifest_completed_cleanup_rejects_symlink_source
+  staging_manifest_materializes_relocated_record
+  staging_manifest_materializes_symlink_with_mtime
+  staging_manifest_rejects_missing_source_without_destination
+  staging_manifest_rejects_symlinked_staging_layout
+  staging_manifest_rejects_unsafe_input
+  staging_manifest_removes_empty_manifest
+  staging_manifest_requires_completion_state
+  staging_manifest_retries_completed_source_cleanup
+  staging_manifest_round_trip
+  staging_manifest_workspace_materialization_retries
   term_basic_background_colors
   term_basic_background_colors_dumb
   term_basic_bold_background_colors
