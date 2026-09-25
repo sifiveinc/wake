@@ -1207,6 +1207,7 @@ bool JobTable::wait(Runtime &runtime) {
 bool JobTable::drain(Runtime &runtime) {
   if (!exit_now() || imp->pidmap.empty()) return false;
 
+  std::cerr << "Waiting for running jobs to exit and materialize staged outputs..." << std::endl;
   imp->draining = true;
   clock_gettime(CLOCK_MONOTONIC, &imp->drain_deadline);
   // Give wakeboxes time to publish and consume their final manifest before escalation.
