@@ -468,7 +468,12 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       "  and not exists (select 1 from filetree where"
       "                  filetree.job_id=jobs.job_id and"
       "                  filetree.access=2)"
-      "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=jobs.job_id) <= ?1";
+      "  and (select coalesce(max(run_id), 0) from run_jobs where job_id=jobs.job_id) <= ?1"
+      // Avoid deleting failed jobs to work around a bug where anything that produced *no* output
+      // would be immediately cleaned up on the very next run, potentially before the user had a
+      // chance to debug what went wrong.
+      "  and coalesce((select status from stats where stats.stat_id=jobs.stat_id), 0) = 0"
+      "  and jobs.runner_status is null";
   // A deleted=1 row never owns the physical file at its path -- some other (live) row does, or
   // nothing in Wake does -- and once no `filetree` entry references it the metadata which had been
   // saved for Job bookkeeping is likewise no longer needed.
