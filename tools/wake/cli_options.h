@@ -107,6 +107,7 @@ struct CommandLineOptions {
   std::vector<std::vector<std::string>> output_files = {};
   std::vector<std::vector<std::string>> labels = {};
   std::vector<std::vector<std::string>> tags = {};
+  std::vector<std::string> properties = {};
 
   int argc;
   char **argv;
@@ -118,6 +119,7 @@ struct CommandLineOptions {
     std::vector<char *> output_files_buffer(argc_in, nullptr);
     std::vector<char *> labels_buffer(argc_in, nullptr);
     std::vector<char *> tags_buffer(argc_in, nullptr);
+    std::vector<char *> properties_buffer(argc_in, nullptr);
 
     // clang-format off
     struct option options[] {
@@ -145,6 +147,7 @@ struct CommandLineOptions {
       {'o', "output", GOPT_ARGUMENT_REQUIRED | GOPT_REPEATABLE_VALUE, output_files_buffer.data(), (unsigned int)argc_in},
       {0, "label", GOPT_ARGUMENT_REQUIRED | GOPT_REPEATABLE_VALUE, labels_buffer.data(), (unsigned int)argc_in},
       {0, "tag", GOPT_ARGUMENT_REQUIRED | GOPT_REPEATABLE_VALUE, tags_buffer.data(), (unsigned int)argc_in},
+      {0, "property", GOPT_ARGUMENT_REQUIRED | GOPT_REPEATABLE_VALUE, properties_buffer.data(), (unsigned int)argc_in},
       {'l', "last", GOPT_ARGUMENT_FORBIDDEN},
       {0, "last-used", GOPT_ARGUMENT_FORBIDDEN},
       {0, "last-executed", GOPT_ARGUMENT_FORBIDDEN},
@@ -328,6 +331,10 @@ struct CommandLineOptions {
       std::vector<std::string> parts = wcl::split_by_fn(
           ',', line.begin(), line.end(), [](auto a, auto b) { return std::string(a, b); });
       tags.emplace_back(std::move(parts));
+    }
+
+    for (unsigned int i = 0; i < arg(options, "property")->count; i++) {
+      properties.emplace_back(properties_buffer[i]);
     }
 
     if (!percent_str) {

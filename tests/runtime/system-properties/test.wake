@@ -1,0 +1,14 @@
+export def systemProperty _: String =
+    match (getSystemProperty "test.value")
+        Some value -> value
+        None -> "missing"
+
+export def missingSystemProperty _: String =
+    match (getSystemProperty "missing.value")
+        Some _ -> "present"
+        None -> "absent"
+
+export def environmentProperty _: String =
+    match (getenv "test.value")
+        Some _ -> "present"
+        None -> "absent"
