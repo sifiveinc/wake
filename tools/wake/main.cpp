@@ -332,40 +332,44 @@ MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database
 }
 
 void query_ps(const CommandLineOptions &clo, Database &db) {
+  const auto runs = db.get_runs();
+  std::vector<const RunReflection *> live_runs;
+  for (const auto &run : runs)
+    if (!run.end_time && RunLockProbe::is_live(run.id)) live_runs.push_back(&run);
+
+  if (live_runs.empty()) {
+    std::cout << "No runs currently in progress." << std::endl;
+    return;
+  }
+
   auto filters = build_query_filters(clo, db);
   const auto jobs = db.matching_open_runs(std::move(filters));
 
-  if (jobs.empty()) {
-    std::cout << "No jobs currently running." << std::endl;
-    return;
-  }
+  std::unordered_map<int, std::vector<const OpenRunJobReflection *>> jobs_by_run;
+  for (const auto &job : jobs) jobs_by_run[job.run_id].push_back(&job);
 
   struct timespec now;
   clock_gettime(CLOCK_REALTIME, &now);
   int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
 
-  auto runs = db.get_runs();
-  std::unordered_map<int, std::string_view> run_cmdlines;
-  for (auto &r : runs)
-    if (!r.end_time) run_cmdlines[r.id] = r.cmdline;
-
-  int cur_run = -1;
   std::cout << std::left;
-  for (const auto &j : jobs) {
-    if (j.run_id != cur_run) {
-      cur_run = j.run_id;
-      std::cout << "\nRun " << cur_run << ": " << run_cmdlines[cur_run] << std::endl;
-      std::cout << "  " << std::setw(8) << "JOB" << std::setw(12) << "ELAPSED"
-                << "LABEL" << std::endl;
-    }
-    if (j.starttime == 0) {
-      std::cout << "  " << std::setw(8) << j.job_id << std::setw(12) << "[queued]" << j.label
-                << std::endl;
-    } else {
-      int64_t elapsed_ns = now_ns - j.starttime;
-      std::string elapsed = "[" + format_duration(elapsed_ns) + "]";
-      std::cout << "  " << std::setw(8) << j.job_id << std::setw(12) << elapsed << j.label
-                << std::endl;
+  for (const auto *run : live_runs) {
+    std::cout << "\nRun " << run->id << ": " << run->cmdline << std::endl;
+    auto jobs_it = jobs_by_run.find(run->id);
+    if (jobs_it == jobs_by_run.end()) continue;
+
+    std::cout << "  " << std::setw(8) << "JOB" << std::setw(12) << "ELAPSED" << "LABEL"
+              << std::endl;
+    for (const auto *j : jobs_it->second) {
+      if (j->starttime == 0) {
+        std::cout << "  " << std::setw(8) << j->job_id << std::setw(12) << "[queued]" << j->label
+                  << std::endl;
+      } else {
+        int64_t elapsed_ns = now_ns - j->starttime;
+        std::string elapsed = "[" + format_duration(elapsed_ns) + "]";
+        std::cout << "  " << std::setw(8) << j->job_id << std::setw(12) << elapsed << j->label
+                  << std::endl;
+      }
     }
   }
 }
