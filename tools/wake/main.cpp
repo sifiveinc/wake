@@ -231,11 +231,10 @@ void query_runs(Database &db) {
   }
 }
 
-// Returns lock-proven live run_ids (DB-open runs confirmed by lock probe).
-std::vector<int> get_live_run_ids(Database &db) {
-  std::vector<int> live;
-  for (auto &r : db.get_runs())
-    if (!r.end_time && RunLockProbe::is_live(r.id)) live.push_back(r.id);
+std::vector<RunReflection> get_live_runs(Database &db) {
+  std::vector<RunReflection> live;
+  for (auto &run : db.get_runs())
+    if (!run.end_time && RunLockProbe::is_live(run.id)) live.push_back(std::move(run));
   return live;
 }
 
@@ -295,7 +294,9 @@ MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database
   // Filters on unfinished jobs (stat_id is null).
   bool is_in_flight = clo.in_flight || clo.ps;
   if (clo.canceled || clo.active || clo.queued || is_in_flight) {
-    auto live_run_ids = get_live_run_ids(db);
+    std::vector<int> live_run_ids;
+    for (const auto &run : get_live_runs(db)) live_run_ids.push_back(run.id);
+
     // finish_job unconditinoally sets stat_id for jobs.
     // endtime=0 is close but includes jobs that finished.
     filters.core_filters.push_back({"stat_id is null"});
@@ -332,10 +333,7 @@ MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database
 }
 
 void query_ps(const CommandLineOptions &clo, Database &db) {
-  const auto runs = db.get_runs();
-  std::vector<const RunReflection *> live_runs;
-  for (const auto &run : runs)
-    if (!run.end_time && RunLockProbe::is_live(run.id)) live_runs.push_back(&run);
+  const auto live_runs = get_live_runs(db);
 
   if (live_runs.empty()) {
     std::cout << "No runs currently in progress." << std::endl;
@@ -353,9 +351,9 @@ void query_ps(const CommandLineOptions &clo, Database &db) {
   int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
 
   std::cout << std::left;
-  for (const auto *run : live_runs) {
-    std::cout << "\nRun " << run->id << ": " << run->cmdline << std::endl;
-    auto jobs_it = jobs_by_run.find(run->id);
+  for (const auto &run : live_runs) {
+    std::cout << "\nRun " << run.id << ": " << run.cmdline << std::endl;
+    auto jobs_it = jobs_by_run.find(run.id);
     if (jobs_it == jobs_by_run.end()) continue;
 
     std::cout << "  " << std::setw(8) << "JOB" << std::setw(12) << "ELAPSED" << "LABEL"
