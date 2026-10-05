@@ -359,8 +359,8 @@ void query_ps(const CommandLineOptions &clo, Database &db) {
     auto jobs_it = jobs_by_run.find(run.id);
     if (jobs_it == jobs_by_run.end()) continue;
 
-    std::cout << "  " << std::setw(8) << "JOB" << std::setw(12) << "ELAPSED" << "LABEL"
-              << std::endl;
+    std::cout << "  " << std::setw(8) << "JOB" << std::setw(12) << "ELAPSED"
+              << "LABEL" << std::endl;
     for (const auto *j : jobs_it->second) {
       if (j->starttime == 0) {
         std::cout << "  " << std::setw(8) << j->job_id << std::setw(12) << "[queued]" << j->label
