@@ -351,8 +351,11 @@ void query_ps(const CommandLineOptions &clo, Database &db) {
   int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
 
   std::cout << std::left;
+  bool is_first_run = true;
   for (const auto &run : live_runs) {
-    std::cout << "\nRun " << run.id << ": " << run.cmdline << std::endl;
+    if (!is_first_run) std::cout << '\n';
+    is_first_run = false;
+    std::cout << "Run " << run.id << ": " << run.cmdline << std::endl;
     auto jobs_it = jobs_by_run.find(run.id);
     if (jobs_it == jobs_by_run.end()) continue;
 
