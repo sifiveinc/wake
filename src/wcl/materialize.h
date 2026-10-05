@@ -56,7 +56,8 @@ result<DirectoryResult, posix_error_t> ensure_directory_at(int destination_paren
                                                            mode_t initial_mode);
 
 // Apply final directory metadata through an already-open directory descriptor.
-result<bool, posix_error_t> apply_directory_metadata(int directory_fd, mode_t mode,
+// Permission failures updating an existing directory's mode are best-effort.
+result<bool, posix_error_t> apply_directory_metadata(int directory_fd, bool created, mode_t mode,
                                                      time_t mtime_sec, long mtime_nsec);
 
 // Path-oriented wrapper for trusted callers whose parent directories already exist.

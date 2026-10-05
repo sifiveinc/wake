@@ -173,9 +173,18 @@ result<DirectoryResult, posix_error_t> ensure_directory_at(int destination_paren
   return make_result<DirectoryResult, posix_error_t>(DirectoryResult{unique_fd(fd), created});
 }
 
-result<bool, posix_error_t> apply_directory_metadata(int directory_fd, mode_t mode,
+result<bool, posix_error_t> apply_directory_metadata(int directory_fd, bool created, mode_t mode,
                                                      time_t mtime_sec, long mtime_nsec) {
-  if (fchmod(directory_fd, mode & 07777) != 0) return make_errno<bool>();
+  struct stat status;
+  if (fstat(directory_fd, &status) != 0) return make_errno<bool>();
+  // Skip no-op chmods, which can change ctime. Allow unowned existing directories
+  // (such as mount points) to be reused when chmod is denied.
+  const mode_t requested_mode = mode & 07777;
+  if ((status.st_mode & 07777) != requested_mode) {
+    if (fchmod(directory_fd, requested_mode) != 0) {
+      if (created || (errno != EPERM && errno != EACCES)) return make_errno<bool>();
+    }
+  }
   // (0, 0) means retain the directory's existing mtime rather than forcing it
   // to the Unix epoch.
   if (mtime_sec == 0 && mtime_nsec == 0) return make_result<bool, posix_error_t>(true);
@@ -192,7 +201,8 @@ result<bool, posix_error_t> materialize_directory(const std::string& destination
   auto directory = ensure_directory_at(*parent, name, mode);
   close(*parent);
   if (!directory) return make_error<bool, posix_error_t>(directory.error());
-  auto result = apply_directory_metadata(directory->fd.get(), mode, mtime_sec, mtime_nsec);
+  auto result = apply_directory_metadata(directory->fd.get(), directory->created, mode, mtime_sec,
+                                         mtime_nsec);
   return result;
 }
 

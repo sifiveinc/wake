@@ -19,6 +19,8 @@
 
 #include "cas/cas.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -200,6 +202,28 @@ TEST(materialize_directory_replaces_file_and_preserves_children, "cas") {
   EXPECT_EQUAL(second_stat.st_mode & 0777, static_cast<mode_t>(0700));
   EXPECT_EQUAL(second_stat.st_mtim.tv_nsec, 567L);
   fs::remove_all(root);
+}
+
+TEST(materialize_directory_reports_invalid_descriptor, "cas") {
+  auto result = wcl::apply_directory_metadata(-1, false, 0755, 0, 0);
+  ASSERT_FALSE((bool)result);
+  EXPECT_EQUAL(result.error(), EBADF);
+}
+
+TEST(materialize_directory_reuses_unowned_directory, "cas") {
+  struct stat before;
+  ASSERT_TRUE(stat("/", &before) == 0);
+  if (geteuid() == 0 || before.st_uid == geteuid()) return;
+
+  int fd = open("/", O_RDONLY | O_DIRECTORY);
+  ASSERT_TRUE(fd >= 0);
+  mode_t requested = (before.st_mode & 07777) ^ 0100;
+  auto result = wcl::apply_directory_metadata(fd, false, requested, 0, 0);
+  EXPECT_TRUE((bool)result);
+  struct stat after;
+  ASSERT_TRUE(fstat(fd, &after) == 0);
+  EXPECT_EQUAL(after.st_mode & 07777, before.st_mode & 07777);
+  close(fd);
 }
 
 // ============================================================================
