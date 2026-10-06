@@ -70,6 +70,8 @@ PASSED:
   iterator_split_by_nominal
   iterator_split_by_only_delim
   materialize_directory_replaces_file_and_preserves_children
+  materialize_directory_reports_invalid_descriptor
+  materialize_directory_reuses_unowned_directory
   reflink_or_copy_file_basic
   reflink_or_copy_file_src_not_found
   result_assign1

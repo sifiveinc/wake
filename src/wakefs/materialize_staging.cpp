@@ -266,8 +266,9 @@ bool materialize_directory(int target_rootfd, const StagingEntry& entry, bool ap
     return fail(error, errno_message("failed to create directory " + entry.destination));
   }
   if (apply_metadata) {
-    auto metadata = wcl::apply_directory_metadata(
-        directory->fd.get(), entry.mode, static_cast<time_t>(entry.mtime_sec), entry.mtime_nsec);
+    auto metadata =
+        wcl::apply_directory_metadata(directory->fd.get(), directory->created, entry.mode,
+                                      static_cast<time_t>(entry.mtime_sec), entry.mtime_nsec);
     if (!metadata) {
       const int saved = metadata.error();
       errno = saved;
