@@ -7,7 +7,8 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build src.txt claimed.txt ref-src.txt ref-claimed.txt
+RM_ARTIFACTS="src.txt claimed.txt ref-src.txt ref-claimed.txt"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
@@ -60,4 +61,4 @@ test "$(cat claimed.txt)" = "replacement-claimed" || fail "claim bytes were rehy
 
 echo "PASS: source and claim cache hits preserved workspace files" >&2
 
-rm -rf wake.db* wake.log .wake .build src.txt claimed.txt ref-src.txt ref-claimed.txt
+rm -rf $RM_ARTIFACTS

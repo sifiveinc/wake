@@ -6,14 +6,16 @@ MIGRATE="${1:+$1/wake-migrate}"
 MIGRATE="${MIGRATE:-wake-migrate}"
 cd "$(dirname "$0")"
 
+RM_ARTIFACTS="commands ready"
 cleanup() {
   if [ -n "${S_PID:-}" ]; then
     kill "$S_PID" 2>/dev/null || true
     wait "$S_PID" 2>/dev/null || true
   fi
-  rm -f commands ready wake.db wake.db-wal wake.db-shm wake.db.backup wake.db.migrated
+  rm -f $RM_ARTIFACTS
 }
 trap cleanup EXIT
+rm -f wake.db*
 cleanup
 
 # Create dummy "version 8" database.

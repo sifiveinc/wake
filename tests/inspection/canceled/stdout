@@ -1,2 +1,2 @@
 #  (1)
-$ sleep 1000
+$ sh -c touch $CANCELED_READY; exec sleep 1000

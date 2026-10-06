@@ -91,6 +91,16 @@ static CPPFile cppFile(__FILE__);
 
 namespace {
 
+bool has_recovery_manifest_for_run(long run_id, const std::vector<long> &job_ids) {
+  for (long job_id : job_ids) {
+    const std::string path = ".build/cas/staging/recovery/run-" + std::to_string(run_id) + "-job-" +
+                             std::to_string(job_id) + ".json";
+    std::error_code error_code;
+    if (std::filesystem::exists(path, error_code) && !error_code) return true;
+  }
+  return false;
+}
+
 std::string globish_to_like(const std::string &str) {
   std::string glob = str;
   std::replace(glob.begin(), glob.end(), '*', '%');
@@ -1327,6 +1337,16 @@ int main(int argc, char **argv) {
   do {
     runtime.run();
   } while (!runtime.abort && jobtable.wait(runtime));
+  const bool cancellation_deadline_exceeded = jobtable.drain(runtime);
+  const long run_id = db.current_run_id();
+  if (JobTable::exit_now() &&
+      has_recovery_manifest_for_run(run_id, db.unfinished_current_run_jobs())) {
+    std::cerr << "Wake run " << run_id << " canceled";
+    if (cancellation_deadline_exceeded) std::cerr << "; the cancellation deadline was exceeded";
+    std::cerr << "; staged outputs remain to be recovered." << std::endl;
+    std::cerr << "Recover the staged outputs with:\n"
+              << "  wakebox --materialize-previous " << run_id << std::endl;
+  }
   status_finish();
 
   runtime.heap.report();

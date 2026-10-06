@@ -2,6 +2,12 @@ wake (@VERSION@-1) unstable; urgency=medium
 
   * Auto-generated release package.
 
+  -- Abrar Quazi <abrar.quazi@sifive.com>  Fri, 25 Sep 2026 17:05:00 -0800
+
+wake (50.2.0-1 unstable; urgency=medium
+
+  * Auto-generated release package.
+
   -- Abrar Quazi <abrar.quazi@sifive.com>  Fri, 04 Sep 2026 08:40:00 -0800
 
 wake (50.1.0-1 unstable; urgency=medium

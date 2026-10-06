@@ -2,7 +2,9 @@ from wake import _
 
 export def test _: Result Unit Error =
     def _ =
-        makeExecPlan ("sleep", "1000",) Nil
+        def ready = getenv "CANCELED_READY" | getOrElse ""
+        makeExecPlan ("sh", "-c", "touch $CANCELED_READY; exec sleep 1000",) Nil
+        | setPlanEnvironment ("CANCELED_READY={ready}",)
         | runJobWith defaultRunner
 
     Pass Unit

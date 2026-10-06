@@ -7,11 +7,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build output_dir
+RM_ARTIFACTS="output_dir"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
-    rm -rf output_dir
+    rm -rf $RM_ARTIFACTS
     exit 1
 }
 
@@ -40,4 +41,4 @@ test -f output_dir/untracked.txt || fail "output_dir/untracked.txt was removed (
 echo "PASS: tracked files removed, directory with untracked file remains" >&2
 
 # Clean up
-rm -rf output_dir
+rm -rf $RM_ARTIFACTS

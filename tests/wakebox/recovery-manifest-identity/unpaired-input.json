@@ -1,0 +1,11 @@
+{
+  "command": ["/bin/true"],
+  "environment": ["USER=root", "HOME=/root", "PATH=/usr/bin:/bin:/usr/sbin:/sbin"],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "wake_run_id": 42,
+  "mount-ops": [{"type": "workspace", "destination": "."}],
+  "visible": []
+}

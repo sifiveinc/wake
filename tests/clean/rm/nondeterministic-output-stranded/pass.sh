@@ -7,10 +7,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build outdir input.txt
+RM_ARTIFACTS="outdir input.txt"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
+    rm -rf $RM_ARTIFACTS
     exit 1
 }
 
@@ -35,4 +37,4 @@ fi
 
 echo "PASS: non-deterministic output not stranded after clean" >&2
 
-rm -rf wake.db* wake.log .wake .build outdir input.txt
+rm -rf $RM_ARTIFACTS

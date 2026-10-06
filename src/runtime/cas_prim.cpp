@@ -26,7 +26,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <atomic>
 #include <filesystem>
 #include <iostream>
 #include <optional>
@@ -38,12 +37,8 @@
 #include "types/primfn.h"
 #include "util/mkdir_parents.h"
 #include "value.h"
-#include "wcl/file_ops.h"
 #include "wcl/filepath.h"
-
-// Counter for unique temp file names during staged materialization.
-// PID + counter ensures no collisions across concurrent wake processes.
-static std::atomic<uint64_t> g_staged_materialize_counter{0};
+#include "wcl/materialize.h"
 
 namespace {
 
@@ -62,48 +57,8 @@ bool parse_hash_string(const std::string& id, cas::ContentHash& out, std::string
   return true;
 }
 
-// Unique temp path for atomic rename. PID + counter avoids races across concurrent processes.
-static std::string make_temp_path(const std::string& dest) {
-  return dest + "." + std::to_string(getpid()) + "." +
-         std::to_string(g_staged_materialize_counter.fetch_add(1));
-}
-
 // Place temp at dest via a single rename().
 // Returns nullopt on success, error string on failure. Always cleans up temp on failure.
-static std::optional<std::string> atomic_replace(const std::string& temp, const std::string& dest,
-                                                 const std::string& label) {
-  std::error_code ec;
-  std::filesystem::rename(temp, dest, ec);
-  if (!ec) return std::nullopt;
-
-  std::filesystem::remove(temp, ec);
-  return "Failed to place " + label + " " + dest + ": " + ec.message();
-}
-
-// Set mtime on path. Returns false on failure; symlink callers may ignore the return value.
-static bool apply_mtime(const std::string& path, time_t sec, long nsec, int flags) {
-  if (sec == 0 && nsec == 0) return true;
-  struct timespec times[2];
-  times[0].tv_sec = 0;
-  times[0].tv_nsec = UTIME_OMIT;
-  times[1].tv_sec = sec;
-  times[1].tv_nsec = nsec;
-  return utimensat(AT_FDCWD, path.c_str(), times, flags) == 0;
-}
-
-// mkdir(path, mode). On EEXIST (concurrent process won), fall back to chmod.
-// Returns nullopt on success, error string on failure.
-static std::optional<std::string> make_dir_or_chmod(const std::string& path, mode_t mode) {
-  if (mkdir(path.c_str(), mode) != 0) {
-    if (errno == EEXIST) {
-      chmod(path.c_str(), mode);
-    } else {
-      return "Failed to create directory " + path + ": " + strerror(errno);
-    }
-  }
-  return std::nullopt;
-}
-
 // Unlink staging_path only if it differs from dest (i.e. it's a temp copy, not the workspace file).
 static void cleanup_staging_file(const std::string& staging_path, const std::string& dest_path) {
   if (staging_path != dest_path) {
@@ -224,57 +179,26 @@ static PRIMFN(prim_cas_materialize_item) {
       RETURN(claim_result(runtime.heap, false, err));
     }
 
-    // Atomically create symlink via temp+rename
-    std::string temp_path = make_temp_path(dest_str);
     time_t mtime_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
     long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
 
-    if (symlink(target_result->c_str(), temp_path.c_str()) != 0) {
-      std::string msg = "Failed to create symlink " + dest_str + ": " + strerror(errno);
+    auto materialized = wcl::materialize_symlink(dest_str, *target_result, mtime_sec, mtime_nsec);
+    if (!materialized) {
+      std::string msg =
+          "Failed to materialize symlink " + dest_str + ": " + strerror(materialized.error());
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));
     }
 
-    (void)apply_mtime(temp_path, mtime_sec, mtime_nsec, AT_SYMLINK_NOFOLLOW);
-
-    if (auto msg = atomic_replace(temp_path, dest_str, "symlink")) {
-      runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
-      auto err = String::claim(runtime.heap, *msg);
-      RETURN(claim_result(runtime.heap, false, err));
-    }
-
   } else if (type == "directory") {
-    // Handle directory: create directory with mode
     mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
-
-    struct stat st;
-    if (stat(dest_str.c_str(), &st) == 0) {
-      if (S_ISDIR(st.st_mode)) {
-        // Directory already exists, just update mode
-        chmod(dest_str.c_str(), mode);
-      } else {
-        // Non-directory at dest — remove it then create directory
-        (void)unlink(dest_str.c_str());
-        if (auto msg = make_dir_or_chmod(dest_str, mode)) {
-          runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
-          auto err = String::claim(runtime.heap, *msg);
-          RETURN(claim_result(runtime.heap, false, err));
-        }
-      }
-    } else {
-      if (auto msg = make_dir_or_chmod(dest_str, mode)) {
-        runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
-        auto err = String::claim(runtime.heap, *msg);
-        RETURN(claim_result(runtime.heap, false, err));
-      }
-    }
-
     time_t mtime_sec = static_cast<time_t>(mpz_get_si(mtime_sec_mpz));
     long mtime_nsec = static_cast<long>(mpz_get_si(mtime_nsec_mpz));
-    if (!apply_mtime(dest_str, mtime_sec, mtime_nsec, 0)) {
+    auto materialized = wcl::materialize_directory(dest_str, mode, mtime_sec, mtime_nsec);
+    if (!materialized) {
       std::string msg =
-          "Failed to update timestamps for directory " + dest_str + ": " + strerror(errno);
+          "Failed to materialize directory " + dest_str + ": " + strerror(materialized.error());
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));
@@ -334,31 +258,13 @@ static PRIMFN(prim_materialize_staged_workspace_item) {
   if (type == "file") {
     std::string staging_path = staging_path_or_target->c_str();
     mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
-    std::string temp_path = make_temp_path(dest_str);
-
-    auto copy_result = wcl::reflink_or_copy_file(staging_path, temp_path, mode);
-    if (!copy_result) {
-      std::error_code ec;
-      std::filesystem::remove(temp_path, ec);
+    auto materialized =
+        wcl::materialize_regular_file(staging_path, dest_str, mode, mtime_sec, mtime_nsec);
+    if (!materialized) {
       std::string msg = "Failed to materialize staged file " + staging_path + " to " + dest_str +
-                        ": " + strerror(copy_result.error());
+                        ": " + strerror(materialized.error());
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
-      RETURN(claim_result(runtime.heap, false, err));
-    }
-
-    if (!apply_mtime(temp_path, mtime_sec, mtime_nsec, 0)) {
-      std::error_code ec;
-      std::filesystem::remove(temp_path, ec);
-      std::string msg = "Failed to update timestamps for " + dest_str + ": " + strerror(errno);
-      runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
-      auto err = String::claim(runtime.heap, msg);
-      RETURN(claim_result(runtime.heap, false, err));
-    }
-
-    if (auto msg = atomic_replace(temp_path, dest_str, "staged file")) {
-      runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
-      auto err = String::claim(runtime.heap, *msg);
       RETURN(claim_result(runtime.heap, false, err));
     }
 
@@ -366,50 +272,21 @@ static PRIMFN(prim_materialize_staged_workspace_item) {
 
   } else if (type == "symlink") {
     std::string target = staging_path_or_target->c_str();
-    std::string temp_path = make_temp_path(dest_str);
-
-    if (symlink(target.c_str(), temp_path.c_str()) != 0) {
+    auto materialized = wcl::materialize_symlink(dest_str, target, mtime_sec, mtime_nsec);
+    if (!materialized) {
       std::string msg =
-          "Failed to create symlink " + dest_str + " -> " + target + ": " + strerror(errno);
+          "Failed to materialize symlink " + dest_str + ": " + strerror(materialized.error());
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));
     }
 
-    (void)apply_mtime(temp_path, mtime_sec, mtime_nsec, AT_SYMLINK_NOFOLLOW);
-
-    if (auto msg = atomic_replace(temp_path, dest_str, "symlink")) {
-      runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
-      auto err = String::claim(runtime.heap, *msg);
-      RETURN(claim_result(runtime.heap, false, err));
-    }
-
   } else if (type == "directory") {
     mode_t mode = static_cast<mode_t>(mpz_get_ui(mode_mpz));
-
-    struct stat st;
-    if (stat(dest_str.c_str(), &st) == 0) {
-      if (S_ISDIR(st.st_mode)) {
-        chmod(dest_str.c_str(), mode & 07777);
-      } else {
-        (void)unlink(dest_str.c_str());
-        if (auto msg = make_dir_or_chmod(dest_str, mode & 07777)) {
-          runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
-          auto err = String::claim(runtime.heap, *msg);
-          RETURN(claim_result(runtime.heap, false, err));
-        }
-      }
-    } else {
-      if (auto msg = make_dir_or_chmod(dest_str, mode & 07777)) {
-        runtime.heap.reserve(reserve_result() + String::reserve(msg->size()));
-        auto err = String::claim(runtime.heap, *msg);
-        RETURN(claim_result(runtime.heap, false, err));
-      }
-    }
-
-    if (!apply_mtime(dest_str, mtime_sec, mtime_nsec, 0)) {
+    auto materialized = wcl::materialize_directory(dest_str, mode, mtime_sec, mtime_nsec);
+    if (!materialized) {
       std::string msg =
-          "Failed to update timestamps for directory " + dest_str + ": " + strerror(errno);
+          "Failed to materialize directory " + dest_str + ": " + strerror(materialized.error());
       runtime.heap.reserve(reserve_result() + String::reserve(msg.size()));
       auto err = String::claim(runtime.heap, msg);
       RETURN(claim_result(runtime.heap, false, err));

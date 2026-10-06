@@ -6,11 +6,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build batched
+RM_ARTIFACTS="batched"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
-    rm -rf batched
+    rm -rf $RM_ARTIFACTS
     exit 1
 }
 
@@ -33,4 +34,4 @@ test -d "batched" && fail "batched still exists after --rm -r"
 echo "PASS: rm_generated batched removal" >&2
 
 # Clean up
-rm -rf "batched"
+rm -rf $RM_ARTIFACTS

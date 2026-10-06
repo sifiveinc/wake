@@ -1,0 +1,15 @@
+# A failed job with no outputs must remain in local job history across the next run.
+
+export def failedNoOutput _ =
+    makeExecPlan ("sh", "-c", "exit 7", Nil) Nil
+    | setPlanLabel "failed-job-retention: no-output"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutput
+
+export def unrelatedSuccess _ =
+    makeExecPlan ("sh", "-c", "echo unrelated > unrelated.txt", Nil) Nil
+    | setPlanLabel "failed-job-retention: unrelated-success"
+    | setPlanShare False
+    | runJobWith defaultRunner
+    | getJobOutput

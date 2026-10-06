@@ -7,7 +7,8 @@ WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 WAKE="$(realpath "$WAKE")"
 
-rm -rf wake.db* wake.log .wake .build dir
+RM_ARTIFACTS="dir"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
@@ -59,4 +60,4 @@ test "$DELETED" = "0" || fail "After re-creating directory, deleted should be re
 echo "PASS: deleted flag reset for files and directories" >&2
 
 # Clean up
-rm -rf dir
+rm -rf $RM_ARTIFACTS

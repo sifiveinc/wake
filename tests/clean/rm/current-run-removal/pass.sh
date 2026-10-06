@@ -7,11 +7,12 @@ WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
 # Ensure a clean workspace and CAS.
-rm -rf wake.db* wake.log .wake .build file.txt file.caspath
+RM_ARTIFACTS="file.txt file.caspath"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
-    rm -rf file.txt file.caspath
+    rm -rf $RM_ARTIFACTS
     exit 1
 }
 
@@ -31,4 +32,4 @@ test ! -f "$(cat file.caspath)" || fail "CAS blob still exists after file remova
 echo "PASS: rm_generated removed blob used only by current run" >&2
 
 # Clean up
-rm -rf file.txt file.caspath
+rm -rf $RM_ARTIFACTS

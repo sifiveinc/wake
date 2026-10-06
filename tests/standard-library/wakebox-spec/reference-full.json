@@ -20,6 +20,8 @@
   "command-timeout": 3600,
   "version": "1.0",
   "runner": "/bin/runner",
+  "wake_run_id": 42,
+  "wake_job_id": 7,
   "mount-ops": [
     {
       "type": "bind",

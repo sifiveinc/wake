@@ -29,7 +29,7 @@
 
 #include "cas/content_hash.h"
 #include "unit.h"
-#include "wcl/file_ops.h"
+#include "wcl/materialize.h"
 
 namespace fs = std::filesystem;
 using namespace cas;
@@ -170,6 +170,36 @@ TEST(reflink_or_copy_file_basic, "cas") {
 TEST(reflink_or_copy_file_src_not_found, "cas") {
   auto result = wcl::reflink_or_copy_file("nonexistent_src.txt", "dst.txt", 0644);
   EXPECT_FALSE((bool)result);
+}
+
+TEST(materialize_directory_replaces_file_and_preserves_children, "cas") {
+  const std::string root = "cas_test_materialize_directory";
+  fs::remove_all(root);
+  fs::create_directories(root);
+  {
+    std::ofstream stream(root + "/output");
+    stream << "replace me";
+  }
+  auto first = wcl::materialize_directory(root + "/output", 0750, 123, 456);
+  ASSERT_TRUE((bool)first);
+  EXPECT_TRUE(fs::is_directory(root + "/output"));
+  struct stat first_stat;
+  ASSERT_TRUE(stat((root + "/output").c_str(), &first_stat) == 0);
+  EXPECT_EQUAL(first_stat.st_mode & 0777, static_cast<mode_t>(0750));
+  EXPECT_EQUAL(first_stat.st_mtim.tv_nsec, 456L);
+
+  {
+    std::ofstream stream(root + "/output/child");
+    stream << "keep me";
+  }
+  auto second = wcl::materialize_directory(root + "/output", 0700, 124, 567);
+  ASSERT_TRUE((bool)second);
+  EXPECT_TRUE(fs::exists(root + "/output/child"));
+  struct stat second_stat;
+  ASSERT_TRUE(stat((root + "/output").c_str(), &second_stat) == 0);
+  EXPECT_EQUAL(second_stat.st_mode & 0777, static_cast<mode_t>(0700));
+  EXPECT_EQUAL(second_stat.st_mtim.tv_nsec, 567L);
+  fs::remove_all(root);
 }
 
 // ============================================================================

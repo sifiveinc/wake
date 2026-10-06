@@ -14,7 +14,8 @@ WAKE="${WAKE:-wake}"
 # output.txt should be removed since its mode 0200
 trap 'rm -f output.txt' EXIT
 
-rm -rf .build .fuse wake.db* wake.log output.txt
+RM_ARTIFACTS="output.txt"
+rm -rf .build .fuse wake.db* wake.log $RM_ARTIFACTS
 
 "${WAKE}" -q --no-tty -x 'test Unit'
 
@@ -25,3 +26,6 @@ rm -f output.txt
 "${WAKE}" -q --no-tty -x 'test Unit'
 
 echo "cached mode=$(ls -l output.txt | cut -c1-10)"
+
+# Clean up
+rm -f $RM_ARTIFACTS

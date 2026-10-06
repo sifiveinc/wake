@@ -7,11 +7,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build parent_dir
+RM_ARTIFACTS="parent_dir"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
-    rm -rf parent_dir
+    rm -rf $RM_ARTIFACTS
     exit 1
 }
 
@@ -37,4 +38,4 @@ test -d parent_dir/child/grandchild && fail "parent_dir/child/grandchild still e
 echo "PASS: child-before-parent removal succeeded" >&2
 
 # Clean up
-rm -rf parent_dir
+rm -rf $RM_ARTIFACTS

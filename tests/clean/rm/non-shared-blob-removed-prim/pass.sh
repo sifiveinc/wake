@@ -6,11 +6,12 @@ set -eu
 WAKE="${1:+$1/wake}"
 WAKE="${WAKE:-wake}"
 
-rm -rf wake.db* wake.log .wake .build dir file.txt
+RM_ARTIFACTS="dir file.txt"
+rm -rf wake.db* wake.log .wake .build $RM_ARTIFACTS
 
 fail() {
     echo "FAIL: $1" >&2
-    rm -rf dir file.txt
+    rm -rf $RM_ARTIFACTS
     exit 1
 }
 
@@ -36,4 +37,4 @@ test -d dir && fail "dir reappeared after idempotent removal"
 echo "PASS: rm_generated basic removal" >&2
 
 # Clean up
-rm -rf dir file.txt
+rm -rf $RM_ARTIFACTS

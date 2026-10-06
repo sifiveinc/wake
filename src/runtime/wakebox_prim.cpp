@@ -54,8 +54,10 @@
 //     [12] Version          : Option String
 //     [13] Runner           : Option String
 //     [14] CasDir           : String
-//     [15] MountOps         : List WakeboxMountOp
-//     [16] Visible          : List Path
+//     [15] WakeRunId        : Option Integer
+//     [16] WakeJobId        : Option Integer
+//     [17] MountOps         : List WakeboxMountOp
+//     [18] Visible          : List Path
 //
 //   Path (from io.wake / path.wake) =
 //     [0] Name    : String
@@ -123,6 +125,8 @@ static Promise *check_spec_ready(Record *spec) {
       { "Version",        FK_OPTION_STRING  },
       { "Runner",         FK_OPTION_STRING  },
       { "CasDir",         FK_STRING         },
+      { "WakeRunId",      FK_OPTION_INTEGER },
+      { "WakeJobId",      FK_OPTION_INTEGER },
       { "MountOps",       FK_LIST_MOUNT     },
       { "Visible",        FK_LIST_PATH      },
   };
@@ -335,6 +339,8 @@ static std::string stream_spec_json(Record *spec, const char *filepath, int inde
 
   opt_str("version", 12);
   opt_str("runner", 13);
+  opt_int("wake_run_id", 15);
+  opt_int("wake_job_id", 16);
 
   // mount-ops
   sep();
@@ -343,7 +349,7 @@ static std::string stream_spec_json(Record *spec, const char *filepath, int inde
   {
     ++js.depth;
     bool first = true;
-    Record *list = spec->at(15)->coerce<Record>();
+    Record *list = spec->at(17)->coerce<Record>();
     while (list->cons == &List->members[1]) {
       if (!first) out << ',';
       first = false;
@@ -399,7 +405,7 @@ static std::string stream_spec_json(Record *spec, const char *filepath, int inde
   {
     ++js.depth;
     bool first = true;
-    Record *list = spec->at(16)->coerce<Record>();
+    Record *list = spec->at(18)->coerce<Record>();
     while (list->cons == &List->members[1]) {
       if (!first) out << ',';
       first = false;

@@ -52,8 +52,8 @@ struct daemon_client {
 
   daemon_client(const std::string &base_dir);
 
-  bool connect(std::vector<visible_file> &visible, const std::string &cas_dir,
-               bool close_live_file);
+  bool connect(std::vector<visible_file> &visible, const std::string &cas_dir, bool close_live_file,
+               std::optional<long> wake_run_id, std::optional<long> wake_job_id);
   bool disconnect(std::string &result);
 
  protected:
@@ -68,6 +68,8 @@ struct json_args {
   std::vector<visible_file> visible;  // Visible files with path, type, hash, and mode
   std::string directory;
   std::string stdin_file;
+  std::optional<long> wake_run_id;
+  std::optional<long> wake_job_id;
   std::string
       cas_dir;  // Root of the CAS layout; blobs at {cas_dir}/blobs, staging at {cas_dir}/staging.
 
@@ -94,9 +96,15 @@ struct fuse_args : public json_args {
       : working_dir(cwd), use_stdin_file(use_stdin_file), daemon(cwd) {}
 };
 
+enum class FuseRunOutcome {
+  Completed,
+  TimedOut,
+  Canceled,
+};
+
 bool json_as_struct(const std::string &json, json_args &result);
 
-bool run_in_fuse(fuse_args &args, int &retcode, std::string &result_json);
+bool run_in_fuse(fuse_args &args, int &retcode, std::string &result_json, FuseRunOutcome &outcome);
 
 int execve_wrapper(const std::vector<std::string> &command,
                    const std::vector<std::string> &environment);
