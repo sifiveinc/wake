@@ -1,5 +1,5 @@
 Pass "content\n"
-Job 3 (cat):
+Job X (cat):
   Command-line: /usr/bin/dash -c 'cat visible.txt'
   Environment:
     PATH=/usr/bin:/bin
@@ -10,7 +10,7 @@ Job 3 (cat):
   Status:        0
   Runner Status: success
   Stdin:         /dev/null
-Job 3 (cat):
+Job X (cat):
   Command-line: /usr/bin/dash -c 'cat visible.txt'
   Environment:
     PATH=/usr/bin:/bin
