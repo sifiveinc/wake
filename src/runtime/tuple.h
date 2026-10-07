@@ -27,7 +27,11 @@ struct Constructor;
 struct alignas(PadObject) Promise {
   Category category() const {
     HeapObject *obj = value.get();
-    return obj ? obj->category() : WORK;
+    if (!obj) return WORK;
+    // Tagged small-Integer pointers carry no object to dispatch on; they
+    // are always Values.
+    if (is_small_int(obj)) return VALUE;
+    return obj->category();
   }
 
   explicit operator bool() const { return category() == VALUE; }
