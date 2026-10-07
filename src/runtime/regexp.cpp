@@ -83,13 +83,19 @@ static PRIMFN(prim_re2str) {
 }
 
 static PRIMTYPE(type_quote) {
-  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(Data::typeString);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(Data::typeRegExp);
 }
 
 static PRIMFN(prim_quote) {
   EXPECT(1);
   STRING(arg0, 0);
-  RETURN(String::alloc(runtime.heap, RE2::QuoteMeta(sp(arg0))));
+  // RE2::QuoteMeta escapes every metacharacter, so its output is always a valid RE2 pattern.
+  // Build the RegExp directly (like rcat) instead of returning a String the caller must
+  // re-parse through the fallible stringToRegExp -- that round-trip produced an RDes that
+  // blocked loop-invariant hoisting (see src/optimizer/lvl.cpp) and was pure overhead.
+  std::string quoted = RE2::QuoteMeta(sp(arg0));
+  runtime.heap.reserve(RegExp::reserve());
+  RETURN(RegExp::claim(runtime.heap, runtime.heap, quoted));
 }
 
 static bool check_re2_bug(size_t size) {
@@ -262,9 +268,10 @@ void prim_register_regexp(PrimMap &pmap) {
   prim_register(pmap, "re2", prim_re2, type_re2, PRIM_PURE);
   prim_register(pmap, "re2str", prim_re2str, type_re2str, PRIM_PURE);
   prim_register(pmap, "quote", prim_quote, type_quote, PRIM_PURE);
-  prim_register(pmap, "match", prim_match, type_match, PRIM_PURE);
-  prim_register(pmap, "extract", prim_extract, type_extract, PRIM_PURE);
-  prim_register(pmap, "replace", prim_replace, type_replace, PRIM_PURE);
-  prim_register(pmap, "tokenize", prim_tokenize, type_tokenize, PRIM_PURE);
+  // match/extract/replace/tokenize can abort (RE2_BUG) on >2GiB inputs with old RE2.
+  prim_register(pmap, "match", prim_match, type_match, PRIM_PURE | PRIM_PARTIAL);
+  prim_register(pmap, "extract", prim_extract, type_extract, PRIM_PURE | PRIM_PARTIAL);
+  prim_register(pmap, "replace", prim_replace, type_replace, PRIM_PURE | PRIM_PARTIAL);
+  prim_register(pmap, "tokenize", prim_tokenize, type_tokenize, PRIM_PURE | PRIM_PARTIAL);
   prim_register(pmap, "rcat", prim_rcat, type_rcat, PRIM_PURE);
 }

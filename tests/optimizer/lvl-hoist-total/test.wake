@@ -1,0 +1,22 @@
+package lvltest
+
+from wake import _
+
+# LVL (Loop-invariant Lifting) must hoist a pure, total, argument-independent expression out of
+# a lambda body into the enclosing scope, where it runs once instead of once per call.
+#
+# Each invariant is given a uniquely-named `def` so the test can locate the exact term in the
+# `--stop-after-ssa` dump by its label (def names survive into the SSA; comments do not).
+#
+#   hoistedMarker  -- pure + TOTAL + argument-independent -> MUST be hoisted (run shallower)
+#   retainedMarker -- references the argument `x`          -> MUST stay in the lambda body
+#
+# The test asserts hoistedMarker ends up at a strictly shallower indentation (an outer scope)
+# than retainedMarker, which marks the per-call lambda body.
+def body x =
+    def hoistedMarker = 900000001 + 900000002
+    def retainedMarker = x + 900000003
+    hoistedMarker + retainedMarker
+
+export def hoistMe (list: List Integer): List Integer =
+    map body list

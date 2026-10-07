@@ -1,0 +1,18 @@
+package lvltest
+
+from wake import _
+
+# Nested lambdas.  LVL descends recursively into nested function bodies.
+#
+#   hoistedMarker  -- independent of BOTH `x` and `y` -> lifted out past both lambdas
+#   retainedMarker -- depends on the inner argument `y` -> stays deep in the inner lambda body
+#
+# The test asserts hoistedMarker ends up at a strictly shallower indentation than retainedMarker
+# (in fact it is lifted all the way to the outermost scope, while retainedMarker stays nested).
+def innerBody x y =
+    def hoistedMarker = 900000001 + 900000002
+    def retainedMarker = y + 900000003
+    x + y + hoistedMarker + retainedMarker
+
+export def nested (xs: List Integer) (ys: List Integer): List (List Integer) =
+    map (\x map (innerBody x) ys) xs
