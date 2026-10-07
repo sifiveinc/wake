@@ -302,6 +302,68 @@ void HeapPivotPolicy::set(HeapPivotPolicy& p, const JAST& json) {
 
 static std::unique_ptr<WakeConfig> _config;
 
+static bool apply_properties(WakeConfig& config, const JAST& json, const std::string& source,
+                             WakeConfigProvenance provenance) {
+  auto properties = json.get_opt("properties");
+  if (!properties) return true;
+  if ((**properties).kind != JSON_OBJECT) {
+    std::cerr << source << ": properties must be an object" << std::endl;
+    return false;
+  }
+  for (const auto& entry : (**properties).children) {
+    if (entry.first.empty()) {
+      std::cerr << source << ": property keys must be non-empty" << std::endl;
+      return false;
+    }
+    if (entry.second.kind != JSON_STR) {
+      std::cerr << source << ": property '" << entry.first << "' must have a string value"
+                << std::endl;
+      return false;
+    }
+    config.properties[entry.first] = entry.second.value;
+    config.property_provenance[entry.first] = provenance;
+  }
+  return true;
+}
+
+static bool parse_property_assignment(const std::string& input, const std::string& source,
+                                      std::pair<std::string, std::string>& output) {
+  size_t separator = input.find('=');
+  if (separator == std::string::npos || separator == 0) {
+    std::cerr << source << ": invalid property entry '" << input << "' (expected KEY=VALUE)"
+              << std::endl;
+    return false;
+  }
+  output = {input.substr(0, separator), input.substr(separator + 1)};
+  return true;
+}
+
+static bool apply_environment_properties(WakeConfig& config) {
+  const char* value = getenv("WAKE_PROPERTIES");
+  if (value == nullptr || *value == '\0') return true;
+
+  std::string entries(value);
+  size_t start = 0;
+  while (true) {
+    size_t end = entries.find(',', start);
+    std::string entry = entries.substr(start, end - start);
+    std::pair<std::string, std::string> property;
+    if (!parse_property_assignment(entry, "WAKE_PROPERTIES", property)) return false;
+    config.properties[property.first] = property.second;
+    config.property_provenance[property.first] = WakeConfigProvenance::EnvVar;
+    if (end == std::string::npos) return true;
+    start = end + 1;
+  }
+}
+
+static void apply_command_line_properties(WakeConfig& config,
+                                          const WakeConfigOverrides& overrides) {
+  for (const auto& property : overrides.properties) {
+    config.properties[property.first] = property.second;
+    config.property_provenance[property.first] = WakeConfigProvenance::CommandLine;
+  }
+}
+
 bool WakeConfig::init(const std::string& wakeroot_path, const WakeConfigOverrides& overrides) {
   if (_config != nullptr) {
     std::cerr << "Cannot initialize config twice" << std::endl;
@@ -310,9 +372,11 @@ bool WakeConfig::init(const std::string& wakeroot_path, const WakeConfigOverride
 
   // Only keys that may be specified in .wakeroot
   std::set<std::string> wakeroot_allowed_keys = WakeConfigImplFull::wakeroot_allowed_keys();
+  wakeroot_allowed_keys.emplace("properties");
 
   // Only keys that may be specified in the user config
   std::set<std::string> user_config_allowed_keys = WakeConfigImplFull::userconfig_allowed_keys();
+  user_config_allowed_keys.emplace("properties");
 
   // Get a default WakeConfig, we can't use std::make_unique because it doesn't have access
   // to our default constructor. Thus we are forced to use `new`
@@ -389,6 +453,10 @@ bool WakeConfig::init(const std::string& wakeroot_path, const WakeConfigOverride
   // we run that to only to run it again later
   _config->override_all(overrides);
 
+  if (!apply_properties(*_config, wakeroot_json, wakeroot_path, WakeConfigProvenance::WakeRoot)) {
+    return false;
+  }
+
   // Parse user config
   auto user_config_res = read_json_file(_config->user_config);
   if (!user_config_res) {
@@ -402,6 +470,8 @@ bool WakeConfig::init(const std::string& wakeroot_path, const WakeConfigOverride
     // since the user config was missig, ignore it and return the config thus far
     // before we do we need to handle overrides
     _config->override_all(overrides);
+    if (!apply_environment_properties(*_config)) return false;
+    apply_command_line_properties(*_config, overrides);
     return true;
   }
 
@@ -422,6 +492,11 @@ bool WakeConfig::init(const std::string& wakeroot_path, const WakeConfigOverride
   // Parse values from the user config
   _config->set_all<WakeConfigProvenance::UserConfig>(user_config_json);
 
+  if (!apply_properties(*_config, user_config_json, _config->user_config,
+                        WakeConfigProvenance::UserConfig)) {
+    return false;
+  }
+
   // Set all env-vars again as they should override user configs. Note that
   // this is the second time we set the env-vars.
   _config->set_all_env_var();
@@ -430,7 +505,21 @@ bool WakeConfig::init(const std::string& wakeroot_path, const WakeConfigOverride
   // this is the second time we set the overrides.
   _config->override_all(overrides);
 
+  if (!apply_environment_properties(*_config)) return false;
+  apply_command_line_properties(*_config, overrides);
+
   return true;
+}
+
+void WakeConfig::emit(std::ostream& os) const {
+  WakeConfigImplFull::emit(os);
+  if (properties.empty()) return;
+  os << "  properties:" << std::endl;
+  for (const auto& property : properties) {
+    auto provenance = property_provenance.find(property.first);
+    os << "    " << property.first << " = '" << property.second << "' ("
+       << to_string(provenance->second) << ")" << std::endl;
+  }
 }
 
 const WakeConfig* const WakeConfig::get() {
