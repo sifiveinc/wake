@@ -1,4 +1,4 @@
-/* Wake FUSE launcher to capture inputs/outputs
+/* Wake FUSE launcher to capture file access and outputs
  *
  * Copyright 2019 SiFive, Inc.
  *

@@ -305,7 +305,6 @@ timeline.on('click', function (properties) {
         document.getElementById("stderr_payload").innerHTML = "";
         document.getElementById("usage").innerHTML = "";
         document.getElementById("visible").innerHTML = "";
-        document.getElementById("inputs").innerHTML = "";
         document.getElementById("outputs").innerHTML = "";
         document.getElementById("tags").innerHTML = "";
         return;
@@ -333,7 +332,6 @@ timeline.on('click', function (properties) {
 
     document.getElementById("usage").innerHTML = job.usage;
     document.getElementById("visible").innerHTML = job.visible;
-    document.getElementById("inputs").innerHTML = job.inputs;
     document.getElementById("outputs").innerHTML = job.outputs;
     document.getElementById("tags").innerHTML = job.tags;
 });

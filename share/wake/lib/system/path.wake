@@ -209,7 +209,6 @@ export def computeHashes (prefix: String) (files: List String): Result (List Str
         Nil
         hashUsage
         identity
-        identity
         False
 
     require Pass (Pair plan maybeStdinFilePath) = match useStdinFile
@@ -273,7 +272,7 @@ def hashUsage =
 # Allow an untracked file to be removed via `wake --clean`
 export target markFileCleanable (filepath: String): Result Unit Error =
     def hashPlan cmd =
-        Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity identity False
+        Plan "" cmd Nil Nil "." "" logNever logError logDebug ReRun Nil hashUsage identity False
 
     def job =
         hashPlan ("{wakePath}/../lib/wake/wake-hash", filepath, Nil)

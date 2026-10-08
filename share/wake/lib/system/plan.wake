@@ -60,8 +60,6 @@ export tuple Plan =
     export Resources: List String
     # User-supplied usage prediction; overruled by database statistics (if any)
     export Usage: Usage
-    # Modify the Runner's reported inputs (files read). For advanced use only.
-    export FnInputs: (List String => List String)
     # Modify the Runner's reported outputs (files created). Use this to provide a function to filter out
     # files that you do not require use of. For normal use, use `setPlanFilterOutputs` to set this field.
     # Setting this field directly is for advanced use only.
@@ -164,7 +162,7 @@ export def editPlanShare (f: Boolean => Boolean): Plan => Plan =
 
 # Get a unique hash-code for the job
 export def getPlanHash (plan: Plan): Integer =
-    def Plan _ cmd _ env dir stdin _ _ _ _ _ _ _ _ isAtty = plan
+    def Plan _ cmd _ env dir stdin _ _ _ _ _ _ _ isAtty = plan
     def isAttyStr = if isAtty then "true" else "false"
 
     def sig =
@@ -192,11 +190,10 @@ export def getPlanHash (plan: Plan): Integer =
 #   Share is True and there is matching output in a shared cache
 # A Job is considered matching if:
 #   The Command, Environment, Directory, and Stdin are exact matches
-#   FnInputs, FnOutputs have the same hashcode
+#   FnOutputs has the same hashcode
+#   The prior Visible dirs observe the same set of Visible files with the same hashes
 # Output is considered matching if:
 #   The prior Outputs exist as the output of a matching Job
-#   The prior Input files have the same hashes as files in the workspace
-#   The prior Input dirs observe the same set of Visible files
 
 # Create a labeled shell plan.
 export def makePlan (label: String) (visible: List Path) (command: String): Plan =
@@ -218,7 +215,6 @@ export def makeExecPlan (cmd: List String) (visible: List Path): Plan =
     Share
     Nil
     defaultUsage
-    identity
     identity
     False
 

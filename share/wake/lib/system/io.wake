@@ -159,7 +159,7 @@ def writeRunner (content: String) =
 
         raw path
 
-    def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ prefix predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
+    def run (job: Job) ((RunnerInput _ cmd _ _ _ _ _ prefix predict _ fnOutputs): RunnerInput): RunnerOutput =
         # Command must be ("<write>", "-m", "{string mode}", "{string path}", Nil)
         require "<write>", "-m", smode, path, Nil = cmd
         else panic "writeImp violated command-line contract"
@@ -171,12 +171,12 @@ def writeRunner (content: String) =
         require Some mode = int smode
         else
             Some "write {path}: Unable to convert mode to Integer ({smode})".makeError
-            | RunnerOutput Nil emptyStagedOutputs Nil emptyUsage
+            | RunnerOutput emptyStagedOutputs Nil emptyUsage
 
         require True = mode >= 0 && mode <= 0x1ff
         else
             Some "write {path}: Invalid mode ({strOctal mode})".makeError
-            | RunnerOutput Nil emptyStagedOutputs Nil emptyUsage
+            | RunnerOutput emptyStagedOutputs Nil emptyUsage
 
         def stagedFilePath =
             "{workspaceStageBase}/direct/write.{prefix}.{hashString "{path}\n{content}"}"
@@ -193,11 +193,6 @@ def writeRunner (content: String) =
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
             Pass reality -> Pair reality None
-
-        def fileInputs =
-            vis
-            | map getPathName
-            | fnInputs
 
         def stagedOutputSetResult = match writeTask
             Fail err -> Fail err
@@ -217,9 +212,9 @@ def writeRunner (content: String) =
 
         # Wait for the virtual job to complete
         match (runnerError; stagedOutputSetResult)
-            Some err; _ -> RunnerOutput fileInputs emptyStagedOutputs Nil usage (Some err)
-            None; Fail err -> RunnerOutput fileInputs emptyStagedOutputs Nil usage (Some err)
-            None; Pass stagedOutputs -> RunnerOutput fileInputs stagedOutputs Nil usage None
+            Some err; _ -> RunnerOutput emptyStagedOutputs Nil usage (Some err)
+            None; Fail err -> RunnerOutput emptyStagedOutputs Nil usage (Some err)
+            None; Pass stagedOutputs -> RunnerOutput stagedOutputs Nil usage None
 
     makeRunner "write" run
 
@@ -348,7 +343,7 @@ export def installIn (toRoot: String) (fromRoot: String) (sourcePath: Path): Res
 #
 # Allows for calls to the mkdir prim to be tracked in the database as any other job
 def mkdirRunner: Runner =
-    def run (job: Job) ((RunnerInput _ cmd vis _ _ _ _ _ predict _ fnInputs fnOutputs): RunnerInput): RunnerOutput =
+    def run (job: Job) ((RunnerInput _ cmd _ _ _ _ _ _ predict _ fnOutputs): RunnerInput): RunnerOutput =
         # Command must be ("<mkdir>", "-m", "{string mode}", "{string path}", Nil)
         require "<mkdir>", "-m", smode, path, Nil = cmd
         else panic "mkdirImp violated command-line contract"
@@ -360,21 +355,16 @@ def mkdirRunner: Runner =
         require Some mode = int smode
         else
             Some "write {path}: Unable to convert mode to Integer ({smode})".makeError
-            | RunnerOutput Nil emptyStagedOutputs Nil emptyUsage
+            | RunnerOutput emptyStagedOutputs Nil emptyUsage
 
         require True = mode >= 0 && mode <= 0x1ff
         else
             Some "mkdir {path}: Invalid mode ({smode})".makeError
-            | RunnerOutput Nil emptyStagedOutputs Nil emptyUsage
+            | RunnerOutput emptyStagedOutputs Nil emptyUsage
 
         def Pair usage runnerError = match job.getJobReality
             Fail err -> Pair emptyUsage (Some err)
             Pass reality -> Pair reality None
-
-        def fileInputs =
-            vis
-            | map getPathName
-            | fnInputs
 
         def stagedOutputSetResult =
             def publishedOutputPaths = fnOutputs (path, Nil)
@@ -384,9 +374,9 @@ def mkdirRunner: Runner =
 
         # Wait for the virtual job to complete
         match (runnerError; stagedOutputSetResult)
-            Some err; _ -> RunnerOutput fileInputs emptyStagedOutputs Nil usage (Some err)
-            None; Fail err -> RunnerOutput fileInputs emptyStagedOutputs Nil usage (Some err)
-            None; Pass stagedOutputs -> RunnerOutput fileInputs stagedOutputs Nil usage None
+            Some err; _ -> RunnerOutput emptyStagedOutputs Nil usage (Some err)
+            None; Fail err -> RunnerOutput emptyStagedOutputs Nil usage (Some err)
+            None; Pass stagedOutputs -> RunnerOutput stagedOutputs Nil usage None
 
     makeRunner "mkdir" run
 

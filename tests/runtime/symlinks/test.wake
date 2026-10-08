@@ -17,7 +17,7 @@ export def badLink Unit =
     | runJobWith defaultRunner
     | getJobOutput
 
-export def shouldWork Unit =
+export def shouldWork Unit: Result Job Error =
     require Pass link =
         goodLink Unit
     require Pass dat =
@@ -27,9 +27,9 @@ export def shouldWork Unit =
     | editPlanEnvironment (setEnvironment "TEST" "1")
     | setPlanShare False
     | runJobWith defaultRunner
-    | getJobInputs
+    | Pass
 
-export def shouldFail1 Unit =
+export def shouldFail1 Unit: Result Job Error =
     require Pass link =
         goodLink Unit
     makeExecPlan ("cat", "goodLink", Nil) (link, Nil)
@@ -37,9 +37,9 @@ export def shouldFail1 Unit =
     | editPlanEnvironment (setEnvironment "TEST" "2")
     | setPlanShare False
     | runJobWith defaultRunner
-    | getJobInputs
+    | Pass
 
-export def shouldFail2 Unit =
+export def shouldFail2 Unit: Result Job Error =
     require Pass dat =
         datFile Unit
     makeExecPlan ("cat", "goodLink", Nil) (dat, Nil)
@@ -47,17 +47,21 @@ export def shouldFail2 Unit =
     | editPlanEnvironment (setEnvironment "TEST" "3")
     | setPlanShare False
     | runJobWith defaultRunner
-    | getJobInputs
+    | Pass
 
 export def test _ =
     require Pass link = badLink Unit
     require True = getPathHash link !=* "BadHash"
-    else failWithError "cannot hash a dangling symlink"
-    require Pass what = shouldWork Unit
-    require Fail _ = shouldFail1 Unit else failWithError "fail1 passed!"
-    require Fail _ = shouldFail2 Unit else failWithError "fail2 passed!"
-    require a, b, Nil = what
-    else failWithError "did not detect both inputs ({format what})"
-    require True = getPathHash a !=* getPathHash b
-    else failWithError "identical hashes should not be identical"
+    else failWithError "dangling symlink does not have a valid hash"
+    require Pass validJob = shouldWork Unit
+    require True = isJobOk validJob
+    else failWithError "reading a valid symlink failed"
+    require Pass (_, _, Nil) = validJob.getJobVisible
+    else failWithError "did not detect both inputs ({format validJob.getJobVisible})"
+    require Pass danglingJob = shouldFail1 Unit
+    require False = isJobOk danglingJob
+    else failWithError "reading a dangling symlink passed!"
+    require Pass unlinkedJob = shouldFail2 Unit
+    require False = isJobOk unlinkedJob
+    else failWithError "reading a nonexistent symlink passed!"
     Pass 0

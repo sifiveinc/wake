@@ -1,4 +1,4 @@
-/* Wake FUSE launcher to capture inputs/outputs
+/* Wake FUSE launcher to capture file access and outputs
  *
  * Copyright 2019 SiFive, Inc.
  *
@@ -283,7 +283,6 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
   usage.add("runtime", stop.tv_sec - start.tv_sec + (stop.tv_usec - start.tv_usec) / 1000000.0);
   usage.add("cputime", rusage.utime + rusage.stime);
 
-  result_jast.add("inputs", JSON_ARRAY).children = std::move(from_daemon.get("inputs").children);
   result_jast.add("outputs", JSON_ARRAY).children = std::move(from_daemon.get("outputs").children);
   result_jast.add_bool("timed-out", timed_out);
   if (canceled_signal != 0) result_jast.add("canceled-signal", canceled_signal);
