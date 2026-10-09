@@ -231,11 +231,10 @@ void query_runs(Database &db) {
   }
 }
 
-// Returns lock-proven live run_ids (DB-open runs confirmed by lock probe).
-std::vector<int> get_live_run_ids(Database &db) {
-  std::vector<int> live;
-  for (auto &r : db.get_runs())
-    if (!r.end_time && RunLockProbe::is_live(r.id)) live.push_back(r.id);
+std::vector<RunReflection> get_live_runs(Database &db) {
+  std::vector<RunReflection> live;
+  for (auto &run : db.get_runs())
+    if (!run.end_time && RunLockProbe::is_live(run.id)) live.push_back(std::move(run));
   return live;
 }
 
@@ -295,7 +294,9 @@ MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database
   // Filters on unfinished jobs (stat_id is null).
   bool is_in_flight = clo.in_flight || clo.ps;
   if (clo.canceled || clo.active || clo.queued || is_in_flight) {
-    auto live_run_ids = get_live_run_ids(db);
+    std::vector<int> live_run_ids;
+    for (const auto &run : get_live_runs(db)) live_run_ids.push_back(run.id);
+
     // finish_job unconditinoally sets stat_id for jobs.
     // endtime=0 is close but includes jobs that finished.
     filters.core_filters.push_back({"core.stat_id is null"});
@@ -332,40 +333,44 @@ MatchingQueryFilters build_query_filters(const CommandLineOptions &clo, Database
 }
 
 void query_ps(const CommandLineOptions &clo, Database &db) {
+  const auto live_runs = get_live_runs(db);
+
+  if (live_runs.empty()) {
+    std::cout << "No runs currently in progress." << std::endl;
+    return;
+  }
+
   auto filters = build_query_filters(clo, db);
   const auto jobs = db.matching_open_runs(std::move(filters));
 
-  if (jobs.empty()) {
-    std::cout << "No jobs currently running." << std::endl;
-    return;
-  }
+  std::unordered_map<int, std::vector<const OpenRunJobReflection *>> jobs_by_run;
+  for (const auto &job : jobs) jobs_by_run[job.run_id].push_back(&job);
 
   struct timespec now;
   clock_gettime(CLOCK_REALTIME, &now);
   int64_t now_ns = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
 
-  auto runs = db.get_runs();
-  std::unordered_map<int, std::string_view> run_cmdlines;
-  for (auto &r : runs)
-    if (!r.end_time) run_cmdlines[r.id] = r.cmdline;
-
-  int cur_run = -1;
   std::cout << std::left;
-  for (const auto &j : jobs) {
-    if (j.run_id != cur_run) {
-      cur_run = j.run_id;
-      std::cout << "\nRun " << cur_run << ": " << run_cmdlines[cur_run] << std::endl;
-      std::cout << "  " << std::setw(8) << "JOB" << std::setw(12) << "ELAPSED"
-                << "LABEL" << std::endl;
-    }
-    if (j.starttime == 0) {
-      std::cout << "  " << std::setw(8) << j.job_id << std::setw(12) << "[queued]" << j.label
-                << std::endl;
-    } else {
-      int64_t elapsed_ns = now_ns - j.starttime;
-      std::string elapsed = "[" + format_duration(elapsed_ns) + "]";
-      std::cout << "  " << std::setw(8) << j.job_id << std::setw(12) << elapsed << j.label
-                << std::endl;
+  bool is_first_run = true;
+  for (const auto &run : live_runs) {
+    if (!is_first_run) std::cout << '\n';
+    is_first_run = false;
+    std::cout << "Run " << run.id << ": " << run.cmdline << std::endl;
+    auto jobs_it = jobs_by_run.find(run.id);
+    if (jobs_it == jobs_by_run.end()) continue;
+
+    std::cout << "  " << std::setw(8) << "JOB" << std::setw(12) << "ELAPSED"
+              << "LABEL" << std::endl;
+    for (const auto *j : jobs_it->second) {
+      if (j->starttime == 0) {
+        std::cout << "  " << std::setw(8) << j->job_id << std::setw(12) << "[queued]" << j->label
+                  << std::endl;
+      } else {
+        int64_t elapsed_ns = now_ns - j->starttime;
+        std::string elapsed = "[" + format_duration(elapsed_ns) + "]";
+        std::cout << "  " << std::setw(8) << j->job_id << std::setw(12) << elapsed << j->label
+                  << std::endl;
+      }
     }
   }
 }
