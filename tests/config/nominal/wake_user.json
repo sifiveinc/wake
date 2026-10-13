@@ -1,3 +1,7 @@
 {
-  "bulk_logging_dir": "/tmp/wake_bulk_logs"
+  "bulk_logging_dir": "/tmp/wake_bulk_logs",
+  "properties": {
+    "b": "user-b",
+    "c": "user-c"
+  }
 }

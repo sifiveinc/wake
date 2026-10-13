@@ -10,3 +10,9 @@ Wake config:
   interpreter_runtime_warning_s = '10' (WakeRoot)
   heap_factor = '4' (Default)
   heap_pivot_mb = '64' (Default)
+  properties:
+    a = 'root-a' (WakeRoot)
+    b = 'user-b' (UserConfig)
+    c = 'env-c' (EnvVar)
+    d = 'cli-final' (Commandline)
+    e = 'value=with=equals' (Commandline)

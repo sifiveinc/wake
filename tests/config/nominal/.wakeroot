@@ -4,6 +4,10 @@
   "log_header_source_width": 13,
   "log_header_align": true,
   "cache_miss_on_failure": true,
+  "properties": {
+    "a": "root-a",
+    "b": "root-b"
+  },
   "eviction_config": {"type": "lru", "low_cache_size": 512, "max_cache_size": 1024},
   "shared_cache_timeout_config": {
     "read_retries": 20,

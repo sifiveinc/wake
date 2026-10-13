@@ -24,6 +24,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "json/json5.h"
 
@@ -57,6 +58,9 @@ struct WakeConfigOverrides {
   // GC heap tuning
   std::optional<double> heap_factor;
   std::optional<double> heap_pivot_mb;
+
+  // Ordered so repeated command-line properties retain last-one-wins semantics.
+  std::vector<std::pair<std::string, std::string>> properties;
 };
 
 template <class T>
@@ -453,8 +457,13 @@ using WakeConfigImplFull =
                    HeapPivotPolicy>;
 
 struct WakeConfig final : public WakeConfigImplFull {
+  std::map<std::string, std::string> properties;
+  std::map<std::string, WakeConfigProvenance> property_provenance;
+
   static bool init(const std::string& wakeroot_path, const WakeConfigOverrides& overrides);
   static const WakeConfig* const get();
+
+  void emit(std::ostream& os) const;
 
   WakeConfig(const WakeConfig&) = delete;
   WakeConfig(WakeConfig&&) = delete;
