@@ -1,0 +1,31 @@
+# One-off database administration only; deliberately no cache-volume mount.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rsc-admin
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+  containers:
+    - name: admin
+      image: ${RSC_IMAGE}
+      command: [/bin/sleep, "3600"]
+      env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: ${RSC_SECRET}
+              key: database-url
+        - name: WAKE_RSC_CONFIG_DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: ${RSC_SECRET}
+              key: database-url
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]

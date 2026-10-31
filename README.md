@@ -139,6 +139,9 @@ Give FUSE permission to run as stated in the instructions and you should be good
 
 # Configuring wake
 
+For a remote shared cache with storage mounted only by the cache server, see the
+[PVC-backed RSC Kubernetes example](deploy/rsc/README.txt).
+
 Certain characteristics of wake execution can be configured for all invocations
 of the wake tool. For example, the repo may set the minimum wake version or a
 user may set the verbosity of a log message. This is achieved  via two config

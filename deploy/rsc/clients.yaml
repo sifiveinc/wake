@@ -1,0 +1,32 @@
+# HTTP API clients, not Wake images. Neither pod has volumes or database access.
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: rsc-smoke-push
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: client
+          image: ${RSC_CLIENT_IMAGE}
+          command: [python3, -c, "import time; time.sleep(3600)"]
+          env:
+            - name: RSC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ${RSC_SECRET}
+                  key: api-key
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: rsc-smoke-pull
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: client
+          image: ${RSC_CLIENT_IMAGE}
+          command: [python3, -c, "import time; time.sleep(3600)"]
