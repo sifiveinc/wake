@@ -67,6 +67,10 @@ pub struct RSCConfig {
     pub database_url: String,
     // The address the that server should bind to
     pub server_address: String,
+    // Optional externally reachable HTTP(S) base URL. Without it, local blobs retain file:// URLs.
+    // A reverse proxy must strip any base path before forwarding requests to server_address.
+    #[serde(default)]
+    pub public_base_url: Option<String>,
     // The max number of connnections to open in the connection pool. Value must consider the
     // postgres server max
     pub connection_pool_max_connect: u32,
@@ -96,12 +100,106 @@ impl RSCConfig {
 
         let config: RSCConfig = config.try_deserialize()?;
 
-        if config.load_shed.target == 0.0 {
+        config.validate()?;
+
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        self.server_address
+            .parse::<std::net::SocketAddr>()
+            .map_err(|_| {
+                ConfigError::Message(
+                    "server_address must be a listen socket such as 0.0.0.0:3002".into(),
+                )
+            })?;
+        self.public_url()?;
+
+        if self.load_shed.target == 0.0 {
             return Err(ConfigError::Message(
                 "Load shed target must not be zero".to_string(),
             ));
         }
 
-        Ok(config)
+        Ok(())
+    }
+
+    pub fn public_url(&self) -> Result<Option<url::Url>, ConfigError> {
+        self.public_base_url.as_deref().map(|base| {
+            let invalid = || ConfigError::Message(
+                "public_base_url must be an absolute HTTP(S) URL without credentials, query, or fragment".into()
+            );
+            let mut url = url::Url::parse(base).map_err(|_| invalid())?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(invalid());
+            }
+            // Treat both /cache and /cache/ as a directory prefix when joining endpoints.
+            if !url.path().ends_with('/') {
+                url.set_path(&format!("{}/", url.path()));
+            }
+            Ok(url)
+        }).transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn legacy_config() -> RSCConfig {
+        serde_json::from_str(include_str!("../../../.config.json")).unwrap()
+    }
+
+    #[test]
+    fn legacy_config_remains_valid() {
+        let config = legacy_config();
+        config.validate().unwrap();
+        assert!(config.public_url().unwrap().is_none());
+    }
+
+    #[test]
+    fn public_url_preserves_prefix_and_normalizes_slash() {
+        for base in ["https://cache.example/rsc", "https://cache.example/rsc/"] {
+            let mut config = legacy_config();
+            config.public_base_url = Some(base.into());
+            assert_eq!(
+                config
+                    .public_url()
+                    .unwrap()
+                    .unwrap()
+                    .join("blob")
+                    .unwrap()
+                    .as_str(),
+                "https://cache.example/rsc/blob"
+            );
+        }
+    }
+
+    #[test]
+    fn public_url_and_listen_socket_are_validated_separately() {
+        let mut config = legacy_config();
+        for invalid in [
+            "0.0.0.0:3002",
+            "/cache",
+            "file:///tmp/cache",
+            "ftp://cache.example",
+            "https://user:secret@cache.example",
+            "https://cache.example?x=1",
+            "https://cache.example/#fragment",
+            "",
+        ] {
+            config.public_base_url = Some(invalid.into());
+            assert!(config.validate().is_err(), "accepted {invalid}");
+        }
+        config.public_base_url = Some("http://cache.example:3002".into());
+        config.validate().unwrap();
+        config.server_address = "http://cache.example:3002".into();
+        assert!(config.validate().is_err());
     }
 }

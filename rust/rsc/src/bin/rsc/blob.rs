@@ -1,12 +1,19 @@
 use crate::database;
 use crate::types::{GetUploadUrlResponse, PostBlobResponse, PostBlobResponsePart};
 use async_trait::async_trait;
-use axum::{extract::Multipart, http::StatusCode, Json};
+use axum::{
+    body::StreamBody,
+    extract::{Multipart, Path},
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
+    Json,
+};
 use entity::blob;
 use futures::stream::BoxStream;
 use futures::TryStreamExt;
 use sea_orm::prelude::Uuid;
-use sea_orm::{ActiveValue::*, DatabaseConnection};
+use sea_orm::{ActiveValue::*, DatabaseConnection, EntityTrait};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::bytes::Bytes;
 use tracing;
@@ -19,15 +26,74 @@ pub trait BlobStore {
         stream: BoxStream<'a, Result<Bytes, std::io::Error>>,
     ) -> Result<(String, i64), std::io::Error>;
 
-    async fn download_url(&self, key: String) -> String;
+    async fn download_url(&self, id: Uuid, key: String) -> String;
+    // Inline and non-filesystem stores keep their own URL schemes.
+    async fn content(&self, _key: String) -> Result<BlobContent, std::io::Error> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Store does not support HTTP downloads",
+        ))
+    }
     async fn delete_key(&self, key: String) -> Result<(), std::io::Error>;
 }
 
 pub trait DebugBlobStore: BlobStore + std::fmt::Debug {}
 
+pub struct BlobContent {
+    pub stream: BoxStream<'static, Result<Bytes, std::io::Error>>,
+    pub size: u64,
+}
+
 #[tracing::instrument(skip_all)]
-pub async fn get_upload_url(server_addr: String) -> Json<GetUploadUrlResponse> {
-    let url = server_addr + "/blob";
+pub async fn download_blob(
+    Path(id): Path<Uuid>,
+    db: Arc<DatabaseConnection>,
+    stores: HashMap<Uuid, Arc<dyn DebugBlobStore + Send + Sync>>,
+) -> Response {
+    let blob = match blob::Entity::find_by_id(id).one(db.as_ref()).await {
+        Ok(Some(blob)) => blob,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => {
+            tracing::error!(%err, %id, "Failed to look up blob");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let Some(store) = stores.get(&blob.store_id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match store.content(blob.key).await {
+        Ok(content) => (
+            [
+                (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+                (header::CONTENT_LENGTH, content.size.to_string()),
+            ],
+            StreamBody::new(content.stream),
+        )
+            .into_response(),
+        Err(err) => {
+            tracing::warn!(%err, %id, "Failed to open blob content");
+            match err.kind() {
+                std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
+                std::io::ErrorKind::Unsupported => StatusCode::NOT_IMPLEMENTED,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            }
+            .into_response()
+        }
+    }
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn get_upload_url(
+    server_addr: String,
+    public_url: Option<url::Url>,
+) -> Json<GetUploadUrlResponse> {
+    let url = match public_url {
+        Some(base) => base
+            .join("blob")
+            .expect("validated HTTP base URL")
+            .to_string(),
+        None => server_addr + "/blob",
+    };
     Json(GetUploadUrlResponse { url })
 }
 
@@ -41,7 +107,20 @@ pub async fn create_blob(
     let mut parts: Vec<PostBlobResponsePart> = Vec::new();
     let mut content_hash: Option<String> = None;
 
-    while let Ok(Some(field)) = multipart.next_field().await {
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(err) => {
+                tracing::warn!(%err, "Failed to read multipart field");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(PostBlobResponse::Error {
+                        message: "Invalid multipart upload".into(),
+                    }),
+                );
+            }
+        };
         let name = match field.name() {
             Some(x) => x.to_string(),
             None => {
@@ -91,7 +170,7 @@ pub async fn create_blob(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(PostBlobResponse::Error {
-                        message: err.to_string(),
+                        message: "Failed to store blob".into(),
                     }),
                 );
             }
@@ -102,7 +181,7 @@ pub async fn create_blob(
             id: NotSet,
             created_at: NotSet,
             updated_at: NotSet,
-            key: Set(blob_key),
+            key: Set(blob_key.clone()),
             size: Set(blob_size),
             store_id: Set(store.id()),
             content_hash: Set(content_hash.clone().unwrap_or_default()),
@@ -111,10 +190,13 @@ pub async fn create_blob(
         match database::upsert_blob(db.as_ref(), active_blob).await {
             Err(err) => {
                 tracing::error! {%err, "Failed to upsert blob"};
+                if let Err(err) = store.delete_key(blob_key).await {
+                    tracing::warn!(%err, "Failed to remove unpublished blob");
+                }
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(PostBlobResponse::Error {
-                        message: err.to_string(),
+                        message: "Failed to publish blob".into(),
                     }),
                 );
             }

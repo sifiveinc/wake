@@ -2450,6 +2450,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "sysinfo",
+ "tempfile",
  "textwrap",
  "tokio",
  "tokio-util",
@@ -2457,6 +2458,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

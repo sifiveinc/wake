@@ -111,7 +111,7 @@ async fn resolve_blobs<T: ConnectionTrait>(
                 let store = store_opt.ok_or_else(|| {
                     format!("Unable to find backing store {} for blob {}", blob.store_id, id)
                 })?;
-                let url = store.download_url(key).await;
+                let url = store.download_url(*id, key).await;
                 Ok::<(Uuid, ResolvedBlob), String>((*id, ResolvedBlob {
                     id: *id,
                     url,

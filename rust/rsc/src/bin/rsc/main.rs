@@ -27,6 +27,8 @@ mod dashboard;
 mod metrics;
 mod read_job;
 mod types;
+#[cfg(test)]
+mod http_transport_tests;
 
 #[derive(Debug, Parser)]
 struct ServerOptions {
@@ -38,6 +40,7 @@ struct ServerOptions {
 // that represent said store.
 async fn activate_stores(
     conn: Arc<DatabaseConnection>,
+    public_base_url: Option<url::Url>,
 ) -> HashMap<Uuid, Arc<dyn blob::DebugBlobStore + Sync + Send>> {
     let mut active_stores: HashMap<Uuid, Arc<dyn blob::DebugBlobStore + Sync + Send>> =
         HashMap::new();
@@ -73,6 +76,7 @@ async fn activate_stores(
             Arc::new(blob_store_impls::LocalBlobStore {
                 id: store.id,
                 root: store.root,
+                public_base_url: public_base_url.clone(),
             }),
         );
     }
@@ -210,7 +214,20 @@ fn create_router(
             "/blob",
             get({
                 let config = config.clone();
-                move || blob::get_upload_url(config.server_address.clone())
+                move || {
+                    blob::get_upload_url(
+                        config.server_address.clone(),
+                        config.public_url().expect("validated public URL"),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/blob/:id",
+            get({
+                let conn = conn.clone();
+                let stores = blob_stores.clone();
+                move |id| blob::download_blob(id, conn, stores)
             }),
         )
         .route("/version/check", get(check_version))
@@ -445,7 +462,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let connection = Arc::new(connection);
 
     // Activate blob stores
-    let stores = activate_stores(connection.clone()).await;
+    let stores = activate_stores(connection.clone(), config.public_url()?).await;
 
     // Create the resouce needed to track the current system utilization
     let system_load = Arc::new(RwLock::new(0.0));
@@ -507,10 +524,11 @@ mod tests {
         Ok(inserted.id)
     }
 
-    fn create_config(store_id: Uuid) -> config::RSCConfig {
+    pub(super) fn create_config(store_id: Uuid) -> config::RSCConfig {
         config::RSCConfig {
             database_url: "test:0000".to_string(),
             server_address: "".to_string(),
+            public_base_url: None,
             active_store: store_id.to_string(),
             connection_pool_max_connect: 10,
             connection_pool_timeout: 10,
@@ -557,7 +575,7 @@ mod tests {
         Ok(inserted_key.id)
     }
 
-    async fn create_insecure_api_key(
+    pub(super) async fn create_insecure_api_key(
         db: &DatabaseConnection,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let active_key = entity::api_key::ActiveModel {
@@ -572,7 +590,7 @@ mod tests {
         Ok(inserted_key.key)
     }
 
-    async fn create_standalone_db() -> Result<DatabaseConnection, sea_orm::DbErr> {
+    pub(super) async fn create_standalone_db() -> Result<DatabaseConnection, sea_orm::DbErr> {
         let shim_db = Database::connect("postgres://127.0.0.1/shim").await?;
         let mut buf = [0u8; 24];
         thread_rng().fill_bytes(&mut buf);
@@ -595,7 +613,7 @@ mod tests {
         let blob_id = create_fake_blob(&db, store_id.clone()).await.unwrap();
         let config = create_config(store_id.clone());
         let db = Arc::new(db);
-        let stores = activate_stores(db.clone()).await;
+        let stores = activate_stores(db.clone(), None).await;
         let system_load = Arc::new(RwLock::new(0.0));
         let mut router = create_router(db.clone(), Arc::new(config), &stores, system_load);
 
