@@ -1,0 +1,70 @@
+package remote_cache
+
+from wake import _
+
+def requiredEnv name: Result String Error =
+    require Some value = getenv name
+    else failWithError "missing {name}"
+    Pass value
+
+# Use the real cache runner, including post-finalization uploads and verified CAS restoration.
+export def portable Unit: Result Unit Error =
+    require Pass portString = requiredEnv "RSC_TEST_PORT"
+    require Some port = int portString
+    else failWithError "invalid test port"
+    require Pass marker = requiredEnv "RSC_TEST_MARKER"
+    require Pass key = requiredEnv "RSC_TEST_KEY"
+    require Pass policyString = requiredEnv "RSC_TEST_POLICY"
+
+    def policy = match policyString
+        "pull" -> RemoteCachePolicyPullOnly
+        "push" -> RemoteCachePolicyPushOnly "InsecureKey"
+        _ -> RemoteCachePolicyPushPull "InsecureKey"
+
+    def api = RemoteCacheApi "http://127.0.0.1" port policy (Some 20) (Some 5)
+    def runner = mkRemoteCacheRunner api (\_ Pass key) "/workspace" stagingDirRunner
+    def script =
+        """
+        set -eu
+        curl -fsS %{marker} >/dev/null
+        mkdir -p result/empty-dir
+        python3 -c 'from pathlib import Path; Path("result/small.bin").write_bytes(bytes(range(256))+bytes([0])); Path("result/large.bin").write_bytes(bytes(range(256))*513); Path("result/empty").touch()'
+        chmod 0751 result/small.bin
+        chmod 0640 result/large.bin
+        chmod 0750 result/empty-dir
+        ln -s small.bin result/link
+        printf 'portable stdout %.0s' $(seq 1 12)
+        printf 'inline stderr\n' >&2
+        """
+
+    def job =
+        makeExecPlan ("sh", "-c", script, Nil) Nil
+        | setPlanLabel "portable-cache-fixture"
+        | setPlanFnOutputs (\_ "result/small.bin", "result/large.bin", "result/empty", "result/link", "result/empty-dir", Nil)
+        | setPlanShare True
+        | setPlanPersistence Once
+        | runJobWith runner
+
+    require Exited 0 = job.getJobStatus
+    else failWithError "portable fixture failed: {job.getJobStatus | format}"
+    require Pass stdout = job.getJobStdout
+    require Pass stderr = job.getJobStderr
+    require True = stdout ==* cat (replicate 12 "portable stdout ")
+    else failWithError "stdout changed during restoration"
+    require True = stderr ==* "inline stderr\n"
+    else failWithError "stderr changed during restoration"
+    require Pass _ = job.getJobOutputs
+
+    Pass Unit
+
+# Call the existing download/verification API and ensure a mismatch cannot publish a file.
+export def badHash Unit: Result Unit Error =
+    require Pass url = requiredEnv "RSC_TEST_BLOB_URL"
+    def blob = CacheSearchBlob "wrong-hash" url (cat (replicate 64 "0"))
+    require Fail err = rscApiGetFileBlob blob "must-not-exist" 0644
+    else failWithError "corrupt blob was accepted"
+    require False = access "must-not-exist" 0
+    else failWithError "corrupt blob was materialized"
+    require True = matches `.*Hash mismatch.*` err.getErrorCause
+    else failWithError "expected hash mismatch: {err.getErrorCause}"
+    Pass Unit
