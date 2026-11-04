@@ -8,7 +8,7 @@ Vendor:        SiFive, Inc.
 Source0:       https://github.com/sifive/wake/releases/%{name}_%{version}.tar.xz
 Requires:      fuse dash squashfuse iproute
 Prefix:        /usr
-BuildRequires: fuse-devel dash sqlite-devel gmp-devel ncurses-devel pkgconfig git gcc gcc-c++ re2-devel
+BuildRequires: fuse-devel dash sqlite-devel gmp-devel ncurses-devel pkgconfig git gcc gcc-c++ re2-devel libuuid-devel
 
 %description
 Wake is a build orchestration tool and language.

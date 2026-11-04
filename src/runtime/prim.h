@@ -150,6 +150,7 @@ void prim_register_json(PrimMap &pmap);
 void prim_register_job(JobTable *jobtable, PrimMap &pmap);
 void prim_register_sources(PrimMap &pmap);
 void prim_register_time(PrimMap &pmap);
+void prim_register_random(PrimMap &pmap);
 void prim_register_wakebox(PrimMap &pmap);
 void prim_register_database(Database *db, CASContext *cas_ctx, PrimMap &pmap);
 

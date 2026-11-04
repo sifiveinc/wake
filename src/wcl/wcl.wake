@@ -16,6 +16,11 @@
 package build_wake
 
 from wake import _
+from gcc_wake import _
+
+def uuidLib = match _
+    Pair cppVariant _ if sysname ==* "Linux" && matches `native-.*` cppVariant -> Pass (pkg "uuid")
+    _ -> Pass (makeSysLib "")
 
 target wcl variant =
-    src @here variant Nil Nil Nil
+    src @here variant Nil (uuidLib, Nil) Nil
