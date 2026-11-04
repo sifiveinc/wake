@@ -1,0 +1,35 @@
+# Copyright 2026 SiFive, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You should have received a copy of LICENSE.Apache2 along with
+# this software. If not, you may obtain a copy at
+#
+#    https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+package wake
+
+# Generate exactly length random lowercase hex digits; zero returns an empty string.
+# This is nondeterministic: using the value in job inputs can prevent cache reuse,
+# and embedding it in build outputs makes them non-reproducible.
+export def unsafe_randomHexString (length: Integer): Result String Error =
+    def raw length: Result String String = prim "unsafe_randomHexString"
+
+    raw length
+    | rmapError makeError
+
+# Generate a fresh UUIDv4.
+# UUIDs are lowercase strings in the canonical 8-4-4-4-12 hyphenated format.
+# This is nondeterministic: using the value in job inputs can prevent cache reuse,
+# and embedding it in build outputs makes them non-reproducible.
+export def unsafe_uuidv4String (_: a): Result String Error =
+    def raw: Result String String = prim "unsafe_uuidv4String"
+
+    raw
+    | rmapError makeError
