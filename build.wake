@@ -99,6 +99,7 @@ def targets =
     (bootstrapTarget buildLSP),
     buildWakeFormat,
     buildWakeMigrate,
+    buildWakeTools,
     Nil
 
 def all variant =

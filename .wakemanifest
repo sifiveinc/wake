@@ -1,6 +1,7 @@
 build.wake
 extensions/vscode/vscode.wake
 rust/log_viewer/build.wake
+rust/wake_tools/build.wake
 rust/rsc/postgres-tests.wake
 rust/rsc/rsc.wake
 share/wake/lib/core/boolean.wake

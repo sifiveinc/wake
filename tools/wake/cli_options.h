@@ -71,6 +71,10 @@ struct CommandLineOptions {
   bool prune;
   bool list_outputs;
   bool include_hidden;
+  bool ui;
+  bool tui;
+  bool mcp;
+  bool otel;
   bool rm;
   bool recursive;
   std::optional<bool> log_header_align;
@@ -99,6 +103,8 @@ struct CommandLineOptions {
   const char *log_header;
   const char *user_config;
   const char *attach_job_id;
+  const char *ui_address;
+  const char *ui_port;
 
   std::optional<int64_t> log_header_source_width;
 
@@ -202,6 +208,12 @@ struct CommandLineOptions {
       {0, "user-config", GOPT_ARGUMENT_REQUIRED},
       {':', "shebang", GOPT_ARGUMENT_REQUIRED},
       {0, "include-hidden", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "ui", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "tui", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "mcp", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "otel", GOPT_ARGUMENT_FORBIDDEN},
+      {0, "ui-address", GOPT_ARGUMENT_REQUIRED},
+      {0, "ui-port", GOPT_ARGUMENT_REQUIRED},
       {0, 0, GOPT_LAST}
     };
     // clang-format on
@@ -252,6 +264,10 @@ struct CommandLineOptions {
     prune = arg(options, "prune")->count;
     list_outputs = arg(options, "list-outputs")->count;
     include_hidden = arg(options, "include-hidden")->count;
+    ui = arg(options, "ui")->count;
+    tui = arg(options, "tui")->count;
+    mcp = arg(options, "mcp")->count;
+    otel = arg(options, "otel")->count;
     rm = arg(options, "rm")->count;
     recursive = arg(options, "recursive")->count;
 
@@ -278,6 +294,8 @@ struct CommandLineOptions {
     log_header = arg(options, "log-header")->argument;
     user_config = arg(options, "user-config")->argument;
     attach_job_id = arg(options, "attach")->argument;
+    ui_address = arg(options, "ui-address")->argument;
+    ui_port = arg(options, "ui-port")->argument;
 
     if (arg(options, "log-header-align")->count) {
       log_header_align = std::make_optional(true);

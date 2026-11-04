@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <wcl/defer.h>
 #include <wcl/filepath.h>
@@ -466,6 +467,12 @@ void print_help(const char *argv0) {
     << "    --simple           Report only label, cmdline, and tags of captured jobs"      << std::endl
     << "    --script   -s      Format captured jobs as an executable shell script"         << std::endl
     << "    --include-hidden   Include hidden introspection jobs in query results"         << std::endl
+    << "    --ui               Serve the artifact triage web UI (also: wake ui)"           << std::endl
+    << "    --ui-address ADDR  Address for the UI server (default 127.0.0.1)"              << std::endl
+    << "    --ui-port PORT     Port for the UI server (default 8080)"                      << std::endl
+    << "    --tui              Open the interactive artifact triage TUI (also: wake tui)" << std::endl
+    << "    --mcp              Serve Wake's read-only MCP server over stdio (also: wake mcp)" << std::endl
+    << "    --otel             Export this run as OTLP/HTTP traces after it completes"     << std::endl
     << std::endl
     << "  Help functions:" << std::endl
     << "    --version          Print the version of wake on standard output"               << std::endl
@@ -575,6 +582,51 @@ static bool gc_dead_cas_blobs(cas::Cas &cas, Database &db) {
   return pass;
 }
 
+static bool equals_ignore_case(const char *value, const char *expected) {
+  if (!value) return false;
+  while (*value && *expected) {
+    if (std::tolower(static_cast<unsigned char>(*value)) !=
+        std::tolower(static_cast<unsigned char>(*expected)))
+      return false;
+    ++value;
+    ++expected;
+  }
+  return *value == 0 && *expected == 0;
+}
+
+static bool otel_enabled(bool command_line) {
+  if (equals_ignore_case(getenv("OTEL_SDK_DISABLED"), "true")) return false;
+  return command_line || getenv("OTEL_EXPORTER_OTLP_ENDPOINT") ||
+         getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+}
+
+static void export_otel_run(long run_id, int exit_code) {
+  std::string exporter = wcl::make_canonical(find_execpath() + "/../lib/wake/wake-otel");
+  std::string run = std::to_string(run_id);
+  std::string status = std::to_string(exit_code);
+  pid_t pid = fork();
+  if (pid == 0) {
+    execl(exporter.c_str(), "wake-otel", "--run-id", run.c_str(), "--exit-code", status.c_str(),
+          "--wake-version", VERSION_STR, nullptr);
+    std::cerr << "exec(" << exporter << "): " << strerror(errno) << std::endl;
+    _exit(127);
+  }
+  if (pid < 0) {
+    std::cerr << "warning: unable to start OpenTelemetry exporter: " << strerror(errno)
+              << std::endl;
+    return;
+  }
+
+  int wait_status = 0;
+  pid_t waited;
+  do {
+    waited = waitpid(pid, &wait_status, 0);
+  } while (waited == -1 && errno == EINTR);
+  if (waited != pid || !WIFEXITED(wait_status) || WEXITSTATUS(wait_status) != 0) {
+    std::cerr << "warning: OpenTelemetry export failed (build result unaffected)" << std::endl;
+  }
+}
+
 int main(int argc, char **argv) {
   // Make sure we always get core dumps but don't fail
   // if that fails for some reason.
@@ -592,7 +644,29 @@ int main(int argc, char **argv) {
   std::string original_command_line = shell_escape(argv[0]);
   for (int i = 1; i < argc; ++i) original_command_line += " " + shell_escape(argv[i]);
 
+  // gopt stops parsing at the first positional argument. Normalize the friendly
+  // companion subcommands into flags so options can follow them.
+  char ui_option[] = "--ui";
+  char tui_option[] = "--tui";
+  char mcp_option[] = "--mcp";
+  if (argc > 1) {
+    std::string subcommand(argv[1]);
+    if (subcommand == "ui") argv[1] = ui_option;
+    if (subcommand == "tui") argv[1] = tui_option;
+    if (subcommand == "mcp") argv[1] = mcp_option;
+  }
+
   CommandLineOptions clo(argc, argv);
+  const bool export_otel = otel_enabled(clo.otel);
+  const bool ui_mode = clo.ui || clo.ui_address || clo.ui_port;
+  const bool tui_mode = clo.tui;
+  const bool mcp_mode = clo.mcp;
+  const bool companion_mode = ui_mode || tui_mode || mcp_mode;
+
+  if (static_cast<int>(ui_mode) + static_cast<int>(tui_mode) + static_cast<int>(mcp_mode) > 1) {
+    std::cerr << "Choose only one of wake ui, wake tui, or wake mcp." << std::endl;
+    return 1;
+  }
 
   if (clo.help) {
     print_help(clo.argv[0]);
@@ -660,7 +734,7 @@ int main(int argc, char **argv) {
                                !clo.input_files.empty() || !clo.labels.empty() ||
                                !clo.tags.empty() || clo.last_use || clo.last_exe || clo.failed ||
                                clo.tagdag || clo.canceled || clo.active || clo.queued ||
-                               clo.in_flight || clo.history || clo.ps || clo.attach;
+                               clo.in_flight || clo.history || clo.ps || clo.attach || companion_mode;
 
   // DescribePolicy::human() is the default and doesn't have a flag.
   // DescribePolicy::debug() is overloaded and can't be marked as a db flag
@@ -671,8 +745,8 @@ int main(int argc, char **argv) {
   bool is_db_inspection = is_db_inspect_capture || is_db_inspect_render;
 
   // Arguments are forbidden with these options
-  bool noargs =
-      is_db_inspection || clo.init || clo.html || clo.global || clo.exports || clo.api || clo.exec;
+  bool noargs = is_db_inspection || clo.init || clo.html || clo.global || clo.exports || clo.api ||
+                clo.exec || companion_mode;
   bool targets = clo.argc == 1 && !noargs;
   bool notype = clo.init || is_db_inspection || clo.parse;
   bool noexecute = notype || clo.html || clo.tcheck || clo.dumpssa || clo.global || clo.exports ||
@@ -702,6 +776,19 @@ int main(int argc, char **argv) {
 
   if (clo.workspace && !chdir_workspace(clo.chdir, wake_cwd, src_dir)) {
     std::cerr << "Unable to locate wake.db in any parent directory." << std::endl;
+    return 1;
+  }
+
+  if (companion_mode) {
+    const char *name = ui_mode ? "wake-ui" : (tui_mode ? "wake-tui" : "wake-mcp");
+    std::string companion = wcl::make_canonical(find_execpath() + "/../lib/wake/" + name);
+    if (ui_mode) {
+      execl(companion.c_str(), name, "--address", clo.ui_address ? clo.ui_address : "127.0.0.1",
+            "--port", clo.ui_port ? clo.ui_port : "8080", nullptr);
+    } else {
+      execl(companion.c_str(), name, nullptr);
+    }
+    std::cerr << "exec(" << companion << "): " << strerror(errno) << std::endl;
     return 1;
   }
 
@@ -1395,7 +1482,9 @@ int main(int argc, char **argv) {
     }
   }
 
+  const long completed_run = db.current_run_id();
   db.finish_run();
+  if (export_otel) export_otel_run(completed_run, pass ? 0 : 1);
   db.clean();
 
   if (!gc_dead_cas_blobs(*cas_ctx.get_store(), db))

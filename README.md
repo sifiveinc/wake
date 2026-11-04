@@ -189,6 +189,71 @@ overrides wakeroot, and wakeroot overrides nothing
 
 # Documentation
 
+## Artifact triage tools
+
+Wake includes three read-only Rust tools for inspecting build artifacts and
+history.
+
+Run `wake ui` (or `wake --ui`) from a workspace to browse recorded jobs, output
+artifacts, status, and logs in a browser. The server listens at
+`http://127.0.0.1:8080` by default.
+
+To connect from another machine, explicitly select a reachable interface and
+port:
+
+```sh
+wake ui --ui-address 0.0.0.0 --ui-port 8080
+```
+
+Remote mode has no built-in authentication. Use it only on a trusted network,
+or put it behind an authenticated reverse proxy or SSH tunnel.
+
+Run `wake tui` (or `wake --tui`) for an interactive terminal view. Use the
+arrow keys or `j`/`k` to select a job, `/` to search, `f` to show only failed
+jobs, `r` to refresh, and `q` to quit.
+
+Run `wake mcp` (or `wake --mcp`) to expose build data to an MCP client over
+standard input and output. For example:
+
+```json
+{
+  "mcpServers": {
+    "wake": {
+      "command": "/path/to/wake",
+      "args": ["mcp", "--chdir", "/path/to/workspace"]
+    }
+  }
+}
+```
+
+The MCP server offers `list_wake_jobs`, `get_wake_job`, and `list_wake_runs`.
+It never modifies the Wake database or workspace.
+
+## OpenTelemetry
+
+Wake can export each completed build as an OpenTelemetry trace using
+OTLP/HTTP with protobuf. Set a standard OTLP endpoint to enable it:
+
+```sh
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 wake build
+```
+
+Alternatively, `wake --otel build` enables export to the OpenTelemetry default
+endpoint. `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`,
+`OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`,
+and the standard trace sampler variables are supported. Set
+`OTEL_SDK_DISABLED=true` to disable export.
+
+Orchestrators can parent the Wake build graph beneath an existing trace with
+`WAKE_OTEL_PARENT_TRACEPARENT` and `WAKE_OTEL_PARENT_TRACESTATE`.
+
+Each invocation becomes a `wake.run` span with child spans for jobs executed by
+that invocation. Spans include job labels, status, timing, resource usage, and
+cache counts; commands, environment variables, logs, and artifact paths are not
+exported. Telemetry errors produce a warning but never change the build result.
+See [OpenTelemetry support](share/doc/wake/opentelemetry.md) for configuration
+and the trace schema.
+
 Documentation for wake can be found in [share/doc/wake](share/doc/wake).
 
  - Try the [Tutorial](share/doc/wake/tutorial.md) for a step-by-step
