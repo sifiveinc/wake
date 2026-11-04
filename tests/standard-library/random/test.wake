@@ -1,0 +1,49 @@
+from wake import _
+
+def checkRandom generate pattern: Result Unit Error =
+    def first = generate Unit
+
+    require Pass value = first
+    require Pass reused = first
+
+    require True = (value ==* reused)
+    else failWithError "Reusing a random result generated a new value"
+
+    require Pass samples =
+        map generate (Unit, Unit, Nil)
+        | findFail
+
+    def values = value, samples
+
+    require True = forall (matches pattern) values
+    else failWithError "Incorrect random value format"
+
+    require True = (len (distinctBy scmp values) == 3)
+    else failWithError "Separate random calls returned the same value"
+
+    Pass Unit
+
+export def testRandom _: Result Unit Error =
+    def checkLength length =
+        require Pass text = unsafe_randomHexString length
+
+        require True = (strlen text == length && matches `^[0-9a-f]*$` text)
+        else failWithError "Incorrect random hex length or encoding"
+
+        Pass Unit
+
+    require Pass _ =
+        map checkLength (0, 1, 8, 9, Nil)
+        | findFail
+
+    require True = forall (\length isFail (unsafe_randomHexString length)) (-1, 2 ^ 128, Nil)
+    else failWithError "Invalid random hex length was accepted"
+
+    require Pass _ = checkRandom (\_ unsafe_randomHexString 32) `^[0-9a-f]{32}$`
+
+    require Pass _ =
+        checkRandom
+        unsafe_uuidv4String
+        `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`
+
+    Pass Unit

@@ -32,6 +32,7 @@ share/wake/lib/system/io.wake
 share/wake/lib/system/job.wake
 share/wake/lib/system/path.wake
 share/wake/lib/system/plan.wake
+share/wake/lib/system/random.wake
 share/wake/lib/system/runner.wake
 share/wake/lib/system/remote_cache_api.wake
 share/wake/lib/system/remote_cache_runner.wake

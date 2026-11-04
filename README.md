@@ -57,13 +57,13 @@ or that your colleagues already built, you might appreciate wake.
 
 On Debian/Ubuntu (wheezy or later):
 
-    sudo apt-get install makedev fuse libfuse-dev libsqlite3-dev libgmp-dev libncurses5-dev pkg-config git g++ gcc libre2-dev dash
+    sudo apt-get install makedev fuse libfuse-dev libsqlite3-dev libgmp-dev libncurses5-dev pkg-config git g++ gcc libre2-dev uuid-dev dash
 
 On Redhat (6.6 or later):
 
     sudo yum install epel-release epel-release centos-release-scl
     # On RHEL6: sudo yum install devtoolset-6-gcc devtoolset-6-gcc-c++
-    sudo yum install makedev fuse fuse-devel sqlite-devel gmp-devel ncurses-devel pkgconfig git gcc gcc-c++ re2-devel dash
+    sudo yum install makedev fuse fuse-devel sqlite-devel gmp-devel ncurses-devel pkgconfig git gcc gcc-c++ re2-devel libuuid-devel dash
 
 On FreeBSD (12 or later):
 
@@ -75,10 +75,13 @@ On FreeBSD (12 or later):
 
 On Alpine Linux (3.14.0 or later):
 
-    apk add g++ make pkgconf git gmp-dev re2-dev sqlite-dev fuse-dev ncurses-dev dash
+    apk add g++ make pkgconf git gmp-dev re2-dev sqlite-dev fuse-dev ncurses-dev util-linux-dev dash
 
   Alpine releases as old as 3.11.5 may work depending on the use case, but due
   to a limitation in older musl versions some jobs may be rebuilt unnecessarily.
+
+  Static builds on Alpine releases that package UUID archives separately also
+  require `util-linux-static`; Alpine 3.14 includes `libuuid.a` in `util-linux-dev`.
 
 On Mac OS with Mac Ports installed:
 
@@ -125,6 +128,7 @@ Give FUSE permission to run as stated in the instructions and you should be good
 | [libgmp-dev](https://gmplib.org)                         | >= 4.3  | LGPL v3       |
 | [libfuse-dev](https://github.com/libfuse/libfuse)        | >= 2.8  | LGPL v2.1     |
 | [libre2-dev](https://github.com/google/re2)              | >= 2013 | BSD 3-clause  |
+| [libuuid (Linux only)](https://github.com/util-linux/util-linux) | system | BSD 3-clause |
 | [libncurses5-dev](https://www.gnu.org/software/ncurses/) | >= 5.7  | MIT           |
 | [m4](https://www.gnu.org/software/m4/)                   | >= 1.4  | GPLv3         |
 | **Optional dependencies**                                |         |               |
