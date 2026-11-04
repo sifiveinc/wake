@@ -29,6 +29,7 @@
 std::shared_ptr<Sum> Boolean;
 std::shared_ptr<Sum> Order;
 std::shared_ptr<Sum> List;
+std::shared_ptr<Sum> Option;
 std::shared_ptr<Sum> Unit;
 std::shared_ptr<Sum> Pair;
 std::shared_ptr<Sum> Result;
@@ -38,6 +39,7 @@ void check_special(const std::shared_ptr<Sum> &sump) {
   if (sump->name == "Boolean") Boolean = sump;
   if (sump->name == "Order") Order = sump;
   if (sump->name == "List") List = sump;
+  if (sump->name == "Option") Option = sump;
   if (sump->name == "Unit") Unit = sump;
   if (sump->name == "Pair") Pair = sump;
   if (sump->name == "Result") Result = sump;
@@ -71,6 +73,15 @@ void sums_ok() {
     }
   } else {
     ERROR(LOCATION, "required data type List@wake not defined");
+  }
+
+  if (Option) {
+    if (Option->members.size() != 2 || Option->members[0].ast.args.size() != 1 ||
+        Option->members[1].ast.args.size() != 0) {
+      ERROR(Option->region.location(), "special constructor Option not defined correctly");
+    }
+  } else {
+    ERROR(LOCATION, "required data type Option@wake not defined");
   }
 
   if (Unit) {

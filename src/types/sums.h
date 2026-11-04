@@ -29,6 +29,7 @@ struct Sum;
 extern std::shared_ptr<Sum> Boolean;  // True | False
 extern std::shared_ptr<Sum> Order;    // LT | EQ | GT
 extern std::shared_ptr<Sum> List;     // Nil | a, b
+extern std::shared_ptr<Sum> Option;   // Some a | None
 extern std::shared_ptr<Sum> Pair;     // Pair a b
 extern std::shared_ptr<Sum> Unit;     // Unit
 extern std::shared_ptr<Sum>

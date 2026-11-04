@@ -36,5 +36,6 @@ TypeVar Data::typeJValue("JValue@wake", 0);
 TypeVar Data::typeError("Error@wake", 0);
 
 const TypeVar Data::typeList("List@wake", 1);
+const TypeVar Data::typeOption("Option@wake", 1);
 const TypeVar Data::typePair("Pair@wake", 2);
 const TypeVar Data::typeResult("Result@wake", 2);

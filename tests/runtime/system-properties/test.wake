@@ -1,0 +1,5 @@
+
+export def systemProperty (args: List String): Option String =
+    require Some key = head args
+
+    getSystemProperty key

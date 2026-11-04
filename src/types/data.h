@@ -37,6 +37,7 @@ struct Data {
   static TypeVar typeError;
   // these are const to prevent unify() on them; use clone
   static const TypeVar typeList;
+  static const TypeVar typeOption;
   static const TypeVar typePair;
   static const TypeVar typeResult;
 };

@@ -30,12 +30,15 @@
 #include <sstream>
 
 #include "blake3/blake3.h"
+#include "config.h"
 #include "gc.h"
 #include "json/utf8.h"
 #include "prim.h"
 #include "status.h"
 #include "types/data.h"
+#include "types/datatype.h"
 #include "types/internal.h"
+#include "types/sums.h"
 #include "types/type.h"
 #include "utf8proc/utf8proc.h"
 #include "util/shell.h"
@@ -444,6 +447,27 @@ static PRIMFN(prim_getenv) {
   } else {
     RETURN(alloc_nil(runtime.heap));
   }
+}
+
+static PRIMTYPE(type_get_system_property) {
+  TypeVar option;
+  Data::typeOption.clone(option);
+  option[0].unify(Data::typeString);
+  return args.size() == 1 && args[0]->unify(Data::typeString) && out->unify(option);
+}
+
+static PRIMFN(prim_get_system_property) {
+  EXPECT(1);
+  STRING(arg0, 0);
+  auto property = WakeConfig::get()->properties.find(arg0->c_str());
+  if (property == WakeConfig::get()->properties.end())
+    RETURN(Record::alloc(runtime.heap, &Option->members[1], 0));
+  size_t need = Record::reserve(1) + String::reserve(property->second.size());
+  runtime.heap.reserve(need);
+  Value *out = String::claim(runtime.heap, property->second.data(), property->second.size());
+  Record *some = Record::claim(runtime.heap, &Option->members[0], 1);
+  some->at(0)->instant_fulfill(out);
+  RETURN(some);
 }
 
 static PRIMTYPE(type_mkdir) {
@@ -868,6 +892,8 @@ void prim_register_string(PrimMap &pmap, StringInfo *info) {
   prim_register(pmap, "lcat", prim_lcat, type_lcat, PRIM_PURE);
   prim_register(pmap, "explode", prim_explode, type_explode, PRIM_PURE);
   prim_register(pmap, "getenv", prim_getenv, type_getenv, PRIM_PURE);
+  prim_register(pmap, "get_system_property", prim_get_system_property, type_get_system_property,
+                PRIM_PURE);
   prim_register(pmap, "format", prim_format, type_format, PRIM_PURE);
   prim_register(pmap, "version", prim_version, type_version, PRIM_PURE, (void *)info);
   prim_register(pmap, "level", prim_level, type_level, PRIM_PURE, (void *)info);
