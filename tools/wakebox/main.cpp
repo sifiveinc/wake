@@ -121,8 +121,8 @@ bool resolve_workspace(std::string *workspace, std::string *error) {
 bool discover_completed_manifests(const std::string &workspace,
                                   std::vector<wakefs::CompletedStagingManifest> *manifests,
                                   std::string *error) {
-  const fs::path recovery = fs::path(workspace) / ".build" / "cas" / "staging" / "recovery";
-  return wakefs::discover_completed_staging_manifests(recovery.string(), manifests, error);
+  const fs::path staging = fs::path(workspace) / ".build" / "cas" / "staging";
+  return wakefs::discover_staging_manifests(staging.string(), manifests, error);
 }
 
 void print_materialization_summary(const std::string &manifest_path,
@@ -240,14 +240,26 @@ StagingManifestResult materialize_returned_manifest(const std::string &result_js
   std::string workspace_text;
   if (!resolve_workspace(&workspace_text, &result.error)) return result;
   const fs::path workspace = workspace_text;
-  const fs::path recovery_dir = workspace / ".build" / "cas" / "staging" / "recovery";
+  const fs::path staging_dir = workspace / ".build" / "cas" / "staging";
   const fs::path manifest_relative = result.manifest_path;
-  const fs::path recovery_relative = ".build/cas/staging/recovery";
-  if (manifest_relative.is_absolute() || manifest_relative.parent_path() != recovery_relative ||
-      manifest_relative.filename().empty()) {
-    result.error = "recovery manifest must be a direct workspace-relative recovery child";
+  const fs::path staging_relative = ".build/cas/staging";
+  // A returned manifest is either <staging>/<job directory>/recovery.json (current layout) or a
+  // direct child of <staging>/recovery/ (legacy layout).
+  const fs::path manifest_parent_relative = manifest_relative.parent_path();
+  const bool job_local = manifest_parent_relative.parent_path() == staging_relative &&
+                         manifest_relative.filename() == wakefs::kRecoveryManifestName &&
+                         !manifest_parent_relative.filename().empty() &&
+                         manifest_parent_relative.filename() != wakefs::kLegacyRecoveryDirName;
+  const bool legacy =
+      manifest_parent_relative == staging_relative / wakefs::kLegacyRecoveryDirName &&
+      !manifest_relative.filename().empty();
+  if (manifest_relative.is_absolute() || (!job_local && !legacy)) {
+    result.error =
+        "recovery manifest must be a workspace-relative job staging directory's recovery.json";
     return result;
   }
+  const fs::path expected_parent = job_local ? staging_dir / manifest_parent_relative.filename()
+                                             : staging_dir / wakefs::kLegacyRecoveryDirName;
   const fs::path manifest = workspace / manifest_relative;
   std::error_code ec;
   const fs::file_status status = fs::symlink_status(manifest, ec);
@@ -257,10 +269,10 @@ StagingManifestResult materialize_returned_manifest(const std::string &result_js
     return result;
   }
   const fs::path manifest_parent = fs::canonical(manifest.parent_path(), ec);
-  const fs::path canonical_recovery_dir = fs::canonical(recovery_dir, ec);
-  if (ec || manifest_parent != canonical_recovery_dir) {
+  const fs::path canonical_parent = fs::canonical(expected_parent, ec);
+  if (ec || manifest_parent != canonical_parent) {
     result.error = ec ? "canonicalize recovery manifest directory: " + ec.message()
-                      : "recovery manifest is outside the recovery directory";
+                      : "recovery manifest is outside the CAS staging directory";
     return result;
   }
 

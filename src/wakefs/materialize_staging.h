@@ -126,6 +126,15 @@ bool discover_completed_staging_manifests(const std::string& recovery_dir,
                                           std::vector<CompletedStagingManifest>* manifests,
                                           std::string* error);
 
+// Scan the CAS staging root for retained final manifests: each execution-named direct child
+// directory's recovery.json, plus the legacy records directly under <staging_root>/recovery/.
+// Private execution trees (such as job-N-execution-U/workspace/) are never scanned, and directories
+// without a manifest and atomic-write temporaries are ignored. Results are ordered like
+// discover_completed_staging_manifests.
+bool discover_staging_manifests(const std::string& staging_root,
+                                std::vector<CompletedStagingManifest>* manifests,
+                                std::string* error);
+
 // For version 2 manifests, check that manifest_path is
 // <staging root>/<job_staging_dir>/recovery.json. Version 1 manifests carry no location
 // constraint.

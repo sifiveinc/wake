@@ -39,12 +39,12 @@
 #include <cctype>
 #include <chrono>
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <random>
 #include <set>
 #include <sstream>
+#include <unordered_set>
 
 #include "attach.h"
 #include "clean.h"
@@ -53,7 +53,6 @@
 #include "dst/bind.h"
 #include "dst/expr.h"
 #include "dst/todst.h"
-#include "json/json5.h"
 #include "markup.h"
 #include "optimizer/ssa.h"
 #include "parser/cst.h"
@@ -79,6 +78,7 @@
 #include "util/file.h"
 #include "util/shell.h"
 #include "util/term.h"
+#include "wakefs/materialize_staging.h"
 
 #ifndef VERSION
 #include "version.h"
@@ -92,11 +92,33 @@ static CPPFile cppFile(__FILE__);
 namespace {
 
 bool has_recovery_manifest_for_run(long run_id, const std::vector<long> &job_ids) {
+  const std::filesystem::path staging = ".build/cas/staging";
+  std::unordered_set<std::string> jobs;
+  // Legacy records are named for their run and job.
   for (long job_id : job_ids) {
-    const std::string path = ".build/cas/staging/recovery/run-" + std::to_string(run_id) + "-job-" +
-                             std::to_string(job_id) + ".json";
+    const std::string path = (staging / "recovery" /
+                              ("run-" + std::to_string(run_id) + "-job-" + std::to_string(job_id) +
+                               ".json"))
+                                 .string();
     std::error_code error_code;
     if (std::filesystem::exists(path, error_code) && !error_code) return true;
+    jobs.insert("job-" + std::to_string(job_id));
+  }
+  if (jobs.empty()) return false;
+  // New job IDs are unique within an intact Wake database, so no manifest read is needed here.
+  std::error_code error_code;
+  for (std::filesystem::directory_iterator it(staging, error_code), end;
+       !error_code && it != end; it.increment(error_code)) {
+    const std::string name = it->path().filename().string();
+    const size_t execution = name.rfind("-execution-");
+    if (execution == std::string::npos || !jobs.count(name.substr(0, execution)) ||
+        !wakefs::is_staging_execution_directory(name))
+      continue;
+    std::error_code status_error;
+    if (!std::filesystem::is_directory(it->symlink_status(status_error))) continue;
+    if (std::filesystem::is_regular_file(std::filesystem::symlink_status(
+            it->path() / wakefs::kRecoveryManifestName, status_error)))
+      return true;
   }
   return false;
 }
