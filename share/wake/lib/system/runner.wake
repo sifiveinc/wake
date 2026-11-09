@@ -435,6 +435,7 @@ export def stagingDirRunner: Runner =
 
         def plan =
             makeJSONRunnerPlan wakebox
+            | setJSONRunnerPlanExtraArgs ("--no-fuse-daemon", Nil)
             | setJSONRunnerPlanMkMountOps (stagingMountOps stagingDir)
 
         def (Runner _ innerRun) = makeJSONRunner plan

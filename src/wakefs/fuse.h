@@ -90,6 +90,7 @@ struct fuse_args : public json_args {
   const std::string working_dir;    // the original directory that this process was invoked from
   std::string command_running_dir;  // current working dir of the command when it executes
   bool use_stdin_file;
+  bool no_fuse_daemon = false;
   daemon_client daemon;
 
   fuse_args(const std::string &cwd, bool use_stdin_file)
