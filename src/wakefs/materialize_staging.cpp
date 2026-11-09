@@ -555,6 +555,9 @@ bool discover_completed_staging_manifests(const std::string& recovery_dir,
     std::error_code status_error;
     const fs::file_status status = it->symlink_status(status_error);
     if (status_error || !fs::is_regular_file(status)) continue;
+    // Atomic-write temporaries are named ".<manifest>.tmp.<pid>.<n>"; they are not records.
+    const std::string leaf = it->path().filename().string();
+    if (!leaf.empty() && leaf[0] == '.') continue;
     StagingManifest manifest;
     std::string manifest_error;
     if (!read_staging_manifest(it->path().string(), &manifest, &manifest_error))
@@ -573,6 +576,15 @@ bool discover_completed_staging_manifests(const std::string& recovery_dir,
 
 namespace {
 
+void sort_manifests(std::vector<CompletedStagingManifest>* manifests) {
+  std::sort(manifests->begin(), manifests->end(),
+            [](const CompletedStagingManifest& left, const CompletedStagingManifest& right) {
+              if (left.manifest.created_at_ns != right.manifest.created_at_ns)
+                return left.manifest.created_at_ns < right.manifest.created_at_ns;
+              return left.path < right.path;
+            });
+}
+
 // A version 2 manifest must be the recovery.json of the directory it declares.
 bool manifest_names_its_directory(const std::string& manifest_path, const StagingManifest& manifest,
                                   std::string* error) {
@@ -586,6 +598,56 @@ bool manifest_names_its_directory(const std::string& manifest_path, const Stagin
 }
 
 }  // namespace
+
+bool discover_staging_manifests(const std::string& staging_root,
+                                std::vector<CompletedStagingManifest>* manifests,
+                                std::string* error) {
+  if (!manifests) return fail(error, "manifest list is required");
+  manifests->clear();
+  std::error_code ec;
+  if (!fs::exists(staging_root, ec)) {
+    if (ec) return fail(error, "inspect staging directory: " + ec.message());
+    return true;
+  }
+  if (!fs::is_directory(staging_root, ec)) {
+    if (ec) return fail(error, "inspect staging directory: " + ec.message());
+    return fail(error, "staging path is not a directory: " + staging_root);
+  }
+
+  std::vector<fs::path> job_directories;
+  for (fs::directory_iterator it(staging_root, fs::directory_options::skip_permission_denied, ec),
+       end;
+       it != end; it.increment(ec)) {
+    if (ec) return fail(error, "scan staging directory: " + ec.message());
+    std::error_code status_error;
+    const fs::file_status status = it->symlink_status(status_error);
+    // Root-level regular files are CAS insertion scratch; symlinks are never followed.
+    if (status_error || !fs::is_directory(status)) continue;
+    if (!is_staging_execution_directory(it->path().filename().string())) continue;
+    job_directories.push_back(it->path());
+  }
+  for (const fs::path& directory : job_directories) {
+    const fs::path manifest_path = directory / kRecoveryManifestName;
+    std::error_code status_error;
+    const fs::file_status status = fs::symlink_status(manifest_path, status_error);
+    if (status_error || !fs::is_regular_file(status)) continue;
+    StagingManifest manifest;
+    std::string manifest_error;
+    if (!read_staging_manifest(manifest_path.string(), &manifest, &manifest_error) ||
+        !manifest_names_its_directory(manifest_path.string(), manifest, &manifest_error))
+      return fail(error,
+                  "invalid recovery manifest " + manifest_path.string() + ": " + manifest_error);
+    manifests->push_back({manifest_path.string(), std::move(manifest)});
+  }
+
+  std::vector<CompletedStagingManifest> legacy;
+  const fs::path legacy_directory = fs::path(staging_root) / kLegacyRecoveryDirName;
+  if (!discover_completed_staging_manifests(legacy_directory.string(), &legacy, error))
+    return false;
+  for (CompletedStagingManifest& manifest : legacy) manifests->push_back(std::move(manifest));
+  sort_manifests(manifests);
+  return true;
+}
 
 bool validate_manifest_location(const std::string& manifest_path, const StagingManifest& manifest,
                                 std::string* error) {
