@@ -38,6 +38,10 @@ std::string cas_error_to_string(CASError error);
 //     blobs/
 //       {prefix}/
 //         {suffix}          # Blob content
+//     staging/
+//       {scratch}           # Short-lived CAS insertion temporaries
+//       {prefix}-execution-{UUID}/workspace/   # Private trees from alloc_staging_dir
+//       job-{id}-execution-{UUID}/             # FUSE job output directories (see fuse-waked)
 class Cas {
  public:
   Cas() = delete;
@@ -88,7 +92,11 @@ class Cas {
   // Remove blob from CAS.  Be careful.
   std::optional<CASError> remove_blob(const ContentHash& hash);
 
+  // Allocate a private hierarchical tree at <staging>/<prefix>-execution-<UUID>/workspace and
+  // return the path of the `workspace` directory.
   wcl::result<std::string, CASError> alloc_staging_dir(const std::string& prefix) const;
+  // Remove a tree returned by alloc_staging_dir, then its (empty) outer execution directory.
+  // The outer directory is removed with rmdir, never recursively.
   wcl::result<bool, CASError> remove_staging_dir(const std::string& path) const;
 
  private:
