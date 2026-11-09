@@ -42,6 +42,37 @@ namespace fs = std::filesystem;
 bool write_staging_manifest_atomic(const std::string& path, const StagingManifest& manifest,
                                    std::string* error);
 
+std::string staging_job_dir_name(std::optional<int64_t> wake_job_id,
+                                 const std::string& execution_uuid) {
+  if (wake_job_id)
+    return "job-" + std::to_string(*wake_job_id) + "-execution-" + execution_uuid;
+  return "wakebox-execution-" + execution_uuid;
+}
+
+bool is_execution_uuid(const std::string& value) {
+  if (value.size() != 32) return false;
+  for (char c : value) {
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+  }
+  return true;
+}
+
+std::string staging_payload_name(uint64_t number, const std::string& basename) {
+  // Leave room for the .<PID>.<counter> suffix added by CAS ingestion.
+  constexpr size_t kMaxNameLength = 100;
+  const std::string prefix = std::to_string(number) + "-";
+  const size_t room = kMaxNameLength - prefix.size();
+  std::string readable = basename.empty() ? "file" : basename;
+
+  std::replace_if(readable.begin(), readable.end(), [](unsigned char c) {
+    return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+             (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-');
+  }, '_');
+
+  return prefix + readable.substr(0, room);
+}
+
+
 namespace {
 
 std::atomic<uint64_t> manifest_counter{0};
@@ -93,8 +124,7 @@ bool required_boolean(const JAST& object, const char* key, bool* value, std::str
   return true;
 }
 
-// Validate the serialized manifest contract before trusting any paths or metadata.
-bool validate_metadata(const StagingManifest& manifest, std::string* error) {
+bool validate_common_metadata(const StagingManifest& manifest, std::string* error) {
   if (manifest.job_key.empty() || manifest.job_key.find('/') != std::string::npos ||
       manifest.job_key.find('\0') != std::string::npos)
     return fail(error, "job_key must be a nonempty path component");
@@ -119,6 +149,39 @@ bool validate_metadata(const StagingManifest& manifest, std::string* error) {
       return fail(error, "entry mode has unsupported bits");
   }
   return true;
+}
+
+bool validate_v2_metadata(const StagingManifest& manifest, std::string* error) {
+  if (!is_execution_uuid(manifest.execution_uuid))
+    return fail(error, "execution_uuid must be 32 lowercase hexadecimal digits");
+  if (manifest.job_staging_dir !=
+      staging_job_dir_name(manifest.wake_job_id, manifest.execution_uuid))
+    return fail(error, "job_staging_dir does not match the execution identity");
+
+  const std::string directory_prefix = manifest.job_staging_dir + "/";
+  for (const StagingEntry& entry : manifest.entries) {
+    if (entry.type != StagingEntryType::File) continue;
+    if (entry.staging_path.compare(0, directory_prefix.size(), directory_prefix) != 0)
+      return fail(error, "entry staging_path is outside the job staging directory");
+    const std::string leaf = entry.staging_path.substr(directory_prefix.size());
+    if (leaf.empty() || leaf.find('/') != std::string::npos || leaf[0] == '.' ||
+        leaf == kRecoveryManifestName)
+      return fail(error, "entry staging_path must be a direct payload child of its job directory");
+  }
+  return true;
+}
+
+// Validate the serialized manifest contract before trusting any paths or metadata.
+bool validate_metadata(const StagingManifest& manifest, std::string* error) {
+  if (!validate_common_metadata(manifest, error)) return false;
+  switch (manifest.version) {
+    case 1:
+      return true;
+    case 2:
+      return validate_v2_metadata(manifest, error);
+    default:
+      return fail(error, "unsupported staging manifest version");
+  }
 }
 
 bool canonical_existing_directory(const std::string& path, std::string* canonical,
@@ -360,19 +423,7 @@ StagingEntrySummary* find_summary(StagingMaterializationSummary* summary,
   return nullptr;
 }
 
-}  // namespace
-
-// Parse a versioned manifest and reject schema or lexical-safety violations.
-bool parse_staging_manifest(const std::string& text, StagingManifest* manifest,
-                            std::string* error) {
-  std::stringstream parse_errors;
-  JAST root;
-  if (!JAST::parse(text, parse_errors, root) || root.kind != JSON_OBJECT)
-    return fail(error, "invalid staging manifest: " + parse_errors.str());
-  int64_t version;
-  if (!required_integer(root, "version", &version, error)) return false;
-  if (version != 1) return fail(error, "unsupported staging manifest version");
-  StagingManifest parsed;
+bool parse_shared_fields(const JAST& root, StagingManifest& parsed, std::string* error) {
   if (!required_string(root, "job_key", &parsed.job_key, error) ||
       !required_integer(root, "created_at_ns", &parsed.created_at_ns, error) ||
       !required_boolean(root, "materialization_complete", &parsed.materialization_complete, error))
@@ -431,6 +482,44 @@ bool parse_staging_manifest(const std::string& text, StagingManifest* manifest,
     }
     parsed.entries.emplace_back(std::move(entry));
   }
+  return true;
+}
+
+bool parse_v1_manifest(const JAST& root, StagingManifest& parsed, std::string* error) {
+  return parse_shared_fields(root, parsed, error);
+}
+
+bool parse_v2_manifest(const JAST& root, StagingManifest& parsed, std::string* error) {
+  return parse_shared_fields(root, parsed, error) &&
+         required_string(root, "job_staging_dir", &parsed.job_staging_dir, error) &&
+         required_string(root, "execution_uuid", &parsed.execution_uuid, error);
+}
+
+}  // namespace
+
+// Parse a versioned manifest and reject schema or lexical-safety violations.
+bool parse_staging_manifest(const std::string& text, StagingManifest* manifest,
+                            std::string* error) {
+  std::stringstream parse_errors;
+  JAST root;
+  if (!JAST::parse(text, parse_errors, root) || root.kind != JSON_OBJECT)
+    return fail(error, "invalid staging manifest: " + parse_errors.str());
+  int64_t version;
+  if (!required_integer(root, "version", &version, error)) return false;
+
+  StagingManifest parsed;
+  switch (version) {
+    case 1:
+      parsed.version = 1;
+      if (!parse_v1_manifest(root, parsed, error)) return false;
+      break;
+    case 2:
+      parsed.version = 2;
+      if (!parse_v2_manifest(root, parsed, error)) return false;
+      break;
+    default:
+      return fail(error, "unsupported staging manifest version");
+  }
   if (!validate_metadata(parsed, error)) return false;
   *manifest = std::move(parsed);
   return true;
@@ -482,13 +571,55 @@ bool discover_completed_staging_manifests(const std::string& recovery_dir,
   return true;
 }
 
+namespace {
+
+// A version 2 manifest must be the recovery.json of the directory it declares.
+bool manifest_names_its_directory(const std::string& manifest_path, const StagingManifest& manifest,
+                                  std::string* error) {
+  if (manifest.version != 2) return true;
+  const fs::path path(manifest_path);
+  if (path.filename() != kRecoveryManifestName ||
+      path.parent_path().filename().string() != manifest.job_staging_dir)
+    return fail(error, "manifest is not " + manifest.job_staging_dir + "/" +
+                           kRecoveryManifestName + ": " + manifest_path);
+  return true;
+}
+
+}  // namespace
+
+bool validate_manifest_location(const std::string& manifest_path, const StagingManifest& manifest,
+                                std::string* error) {
+  if (manifest.version != 2) return true;
+  if (!manifest_names_its_directory(manifest_path, manifest, error)) return false;
+  std::error_code ec;
+  const fs::path absolute = fs::absolute(manifest_path, ec);
+  if (ec) return fail(error, "resolve manifest path: " + ec.message());
+  const fs::path directory = absolute.parent_path();
+  // The job directory itself must be a real directory, not a symlink out of the staging root.
+  const fs::file_status directory_status = fs::symlink_status(directory, ec);
+  if (ec || !fs::is_directory(directory_status))
+    return fail(error, "job staging directory is not a directory: " + directory.string());
+  const fs::path expected = fs::weakly_canonical(".build/cas/staging", ec);
+  if (ec) return fail(error, "canonicalize staging directory: " + ec.message());
+  const fs::path actual = fs::weakly_canonical(directory.parent_path(), ec);
+  if (ec) return fail(error, "canonicalize job staging parent: " + ec.message());
+  if (expected != actual)
+    return fail(error, "manifest is outside this workspace's CAS staging directory: " +
+                           manifest_path);
+  return true;
+}
+
 // Write a complete temporary manifest, then rename it into place so an interrupted
 // recovery retains a parseable record of either the old or new remaining work.
 bool write_staging_manifest_atomic(const std::string& path, const StagingManifest& manifest,
                                    std::string* error) {
   if (!validate_metadata(manifest, error)) return false;
   JAST root(JSON_OBJECT);
-  root.add("version", 1);
+  root.add("version", manifest.version);
+  if (manifest.version == 2) {
+    root.add("job_staging_dir", manifest.job_staging_dir);
+    root.add("execution_uuid", manifest.execution_uuid);
+  }
   root.add("job_key", manifest.job_key);
   root.add("daemon_pid", static_cast<long long>(manifest.daemon_pid));
   root.add("created_at_ns", static_cast<long long>(manifest.created_at_ns));
@@ -551,6 +682,7 @@ bool materialize_completed_workspace(const std::string& manifest_path,
                                      StagingMaterializationSummary* summary, std::string* error) {
   if (!summary) return fail(error, "materialization summary is required");
   *summary = {};
+  if (!validate_manifest_location(manifest_path, parsed_manifest, error)) return false;
   StagingManifest manifest = parsed_manifest;
   for (const StagingEntry& entry : manifest.entries)
     summary->entries.push_back({entry.destination, false, false, ""});
@@ -645,6 +777,12 @@ bool materialize_completed_workspace(const std::string& manifest_path,
     } else {
       summary->manifest_removed = true;
     }
+  }
+  // A version 2 execution directory is empty once its sources and manifest are consumed. Remove
+  // only that directory, never recursively: anything left in it is not ours to delete.
+  if (summary->manifest_removed && manifest.version == 2) {
+    const std::string directory = fs::path(manifest_path).parent_path().string();
+    if (rmdir(directory.c_str()) == 0) summary->directory_removed = true;
   }
   return summary->success();
 }
