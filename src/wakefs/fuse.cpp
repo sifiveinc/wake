@@ -292,6 +292,10 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
     result_jast.add("staging_files", JSON_OBJECT).children =
         std::move((*staging_files_opt)->children);
   }
+  auto job_staging_root_opt = from_daemon.get_opt("job_staging_root");
+  if (job_staging_root_opt && (*job_staging_root_opt)->kind == JSON_STR) {
+    result_jast.add("job_staging_root", (*job_staging_root_opt)->value);
+  }
   auto recovery_manifest_opt = from_daemon.get_opt("recovery_manifest");
   if (recovery_manifest_opt && (*recovery_manifest_opt)->kind == JSON_STR) {
     result_jast.add("recovery_manifest", (*recovery_manifest_opt)->value);
