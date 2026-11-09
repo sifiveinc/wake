@@ -342,8 +342,15 @@ int run_interactive(const std::string &rootfs, const std::vector<std::string> &t
 }
 
 int run_batch(const char *params_path, bool has_output, bool use_stdin_file, bool use_shell,
-              bool isolate_retcode, bool materialize_staging, const char *result_path,
+              bool isolate_retcode, bool materialize_staging, bool no_fuse_daemon,
+              const char *result_path,
               const std::vector<mount_op> &binds) {
+#ifndef __linux__
+  if (no_fuse_daemon) {
+    std::cerr << "--no-fuse-daemon requires Linux namespace and mount support." << std::endl;
+    return 1;
+  }
+#endif
   // Read the params file
   std::ifstream ifs(params_path);
   const std::string json((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
@@ -354,13 +361,14 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
   ifs.close();
 
   fuse_args args(get_cwd(), use_stdin_file);
+  args.no_fuse_daemon = no_fuse_daemon;
   if (!json_as_struct(json, args)) {
     std::cerr << "Failed to process spec '" << params_path << "'. Verify valid json and schema."
               << std::endl;
     return 1;
   }
 
-  args.command_running_dir = pick_running_dir(args);
+  if (!no_fuse_daemon) args.command_running_dir = pick_running_dir(args);
 
   if (args.command.empty() || args.command[0].empty()) {
     std::cerr << "No command was provided." << std::endl;
@@ -369,6 +377,15 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
 
   // Append CLI-specified binds after params file binds.
   args.mount_ops.insert(args.mount_ops.end(), binds.begin(), binds.end());
+  if (no_fuse_daemon) {
+    for (const auto &mount : args.mount_ops) {
+      if (mount.type == "workspace") {
+        std::cerr << "--no-fuse-daemon cannot use a workspace FUSE mount." << std::endl;
+        return 1;
+      }
+    }
+    args.command_running_dir = pick_running_dir(args);
+  }
 
   if (use_shell) {
     std::stringstream ss;
@@ -389,7 +406,7 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
     if (!run_in_fuse(args, retcode, result, outcome)) return 1;
     const bool canceled = outcome == FuseRunOutcome::Canceled;
     StagingManifestResult materialization;
-    if (materialize_staging || canceled) {
+    if (materialize_staging || (canceled && !no_fuse_daemon)) {
       materialization = materialize_returned_manifest(result);
       if (!materialization.success) {
         std::cerr << "materialize staging: " << materialization.error << std::endl;
@@ -420,7 +437,7 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
 
   StagingManifestResult materialization;
   const bool canceled = outcome == FuseRunOutcome::Canceled;
-  if (materialize_staging || canceled) {
+  if (materialize_staging || (canceled && !no_fuse_daemon)) {
     materialization = materialize_returned_manifest(result);
     if (!materialization.success) {
       std::cerr << "materialize staging: " << materialization.error << std::endl;
@@ -439,7 +456,7 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
   if (wrote == -1) return errno;
   if (0 != close(out_fd)) return errno;
 
-  if ((materialize_staging || canceled) && !materialization.success)
+  if ((materialize_staging || (canceled && !no_fuse_daemon)) && !materialization.success)
     return 1;
   else if (isolate_retcode && !canceled)
     return 0;
@@ -465,6 +482,7 @@ int main(int argc, char *argv[]) {
         {'m', "materialize-staging", GOPT_ARGUMENT_FORBIDDEN},
         {'P', "materialize-previous", GOPT_ARGUMENT_REQUIRED},
         {'M', "materialize-manifest", GOPT_ARGUMENT_REQUIRED},
+        {0, "no-fuse-daemon", GOPT_ARGUMENT_FORBIDDEN},
 
         {'h', "help", GOPT_ARGUMENT_FORBIDDEN}, {
       0, 0, GOPT_LAST
@@ -481,9 +499,21 @@ int main(int argc, char *argv[]) {
   bool materialize_staging = arg(options, "materialize-staging")->count > 0;
   bool materialize_previous = arg(options, "materialize-previous")->count > 0;
   bool materialize_manifest_path = arg(options, "materialize-manifest")->count > 0;
+  bool no_fuse_daemon = arg(options, "no-fuse-daemon")->count > 0;
 
   if (has_help) {
     print_help();
+    return 1;
+  }
+
+  if (no_fuse_daemon && (materialize_staging || materialize_previous || materialize_manifest_path)) {
+    std::cerr << "--no-fuse-daemon cannot be combined with --materialize-staging, "
+                 "--materialize-previous, or --materialize-manifest."
+              << std::endl;
+    return 1;
+  }
+  if (no_fuse_daemon && !has_params_file) {
+    std::cerr << "--no-fuse-daemon requires batch mode (--params)." << std::endl;
     return 1;
   }
 
@@ -565,7 +595,7 @@ int main(int argc, char *argv[]) {
     bool use_shell = arg(options, "force-shell")->count > 0;
     const char *result_path = arg(options, "output-stats")->argument;
     return run_batch(params, has_output, use_stdin_file, use_shell, isolate_retcode,
-                     materialize_staging, result_path, bind_ops);
+                     materialize_staging, no_fuse_daemon, result_path, bind_ops);
   }
   print_help();
   return 1;
