@@ -27,6 +27,11 @@ CORE_LDFLAGS :=	$(shell pkg-config --silence-errors --libs sqlite3 || echo -lsql
 		$(shell pkg-config --silence-errors --libs ncurses tinfo || pkg-config --silence-errors --libs ncurses || echo -lncurses)	\
 		$(FILESYSTEM_LIB)
 
+ifeq ($(shell uname -s),Linux)
+CORE_CFLAGS += $(shell pkg-config --silence-errors --cflags uuid)
+CORE_LDFLAGS += $(shell pkg-config --silence-errors --libs uuid || echo -luuid)
+endif
+
 COMMON_DIRS := src/compat src/util src/json src/wcl
 COMMON_C    := $(foreach dir,$(COMMON_DIRS),$(wildcard $(dir)/*.c)) \
                vendor/whereami/whereami.c
