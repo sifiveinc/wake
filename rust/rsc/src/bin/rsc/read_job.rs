@@ -31,11 +31,17 @@ use crate::metrics::{
     CACHE_IO_WRITE_SAVINGS_BYTES,
     CACHE_HIT_RUNTIME_HISTOGRAM,
     CACHE_HIT_CPUTIME_HISTOGRAM,
+    CACHE_PULLS_TOTAL,
 };
 
 #[tracing::instrument(skip_all)]
 fn update_hit_counters(start_time: Instant, job: &job::Model) {
     CACHE_HITS.inc();
+    tracing::info!(
+        event = %"wake_rsc_cache_lookup",
+        cache_result = %"hit",
+        "Wake RSC cache lookup"
+    );
     let elapsed_ms = start_time.elapsed().as_millis() as f64;
     HIT_LATENCY_MS.observe(elapsed_ms);
 
@@ -54,6 +60,11 @@ fn update_hit_counters(start_time: Instant, job: &job::Model) {
 #[tracing::instrument(skip_all)]
 fn update_miss_counters(start_time: Instant) {
     CACHE_MISSES.inc();
+    tracing::info!(
+        event = %"wake_rsc_cache_lookup",
+        cache_result = %"miss",
+        "Wake RSC cache lookup"
+    );
     let elapsed_ms = start_time.elapsed().as_millis() as f64;
     MISS_LATENCY_MS.observe(elapsed_ms);
 }
@@ -136,6 +147,7 @@ pub async fn read_job(
     blob_stores: HashMap<Uuid, Arc<dyn blob::DebugBlobStore + Sync + Send>>,
 ) -> (StatusCode, Json<ReadJobResponse>) {
     let start = Instant::now();
+    CACHE_PULLS_TOTAL.with_label_values(&["/job/matching"]).inc();
 
     let hash = payload.hash();
     let hash_for_spawns = hash.clone();

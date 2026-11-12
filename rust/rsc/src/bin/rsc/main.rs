@@ -1,8 +1,12 @@
+use crate::metrics::{HTTP_REQUESTS_TOTAL, HTTP_REQUEST_DURATION_SECONDS};
 use axum::{
+    body::Body,
     extract::{DefaultBodyLimit, Multipart},
+    http::Request,
+    middleware::Next,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Router,
-    response::IntoResponse,
 };
 use chrono::Utc;
 use clap::Parser;
@@ -15,7 +19,7 @@ use sea_orm::{prelude::Uuid, ConnectOptions, Database, DatabaseConnection};
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing;
 
 mod add_job;
@@ -119,8 +123,43 @@ async fn metrics_handler() -> impl IntoResponse {
 
     (
         axum::http::StatusCode::OK,
-        String::from_utf8(buffer).unwrap_or_default()
+        String::from_utf8(buffer).unwrap_or_default(),
     )
+}
+
+async fn record_http_metrics(request: Request<Body>, next: Next<Body>) -> Response {
+    let method = request.method().as_str().to_owned();
+    let route = match request.uri().path() {
+        "/job" => "/job",
+        "/job/matching" => "/job/matching",
+        "/job/allowed" => "/job/allowed",
+        "/blob" => "/blob",
+        "/auth/check" => "/auth/check",
+        "/version/check" => "/version/check",
+        "/dashboard" => "/dashboard",
+        "/metrics" => "/metrics",
+        _ => "unmatched",
+    };
+    let started = Instant::now();
+    let response = next.run(request).await;
+    let status = response.status().as_u16().to_string();
+    let duration_seconds = started.elapsed().as_secs_f64();
+
+    HTTP_REQUESTS_TOTAL
+        .with_label_values(&[method.as_str(), route, status.as_str()])
+        .inc();
+    HTTP_REQUEST_DURATION_SECONDS
+        .with_label_values(&[method.as_str(), route])
+        .observe(duration_seconds);
+    tracing::info!(
+        event = %"rsc_http_request",
+        method = %method,
+        route,
+        status = %status,
+        duration_seconds,
+        "RSC HTTP request"
+    );
+    response
 }
 
 fn create_router(
@@ -214,6 +253,7 @@ fn create_router(
             }),
         )
         .route("/version/check", get(check_version))
+        .layer(axum::middleware::from_fn(record_http_metrics))
 }
 
 async fn connect_to_database(

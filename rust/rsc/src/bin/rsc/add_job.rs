@@ -7,6 +7,7 @@ use sea_orm::{ActiveModelTrait, ActiveValue::*, DatabaseConnection, DbErr, Trans
 use std::sync::Arc;
 use tracing;
 
+use crate::metrics::CACHE_PUSHES_TOTAL;
 use rsc::database;
 
 #[tracing::instrument(skip_all)]
@@ -104,7 +105,15 @@ pub async fn add_job(
         })
         .await;
     match insert_result {
-        Ok(_) => StatusCode::OK,
+        Ok(_) => {
+            CACHE_PUSHES_TOTAL.with_label_values(&["/job"]).inc();
+            tracing::info!(
+                event = %"wake_rsc_cache_push",
+                route = %"/job",
+                "Wake RSC cache push"
+            );
+            StatusCode::OK
+        }
         // TODO: We should returnn 500 on some errors
         //       but 4** when the user trys to add an invalid job
         Err(cause) => {

@@ -1,5 +1,8 @@
 use lazy_static::lazy_static;
-use prometheus::{register_counter, register_histogram, Counter, Histogram};
+use prometheus::{
+    register_counter, register_histogram, register_histogram_vec, register_int_counter_vec,
+    Counter, Histogram, HistogramVec, IntCounterVec,
+};
 
 lazy_static! {
     /// Counts how many cache hits we've had.
@@ -12,6 +15,34 @@ lazy_static! {
     pub static ref CACHE_MISSES: Counter = register_counter!(
         "cache_misses",
         "Number of cache misses"
+    ).unwrap();
+
+    /// Counts completed jobs pushed into the remote cache.
+    pub static ref CACHE_PUSHES_TOTAL: IntCounterVec = register_int_counter_vec!(
+        "cache_pushes_total",
+        "Number of jobs successfully pushed into the remote cache",
+        &["route"]
+    ).unwrap();
+
+    /// Counts cache lookup requests, including both hits and misses.
+    pub static ref CACHE_PULLS_TOTAL: IntCounterVec = register_int_counter_vec!(
+        "cache_pulls_total",
+        "Number of remote cache lookup requests",
+        &["route"]
+    ).unwrap();
+
+    /// Counts HTTP calls by method, normalized route, and response status.
+    pub static ref HTTP_REQUESTS_TOTAL: prometheus::IntCounterVec = register_int_counter_vec!(
+        "http_requests_total",
+        "Number of HTTP requests handled by the remote cache",
+        &["method", "route", "status"]
+    ).unwrap();
+
+    /// Tracks HTTP request latency by method and normalized route.
+    pub static ref HTTP_REQUEST_DURATION_SECONDS: HistogramVec = register_histogram_vec!(
+        "http_request_duration_seconds",
+        "HTTP request latency in seconds",
+        &["method", "route"]
     ).unwrap();
 
     /// Tracks latencies (in milliseconds) for read_job requests.
