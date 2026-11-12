@@ -52,8 +52,8 @@ static PRIMFN(prim_random_hex) {
   INTEGER_MPZ(length_mpz, 0);
   auto generated = !mpz_fits_ulong_p(length_mpz)
                        ? wcl::make_error<std::string, std::string>(
-                              "randomHexString length must be nonnegative and fit the native "
-                              "size type")
+                             "randomHexString length must be nonnegative and fit the native "
+                             "size type")
                        : wcl::random_hex(static_cast<size_t>(mpz_get_ui(length_mpz)));
   const bool ok = static_cast<bool>(generated);
   const std::string& text = ok ? *generated : generated.error();
