@@ -18,12 +18,12 @@
 #include "random.h"
 
 #if defined(__linux__) || defined(__APPLE__)
+#include <uuid/uuid.h>
+
 #include <cstdint>
 #include <exception>
 #include <random>
 #include <utility>
-
-#include <uuid/uuid.h>
 #endif
 
 namespace wcl {
