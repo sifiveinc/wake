@@ -20,17 +20,20 @@
 
 #include "cas.h"
 
-#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <sstream>
 
 #include "wcl/materialize.h"
+#include "wcl/random.h"
 
 namespace fs = std::filesystem;
 
@@ -41,7 +44,6 @@ static_assert(SHARD_LEN < HASH_HEX_LEN, "hash length must be longer than shard l
 
 // Global counter for unique temp file names when ingesting files.
 static std::atomic<uint64_t> g_store_counter{0};
-static std::atomic<uint64_t> g_alloc_staging_counter{0};
 
 static std::string sanitize_staging_prefix(const std::string& prefix) {
   static constexpr size_t kMaxPrefixLen = 64;
@@ -336,18 +338,32 @@ std::optional<CASError> Cas::remove_blob(const ContentHash& hash) {
 }
 
 wcl::result<std::string, CASError> Cas::alloc_staging_dir(const std::string& prefix) const {
-  std::string name = sanitize_staging_prefix(prefix) + "." + std::to_string(getpid()) + "." +
-                     std::to_string(g_alloc_staging_counter.fetch_add(1));
-  std::string path = (fs::path(staging_dir_) / name).string();
+  // The private tree lives at <staging>/<prefix>-execution-<UUID>/workspace. The outer directory
+  // is named like a FUSE execution's output directory; the hierarchical tree stays below it.
+  // A name collision means somebody else owns that directory, so draw a new UUID instead of
+  // attaching to it.
   std::error_code ec;
-  if (!fs::create_directory(path, ec) || ec) {
-    return wcl::make_error<std::string, CASError>(CASError::IOError);
+  for (int attempt = 0; attempt < 16; ++attempt) {
+    auto uuid = wcl::uuidv4();
+    if (!uuid) return wcl::make_error<std::string, CASError>(CASError::IOError);
+    // Staging paths and recovery manifests use the compact, unhyphenated representation.
+    uuid->erase(std::remove(uuid->begin(), uuid->end(), '-'), uuid->end());
+    const fs::path outer =
+        fs::path(staging_dir_) /
+        (sanitize_staging_prefix(prefix) + "-execution-" + *uuid);
+    if (mkdir(outer.c_str(), 0755) != 0) {
+      if (errno == EEXIST) continue;
+      return wcl::make_error<std::string, CASError>(CASError::IOError);
+    }
+    const fs::path workspace = outer / "workspace";
+    if (mkdir(workspace.c_str(), 0755) != 0 || chmod(workspace.c_str(), 0755) != 0 ||
+        chmod(outer.c_str(), 0755) != 0) {
+      fs::remove_all(outer, ec);
+      return wcl::make_error<std::string, CASError>(CASError::IOError);
+    }
+    return wcl::make_result<std::string, CASError>(workspace.string());
   }
-  if (chmod(path.c_str(), 0755) != 0) {
-    fs::remove_all(path, ec);
-    return wcl::make_error<std::string, CASError>(CASError::IOError);
-  }
-  return wcl::make_result<std::string, CASError>(std::move(path));
+  return wcl::make_error<std::string, CASError>(CASError::AlreadyExists);
 }
 
 wcl::result<bool, CASError> Cas::remove_staging_dir(const std::string& path) const {
@@ -365,6 +381,16 @@ wcl::result<bool, CASError> Cas::remove_staging_dir(const std::string& path) con
 
   fs::remove_all(target, ec);
   if (ec) return wcl::make_error<bool, CASError>(CASError::IOError);
+
+  // A tree allocated by alloc_staging_dir is <outer>/workspace. Having removed exactly that
+  // owned tree, remove only its now-empty outer directory (never recursively).
+  auto component = relative.begin();
+  if (std::distance(relative.begin(), relative.end()) == 2 &&
+      *std::next(component) == "workspace") {
+    if (rmdir((root / *component).c_str()) != 0 && errno != ENOENT && errno != ENOTEMPTY) {
+      return wcl::make_error<bool, CASError>(CASError::IOError);
+    }
+  }
   return wcl::make_result<bool, CASError>(true);
 }
 

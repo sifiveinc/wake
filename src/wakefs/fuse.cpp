@@ -292,6 +292,10 @@ static bool collect_result_metadata(const std::string daemon_output, const struc
     result_jast.add("staging_files", JSON_OBJECT).children =
         std::move((*staging_files_opt)->children);
   }
+  auto job_staging_root_opt = from_daemon.get_opt("job_staging_root");
+  if (job_staging_root_opt && (*job_staging_root_opt)->kind == JSON_STR) {
+    result_jast.add("job_staging_root", (*job_staging_root_opt)->value);
+  }
   auto recovery_manifest_opt = from_daemon.get_opt("recovery_manifest");
   if (recovery_manifest_opt && (*recovery_manifest_opt)->kind == JSON_STR) {
     result_jast.add("recovery_manifest", (*recovery_manifest_opt)->value);
@@ -313,9 +317,13 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json, FuseRun
     return false;
   }
 
-  if (!args.daemon.connect(args.visible, args.cas_dir, args.isolate_pids, args.wake_run_id,
+  if (!args.no_fuse_daemon &&
+      !args.daemon.connect(args.visible, args.cas_dir, args.isolate_pids, args.wake_run_id,
                            args.wake_job_id))
     return false;
+  std::string output = args.no_fuse_daemon
+                           ? R"({"ibytes":0,"obytes":0,"outputs":[],"staging_files":{}})"
+                           : "";
   cancellation_signal = 0;
   cancellation_repeated = 0;
   CancellationSignalHandlers signal_handlers;
@@ -460,8 +468,7 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json, FuseRun
 
       struct timeval stop;
       gettimeofday(&stop, 0);
-      std::string output;
-      args.daemon.disconnect(output);
+      if (!args.no_fuse_daemon) args.daemon.disconnect(output);
       RUsage usage = {};
       status = 124;
       outcome = FuseRunOutcome::TimedOut;
@@ -523,8 +530,7 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json, FuseRun
   struct timeval stop;
   gettimeofday(&stop, 0);
 
-  std::string output;
-  args.daemon.disconnect(output);
+  if (!args.no_fuse_daemon) args.daemon.disconnect(output);
 
   if (cancellation_started) outcome = FuseRunOutcome::Canceled;
   return collect_result_metadata(output, start, stop, payload_pid, status, usage, false,

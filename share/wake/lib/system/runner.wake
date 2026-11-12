@@ -435,6 +435,7 @@ export def stagingDirRunner: Runner =
 
         def plan =
             makeJSONRunnerPlan wakebox
+            | setJSONRunnerPlanExtraArgs ("--no-fuse-daemon", Nil)
             | setJSONRunnerPlanMkMountOps (stagingMountOps stagingDir)
 
         def (Runner _ innerRun) = makeJSONRunner plan
@@ -647,36 +648,57 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
             (jsonOutputs ++ filteredOutputPaths)
             | distinctBy scmp
 
+        def jsonStagingRoot =
+            content // `job_staging_root`
+            | getJString
+
+        def recoveryManifest =
+            content // `recovery_manifest`
+            | getJString
+
+        # Only remove the handoff record after job.wake has materialized every staged item.
+        def cleanupRecoveryManifest _ =
+            def unlink _ = prim "unlink"
+
+            match recoveryManifest
+                # A user may have recovered the record while Wake was
+                # finalizing. unlink intentionally treats ENOENT as success.
+                Some manifest -> unlink manifest
+                None -> Unit
+
+        # The workspace snapshot has its own root, so clean up the Wakebox attempt separately.
+        def cleanupEmptyAttempt _ =
+            def rmdir _ = prim "rmdir"
+
+            def unlinked = cleanupRecoveryManifest Unit
+
+            match jsonStagingRoot
+                Some root -> wait (\_ rmdir root) unlinked
+                None -> unlinked
+
+        def addAttemptCleanup (Pair stagedOutputs cleanable) =
+            def withAttemptCleanup existingPostFinalize preparedItems =
+                def _ = existingPostFinalize preparedItems
+
+                cleanupEmptyAttempt Unit
+
+            Pair (stagedOutputs | editStagedOutputsPostFinalize withAttemptCleanup) cleanable
+
         def outputSetResult = match (parseStagingFiles content)
             Pass stagingItems ->
                 # If the runner reported no staged items but `fnOutputs` discovered
                 # outputs on disk (the TrackingDisabled case), CAS cannot ingest from
                 # the empty `staging_files` set. Fall back to the workspace-staging
                 # path so the discovered outputs are picked up from the workspace.
+                # TODO: Remove this fallback after eliminating JSON runners with untracked outputs,
+                # as we have a stagingDirRunner now.
                 if empty stagingItems && ! empty filteredOutputPaths then
                     stageWorkspaceOutputs allStagedOutputs filteredOutputPaths defaultCleanableOutputs
+                    | rmap addAttemptCleanup
                 else
                     def stagedOutputPaths =
                         stagingItems
                         | map getStagingItemDestPath
-
-                    def jsonStagingRoot =
-                        content // `staging_root`
-                        | getJString
-
-                    def recoveryManifest =
-                        content // `recovery_manifest`
-                        | getJString
-
-                    # Only remove the handoff record after job.wake has materialized every staged item.
-                    def cleanupRecoveryManifest _ =
-                        def unlink _ = prim "unlink"
-
-                        match recoveryManifest
-                            # A user may have recovered the record while Wake was
-                            # finalizing. unlink intentionally treats ENOENT as success.
-                            Some manifest -> unlink manifest
-                            None -> Unit
 
                     Pass (
                         Pair

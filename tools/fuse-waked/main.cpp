@@ -38,6 +38,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <fstream>
 #include <map>
 #include <optional>
@@ -56,6 +57,7 @@
 #include "util/unlink.h"
 #include "wakefs/materialize_staging.h"
 #include "wcl/file_ops.h"
+#include "wcl/random.h"
 
 #define MAX_JSON (128 * 1024 * 1024)
 
@@ -274,17 +276,6 @@ class StagedFilesStore {
 
 static StagedFilesStore g_staged_files;
 
-// Counter for unique staging file names
-static uint64_t g_staging_counter = 0;
-
-// Allocate a fresh, collision-free path in the CAS staging directory for a new backing object
-// (a staging file for a regular/hardlinked file, or a real node for a special node). The pid
-// disambiguates concurrent wake daemons sharing the same staging dir; the counter is unique within
-// this daemon.
-static std::string create_unique_staging_path() {
-  return g_staging_dir + "/" + std::to_string(getpid()) + "_" + std::to_string(++g_staging_counter);
-}
-
 // Path to CAS blobs directory for hash-based reads
 static std::string g_cas_blobs_dir;
 
@@ -315,11 +306,22 @@ struct Job {
   std::optional<long> wake_run_id;
   std::optional<long> wake_job_id;
 
+  // Output directory owned by this execution: <staging>/<staging_dir_name>. The UUID is generated
+  // once, when the directory is first allocated, and never changes for the life of the job.
+  std::string execution_uuid;
+  std::string staging_dir_name;
+  std::string job_staging_dir;
+  // Next backing-file number; numbers are never reused within an execution.
+  uint64_t next_output_number = 1;
+
   Job() : ibytes(0), obytes(0), json_in_uses(0), json_out_uses(0), uses(0) {}
 
   void parse();
   void dump(const std::string &job_id);
   bool snapshot_recovery_manifest(const std::string &job_id);
+
+  bool ensure_staging_dir();
+  bool alloc_backing_path(const std::string &dest_path, std::string *path);
 
   bool is_writeable(const std::string &path);
   bool is_readable(const std::string &path);
@@ -465,29 +467,77 @@ void Job::parse() {
   }
 }
 
-// Persist the final output map before in-memory job state disappears:
-// {"version":1,"job_key":"...",
+// Exclusively allocate <staging>/job-<jobID>-execution-<UUID>, or
+// <staging>/wakebox-execution-<UUID> for standalone Wakebox without a WakeDB job ID.
+// Allocate on demand for a backing object or manifest; later calls reuse the saved allocation.
+// Existing on-disk paths are never adopted.
+// On failure, print a diagnostic and set errno.
+bool Job::ensure_staging_dir() {
+  if (!job_staging_dir.empty()) return true;
+  if (g_staging_dir.empty()) {
+    errno = EIO;
+    fprintf(stderr, "fuse-waked: CAS staging directory is not configured\n");
+    return false;
+  }
+  // A directory collision (EEXIST) means an unrelated execution owns that name; never attach to
+  // it, just draw a new UUID.
+  for (int attempt = 0; attempt < 16; ++attempt) {
+    auto uuid = wcl::uuidv4();
+    if (!uuid) {
+      fprintf(stderr, "fuse-waked: generate execution UUID: %s\n", uuid.error().c_str());
+      errno = EIO;
+      return false;
+    }
+    uuid->erase(std::remove(uuid->begin(), uuid->end(), '-'), uuid->end());
+    const std::string name = wakefs::staging_job_dir_name(wake_job_id, *uuid);
+    const std::string path = g_staging_dir + "/" + name;
+    if (mkdir(path.c_str(), 0755) == 0) {
+      execution_uuid = *uuid;
+      staging_dir_name = name;
+      job_staging_dir = path;
+      return true;
+    }
+    if (errno != EEXIST) {
+      const int saved = errno;
+      fprintf(stderr, "fuse-waked: create job staging directory '%s': %s\n", path.c_str(),
+              strerror(saved));
+      errno = saved;
+      return false;
+    }
+  }
+  errno = EEXIST;
+  fprintf(stderr, "fuse-waked: could not allocate a unique job staging directory in '%s'\n",
+          g_staging_dir.c_str());
+  return false;
+}
+
+// Choose <execution-dir>/<number>-<basename>, e.g. build/main.o -> 1-main.o.
+// Numbers start at 1; basenames are sanitized and the complete filename is capped at 100 bytes.
+// The caller creates the object. On failure, errno is set.
+bool Job::alloc_backing_path(const std::string &dest_path, std::string *path) {
+  if (!ensure_staging_dir()) return false;
+  const size_t slash = dest_path.rfind('/');
+  const std::string basename = slash == std::string::npos ? dest_path : dest_path.substr(slash + 1);
+  *path = job_staging_dir + "/" + wakefs::staging_payload_name(next_output_number++, basename);
+  return true;
+}
+
+// Persist the final output map before in-memory job state disappears, as recovery.json beside the
+// execution's payload files:
+// {"version":2,"job_key":"...","job_staging_dir":"...","execution_uuid":"...",
 //  "entries":[{"destination":"...","type":"file|symlink|directory",...}]}
 // Repeated calls reuse the same immutable record; special nodes and FUSE artifacts are excluded.
 bool Job::snapshot_recovery_manifest(const std::string &job_id) {
   if (!recovery_manifest.empty()) return true;
-  if (g_staging_dir.empty()) return false;
+  if (!ensure_staging_dir()) return false;
 
-  const std::string recovery_dir = g_staging_dir + "/recovery";
-  int mkdir_error = mkdir_with_parents(recovery_dir, 0755);
-  if (mkdir_error != 0) {
-    fprintf(stderr, "fuse-waked: create recovery directory '%s': %s\n", recovery_dir.c_str(),
-            strerror(mkdir_error));
-    return false;
-  }
   struct timespec now;
   clock_gettime(CLOCK_REALTIME, &now);
-  const std::string name =
-      wake_run_id
-          ? "run-" + std::to_string(*wake_run_id) + "-job-" + std::to_string(*wake_job_id) + ".json"
-          : "wakebox-" + std::to_string(getpid()) + "-" + job_id + ".json";
-  const std::string final_path = recovery_dir + "/" + name;
+  const std::string final_path = job_staging_dir + "/" + wakefs::kRecoveryManifestName;
   wakefs::StagingManifest manifest;
+  manifest.version = 2;
+  manifest.job_staging_dir = staging_dir_name;
+  manifest.execution_uuid = execution_uuid;
   manifest.job_key = job_id;
   manifest.daemon_pid = getpid();
   manifest.created_at_ns = static_cast<long long>(now.tv_sec) * 1000000000LL + now.tv_nsec;
@@ -651,6 +701,8 @@ void Job::dump(const std::string &job_id) {
     }
   }
   s << "}";
+  if (!job_staging_dir.empty())
+    s << ",\"job_staging_root\":\"" << json_escape(job_staging_dir) << "\"";
   if (!recovery_manifest.empty())
     s << ",\"recovery_manifest\":\"" << json_escape(recovery_manifest) << "\"";
   s << "}";
@@ -1210,7 +1262,8 @@ static int wakefuse_mknod(const char *path, mode_t mode, dev_t rdev) {
   if (S_ISREG(mode)) {
     // Stage a regular file (like create(), but without keeping an open fd). wakebox will hash and
     // store it in CAS after the job completes.
-    std::string staging_path = create_unique_staging_path();
+    std::string staging_path;
+    if (!it->second.alloc_backing_path(key.second, &staging_path)) return -errno;
     // Keep the staging file owner-readable regardless of the requested mode: the hashing and
     // CAS steps after the job open it directly. The tracked mode below is what getattr reports
     // and what lands in the workspace, so the extra bit isn't visible to the job.
@@ -1247,7 +1300,8 @@ static int wakefuse_mknod(const char *path, mode_t mode, dev_t rdev) {
   // it is not content-addressable, so create a real node at a per-invocation-unique backing path
   // (so concurrent jobs binding the same relative path don't collide on the shared backing store),
   // track it per-job, and exclude it from CAS/staging_files/outputs.
-  std::string real_path = create_unique_staging_path();
+  std::string real_path;
+  if (!it->second.alloc_backing_path(key.second, &real_path)) return -errno;
   int res;
   if (S_ISFIFO(mode)) {
 #ifdef __APPLE__
@@ -1325,7 +1379,8 @@ static int wakefuse_create(const char *path, mode_t mode, struct fuse_file_info 
     g_staged_files.erase(key.first, key.second);
   }
 
-  std::string staging_path = create_unique_staging_path();
+  std::string staging_path;
+  if (!it->second.alloc_backing_path(key.second, &staging_path)) return -errno;
   // Keep the staging file owner-readable regardless of the requested mode: the hashing and CAS
   // steps after the job open it directly. The tracked mode below is what getattr reports and
   // what lands in the workspace, so the extra bit isn't visible to the job.
@@ -1733,7 +1788,8 @@ static int wakefuse_link(const char *from, const char *to) {
     const StagedFileData *src_sf = std::get_if<StagedFileData>(&src.data);
     assert(src_sf && "must be staged file");
 
-    std::string new_staging_path = create_unique_staging_path();
+    std::string new_staging_path;
+    if (!it->second.alloc_backing_path(keyt.second, &new_staging_path)) return -errno;
     int res = link(src_staging_path->data(), new_staging_path.c_str());
     if (res < 0) return -errno;
 

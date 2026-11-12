@@ -121,8 +121,8 @@ bool resolve_workspace(std::string *workspace, std::string *error) {
 bool discover_completed_manifests(const std::string &workspace,
                                   std::vector<wakefs::CompletedStagingManifest> *manifests,
                                   std::string *error) {
-  const fs::path recovery = fs::path(workspace) / ".build" / "cas" / "staging" / "recovery";
-  return wakefs::discover_completed_staging_manifests(recovery.string(), manifests, error);
+  const fs::path staging = fs::path(workspace) / ".build" / "cas" / "staging";
+  return wakefs::discover_staging_manifests(staging.string(), manifests, error);
 }
 
 void print_materialization_summary(const std::string &manifest_path,
@@ -240,14 +240,26 @@ StagingManifestResult materialize_returned_manifest(const std::string &result_js
   std::string workspace_text;
   if (!resolve_workspace(&workspace_text, &result.error)) return result;
   const fs::path workspace = workspace_text;
-  const fs::path recovery_dir = workspace / ".build" / "cas" / "staging" / "recovery";
+  const fs::path staging_dir = workspace / ".build" / "cas" / "staging";
   const fs::path manifest_relative = result.manifest_path;
-  const fs::path recovery_relative = ".build/cas/staging/recovery";
-  if (manifest_relative.is_absolute() || manifest_relative.parent_path() != recovery_relative ||
-      manifest_relative.filename().empty()) {
-    result.error = "recovery manifest must be a direct workspace-relative recovery child";
+  const fs::path staging_relative = ".build/cas/staging";
+  // A returned manifest is either <staging>/<job directory>/recovery.json (current layout) or a
+  // direct child of <staging>/recovery/ (legacy layout).
+  const fs::path manifest_parent_relative = manifest_relative.parent_path();
+  const bool job_local = manifest_parent_relative.parent_path() == staging_relative &&
+                         manifest_relative.filename() == wakefs::kRecoveryManifestName &&
+                         !manifest_parent_relative.filename().empty() &&
+                         manifest_parent_relative.filename() != wakefs::kLegacyRecoveryDirName;
+  const bool legacy =
+      manifest_parent_relative == staging_relative / wakefs::kLegacyRecoveryDirName &&
+      !manifest_relative.filename().empty();
+  if (manifest_relative.is_absolute() || (!job_local && !legacy)) {
+    result.error =
+        "recovery manifest must be a workspace-relative job staging directory's recovery.json";
     return result;
   }
+  const fs::path expected_parent = job_local ? staging_dir / manifest_parent_relative.filename()
+                                             : staging_dir / wakefs::kLegacyRecoveryDirName;
   const fs::path manifest = workspace / manifest_relative;
   std::error_code ec;
   const fs::file_status status = fs::symlink_status(manifest, ec);
@@ -257,10 +269,10 @@ StagingManifestResult materialize_returned_manifest(const std::string &result_js
     return result;
   }
   const fs::path manifest_parent = fs::canonical(manifest.parent_path(), ec);
-  const fs::path canonical_recovery_dir = fs::canonical(recovery_dir, ec);
-  if (ec || manifest_parent != canonical_recovery_dir) {
+  const fs::path canonical_parent = fs::canonical(expected_parent, ec);
+  if (ec || manifest_parent != canonical_parent) {
     result.error = ec ? "canonicalize recovery manifest directory: " + ec.message()
-                      : "recovery manifest is outside the recovery directory";
+                      : "recovery manifest is outside the CAS staging directory";
     return result;
   }
 
@@ -342,8 +354,15 @@ int run_interactive(const std::string &rootfs, const std::vector<std::string> &t
 }
 
 int run_batch(const char *params_path, bool has_output, bool use_stdin_file, bool use_shell,
-              bool isolate_retcode, bool materialize_staging, const char *result_path,
+              bool isolate_retcode, bool materialize_staging, bool no_fuse_daemon,
+              const char *result_path,
               const std::vector<mount_op> &binds) {
+#ifndef __linux__
+  if (no_fuse_daemon) {
+    std::cerr << "--no-fuse-daemon requires Linux namespace and mount support." << std::endl;
+    return 1;
+  }
+#endif
   // Read the params file
   std::ifstream ifs(params_path);
   const std::string json((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
@@ -354,13 +373,14 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
   ifs.close();
 
   fuse_args args(get_cwd(), use_stdin_file);
+  args.no_fuse_daemon = no_fuse_daemon;
   if (!json_as_struct(json, args)) {
     std::cerr << "Failed to process spec '" << params_path << "'. Verify valid json and schema."
               << std::endl;
     return 1;
   }
 
-  args.command_running_dir = pick_running_dir(args);
+  if (!no_fuse_daemon) args.command_running_dir = pick_running_dir(args);
 
   if (args.command.empty() || args.command[0].empty()) {
     std::cerr << "No command was provided." << std::endl;
@@ -369,6 +389,15 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
 
   // Append CLI-specified binds after params file binds.
   args.mount_ops.insert(args.mount_ops.end(), binds.begin(), binds.end());
+  if (no_fuse_daemon) {
+    for (const auto &mount : args.mount_ops) {
+      if (mount.type == "workspace") {
+        std::cerr << "--no-fuse-daemon cannot use a workspace FUSE mount." << std::endl;
+        return 1;
+      }
+    }
+    args.command_running_dir = pick_running_dir(args);
+  }
 
   if (use_shell) {
     std::stringstream ss;
@@ -389,7 +418,7 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
     if (!run_in_fuse(args, retcode, result, outcome)) return 1;
     const bool canceled = outcome == FuseRunOutcome::Canceled;
     StagingManifestResult materialization;
-    if (materialize_staging || canceled) {
+    if (materialize_staging || (canceled && !no_fuse_daemon)) {
       materialization = materialize_returned_manifest(result);
       if (!materialization.success) {
         std::cerr << "materialize staging: " << materialization.error << std::endl;
@@ -420,7 +449,7 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
 
   StagingManifestResult materialization;
   const bool canceled = outcome == FuseRunOutcome::Canceled;
-  if (materialize_staging || canceled) {
+  if (materialize_staging || (canceled && !no_fuse_daemon)) {
     materialization = materialize_returned_manifest(result);
     if (!materialization.success) {
       std::cerr << "materialize staging: " << materialization.error << std::endl;
@@ -439,7 +468,7 @@ int run_batch(const char *params_path, bool has_output, bool use_stdin_file, boo
   if (wrote == -1) return errno;
   if (0 != close(out_fd)) return errno;
 
-  if ((materialize_staging || canceled) && !materialization.success)
+  if ((materialize_staging || (canceled && !no_fuse_daemon)) && !materialization.success)
     return 1;
   else if (isolate_retcode && !canceled)
     return 0;
@@ -465,6 +494,7 @@ int main(int argc, char *argv[]) {
         {'m', "materialize-staging", GOPT_ARGUMENT_FORBIDDEN},
         {'P', "materialize-previous", GOPT_ARGUMENT_REQUIRED},
         {'M', "materialize-manifest", GOPT_ARGUMENT_REQUIRED},
+        {0, "no-fuse-daemon", GOPT_ARGUMENT_FORBIDDEN},
 
         {'h', "help", GOPT_ARGUMENT_FORBIDDEN}, {
       0, 0, GOPT_LAST
@@ -481,9 +511,21 @@ int main(int argc, char *argv[]) {
   bool materialize_staging = arg(options, "materialize-staging")->count > 0;
   bool materialize_previous = arg(options, "materialize-previous")->count > 0;
   bool materialize_manifest_path = arg(options, "materialize-manifest")->count > 0;
+  bool no_fuse_daemon = arg(options, "no-fuse-daemon")->count > 0;
 
   if (has_help) {
     print_help();
+    return 1;
+  }
+
+  if (no_fuse_daemon && (materialize_staging || materialize_previous || materialize_manifest_path)) {
+    std::cerr << "--no-fuse-daemon cannot be combined with --materialize-staging, "
+                 "--materialize-previous, or --materialize-manifest."
+              << std::endl;
+    return 1;
+  }
+  if (no_fuse_daemon && !has_params_file) {
+    std::cerr << "--no-fuse-daemon requires batch mode (--params)." << std::endl;
     return 1;
   }
 
@@ -565,7 +607,7 @@ int main(int argc, char *argv[]) {
     bool use_shell = arg(options, "force-shell")->count > 0;
     const char *result_path = arg(options, "output-stats")->argument;
     return run_batch(params, has_output, use_stdin_file, use_shell, isolate_retcode,
-                     materialize_staging, result_path, bind_ops);
+                     materialize_staging, no_fuse_daemon, result_path, bind_ops);
   }
   print_help();
   return 1;
