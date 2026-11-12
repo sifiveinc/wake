@@ -1,4 +1,6 @@
-use crate::metrics::{HTTP_REQUESTS_TOTAL, HTTP_REQUEST_DURATION_SECONDS};
+use crate::metrics::{
+    CACHE_PUSHES_TOTAL, HTTP_REQUESTS_TOTAL, HTTP_REQUEST_DURATION_SECONDS,
+};
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Multipart},
@@ -143,6 +145,7 @@ async fn record_http_metrics(request: Request<Body>, next: Next<Body>) -> Respon
     let started = Instant::now();
     let response = next.run(request).await;
     let status = response.status().as_u16().to_string();
+    let request_succeeded = response.status().is_success();
     let duration_seconds = started.elapsed().as_secs_f64();
 
     HTTP_REQUESTS_TOTAL
@@ -151,6 +154,14 @@ async fn record_http_metrics(request: Request<Body>, next: Next<Body>) -> Respon
     HTTP_REQUEST_DURATION_SECONDS
         .with_label_values(&[method.as_str(), route])
         .observe(duration_seconds);
+    if request_succeeded && method == "POST" && route == "/blob" {
+        CACHE_PUSHES_TOTAL.with_label_values(&["/blob"]).inc();
+        tracing::info!(
+            event = %"wake_rsc_cache_push",
+            route = %"/blob",
+            "Wake RSC cache push"
+        );
+    }
     tracing::info!(
         event = %"rsc_http_request",
         method = %method,
