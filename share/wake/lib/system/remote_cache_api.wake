@@ -16,6 +16,7 @@
 package remote_cache
 
 from http import _
+from random import unsafe_uuidv4String
 from wake import _
 
 # RSC Policy on engaging with the cache. Can be configured to only push to the cache, only pull from
@@ -873,23 +874,10 @@ def timeoutErrorMessage: String =
 def cascadeTimeoutErrorMessage: String =
     "rsc: Remote cache previously disabled due to timeout"
 
-# Generates a unique ID (using date in nano seconds) for the current wake invocation.
+# Generates a unique ID for the current wake invocation.
 # This is used to verify and disable requests to the cache that are from the same invocation.
-def generateID Unit: Result String Error =
-    def idJob =
-        makeExecPlan ("date", "+%s%N", Nil) Nil
-        | setPlanLabel "rsc: generate client id"
-        | setPlanPersistence Once # Exactly one ID per wake invocation
-        | setPlanEcho logDebug
-        # Use fuseRunner rather than defaultRunner to avoid a loop through makeRemoteCacheAPI.
-        | runJobWith fuseRunner
-        | setJobInspectVisibilityHidden
-
-    require True = isJobOk idJob
-    else failWithError "failed to generate ID for Wake invocation."
-
-    idJob
-    | getJobStdout
+target generateID Unit: Result String Error =
+    unsafe_uuidv4String Unit
 
 # Writes the disable-cache sentinel directly because guardRemoteCacheDisabled needs it to be
 # visible immediately, not after staged-output finalization.
