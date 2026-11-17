@@ -332,8 +332,7 @@ TEST(staging_manifest_rejects_symlinked_staging_layout, "cas") {
 }
 
 TEST(staging_job_dir_names, "cas") {
-  EXPECT_EQUAL(wakefs::staging_job_dir_name(2008, kUuidA),
-               std::string("job-2008-exec-") + kUuidA);
+  EXPECT_EQUAL(wakefs::staging_job_dir_name(2008, kUuidA), std::string("job-2008-exec-") + kUuidA);
   EXPECT_EQUAL(wakefs::staging_job_dir_name(std::nullopt, kUuidA),
                std::string("wakebox-exec-") + kUuidA);
   EXPECT_TRUE(wakefs::is_staging_execution_directory("job-2008-exec-" + std::string(kUuidA)));
@@ -341,8 +340,8 @@ TEST(staging_job_dir_names, "cas") {
   EXPECT_TRUE(wakefs::is_staging_execution_directory("wakebox-exec-" + std::string(kUuidA)));
   EXPECT_FALSE(wakefs::is_staging_execution_directory("job-2008.1234.0"));
   EXPECT_FALSE(wakefs::is_staging_execution_directory("job-abc-exec-" + std::string(kUuidA)));
-  EXPECT_FALSE(wakefs::is_staging_execution_directory(
-      "job-2008-exec-0123456789ABCDEF0123456789abcdef"));
+  EXPECT_FALSE(
+      wakefs::is_staging_execution_directory("job-2008-exec-0123456789ABCDEF0123456789abcdef"));
   EXPECT_TRUE(wakefs::is_execution_uuid(kUuidA));
   EXPECT_FALSE(wakefs::is_execution_uuid("0123456789ABCDEF0123456789abcdef"));
   EXPECT_FALSE(wakefs::is_execution_uuid("0123456789abcdef0123456789abcde"));
@@ -460,15 +459,13 @@ TEST(staging_manifest_v2_parser_rejects_unsafe_sources, "cas") {
   wakefs::StagingManifest manifest;
   std::string error;
   ASSERT_TRUE(wakefs::parse_staging_manifest(
-      prefix + "wakebox-exec-0123456789abcdef0123456789abcdef/1-x" + suffix, &manifest,
-      &error));
+      prefix + "wakebox-exec-0123456789abcdef0123456789abcdef/1-x" + suffix, &manifest, &error));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      prefix + "wakebox-exec-fedcba9876543210fedcba9876543210/1-x" + suffix, &manifest,
-      &error));
+      prefix + "wakebox-exec-fedcba9876543210fedcba9876543210/1-x" + suffix, &manifest, &error));
   EXPECT_EQUAL(error, std::string("entry staging_path is outside the job staging directory"));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      prefix + "wakebox-exec-0123456789abcdef0123456789abcdef/recovery.json" + suffix,
-      &manifest, &error));
+      prefix + "wakebox-exec-0123456789abcdef0123456789abcdef/recovery.json" + suffix, &manifest,
+      &error));
   EXPECT_EQUAL(
       error, std::string("entry staging_path must be a direct payload child of its job directory"));
 }
