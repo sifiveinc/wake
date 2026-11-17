@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -486,5 +487,66 @@ TEST(cas_store_enumerate_empty, "cas") {
   auto blobs = store.enumerate_blobs_strings();
   EXPECT_TRUE(blobs.empty());
 
+  fs::remove_all(store_path);
+}
+
+// ============================================================================
+// Execution UUID and private staging tree tests
+// ============================================================================
+
+static bool is_lower_hex32(const std::string& value) {
+  if (value.size() != 32) return false;
+  for (char c : value) {
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+  }
+  return true;
+}
+
+TEST(cas_alloc_staging_dir_uses_job_execution_layout, "cas") {
+  std::string store_path = "cas_test_store_alloc_layout.XXXXXX";
+  ASSERT_TRUE(mkdtemp(store_path.data()) != nullptr);
+  auto store_result = Cas::open(store_path);
+  ASSERT_TRUE((bool)store_result);
+  auto& store = *store_result;
+
+  auto first = store.alloc_staging_dir("job-2012");
+  auto second = store.alloc_staging_dir("job-2012");
+  ASSERT_TRUE((bool)first);
+  ASSERT_TRUE((bool)second);
+  EXPECT_FALSE(*first == *second);
+
+  // <staging>/job-2012-execution-<UUID>/workspace
+  fs::path workspace(*first);
+  EXPECT_EQUAL(workspace.filename().string(), std::string("workspace"));
+  fs::path outer = workspace.parent_path();
+  EXPECT_EQUAL(outer.parent_path().string(), store_path + "/staging");
+  const std::string leaf = outer.filename().string();
+  const std::string prefix = "job-2012-execution-";
+  ASSERT_TRUE(leaf.compare(0, prefix.size(), prefix) == 0);
+  const std::string uuid = leaf.substr(prefix.size());
+  ASSERT_TRUE(is_lower_hex32(uuid));
+  EXPECT_TRUE(fs::is_directory(workspace));
+
+  // Removing the private workspace removes its nested tree and empty outer directory.
+  fs::create_directories(workspace / "build");
+  {
+    std::ofstream out(workspace / "build" / "main.o");
+    out << "x";
+  }
+  ASSERT_TRUE((bool)store.remove_staging_dir(*first));
+  EXPECT_FALSE(fs::exists(outer));
+  EXPECT_TRUE(fs::exists(fs::path(*second)));
+
+  // An unrelated file prevents removal of the second outer directory.
+  fs::path second_outer = fs::path(*second).parent_path();
+  {
+    std::ofstream out(second_outer / "recovery.json");
+    out << "{}";
+  }
+  ASSERT_TRUE((bool)store.remove_staging_dir(*second));
+  EXPECT_FALSE(fs::exists(*second));
+  EXPECT_TRUE(fs::exists(second_outer / "recovery.json"));
+
+  EXPECT_FALSE((bool)store.remove_staging_dir(store_path + "/blobs"));
   fs::remove_all(store_path);
 }

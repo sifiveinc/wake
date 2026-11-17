@@ -1,0 +1,5 @@
+# A long logical basename must survive FUSE staging, CAS ingestion, and materialization.
+export def test Unit =
+    makeExecPlan ("sh", "-c", 'name=$(printf "%0251d" 0); printf contents > "$name"', Nil) Nil
+    | runJobWith fuseRunner
+    | getJobOutput

@@ -1,0 +1,11 @@
+from wake import _
+
+# Keep the job alive until pass.sh cancels Wake; the sleep is not expected to finish.
+export def test _: Result Unit Error =
+    def _ =
+        def ready = getenv "CANCELED_READY" | getOrElse ""
+        makeExecPlan ("sh", "-c", 'touch "$CANCELED_READY"; exec sleep 1000',) Nil
+        | setPlanEnvironment ("CANCELED_READY={ready}",)
+        | runJobWith defaultRunner
+
+    Pass Unit
