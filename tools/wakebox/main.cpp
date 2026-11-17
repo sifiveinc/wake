@@ -355,8 +355,7 @@ int run_interactive(const std::string &rootfs, const std::vector<std::string> &t
 
 int run_batch(const char *params_path, bool has_output, bool use_stdin_file, bool use_shell,
               bool isolate_retcode, bool materialize_staging, bool no_fuse_daemon,
-              const char *result_path,
-              const std::vector<mount_op> &binds) {
+              const char *result_path, const std::vector<mount_op> &binds) {
 #ifndef __linux__
   if (no_fuse_daemon) {
     std::cerr << "--no-fuse-daemon requires Linux namespace and mount support." << std::endl;
@@ -518,7 +517,8 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  if (no_fuse_daemon && (materialize_staging || materialize_previous || materialize_manifest_path)) {
+  if (no_fuse_daemon &&
+      (materialize_staging || materialize_previous || materialize_manifest_path)) {
     std::cerr << "--no-fuse-daemon cannot be combined with --materialize-staging, "
                  "--materialize-previous, or --materialize-manifest."
               << std::endl;

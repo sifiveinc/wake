@@ -44,8 +44,7 @@ bool write_staging_manifest_atomic(const std::string& path, const StagingManifes
 
 std::string staging_job_dir_name(std::optional<int64_t> wake_job_id,
                                  const std::string& execution_uuid) {
-  if (wake_job_id)
-    return "job-" + std::to_string(*wake_job_id) + "-execution-" + execution_uuid;
+  if (wake_job_id) return "job-" + std::to_string(*wake_job_id) + "-execution-" + execution_uuid;
   return "wakebox-execution-" + execution_uuid;
 }
 
@@ -64,14 +63,16 @@ std::string staging_payload_name(uint64_t number, const std::string& basename) {
   const size_t room = kMaxNameLength - prefix.size();
   std::string readable = basename.empty() ? "file" : basename;
 
-  std::replace_if(readable.begin(), readable.end(), [](unsigned char c) {
-    return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-             (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-');
-  }, '_');
+  std::replace_if(
+      readable.begin(), readable.end(),
+      [](unsigned char c) {
+        return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                 c == '.' || c == '_' || c == '-');
+      },
+      '_');
 
   return prefix + readable.substr(0, room);
 }
-
 
 namespace {
 
@@ -592,8 +593,8 @@ bool manifest_names_its_directory(const std::string& manifest_path, const Stagin
   const fs::path path(manifest_path);
   if (path.filename() != kRecoveryManifestName ||
       path.parent_path().filename().string() != manifest.job_staging_dir)
-    return fail(error, "manifest is not " + manifest.job_staging_dir + "/" +
-                           kRecoveryManifestName + ": " + manifest_path);
+    return fail(error, "manifest is not " + manifest.job_staging_dir + "/" + kRecoveryManifestName +
+                           ": " + manifest_path);
   return true;
 }
 
@@ -666,8 +667,8 @@ bool validate_manifest_location(const std::string& manifest_path, const StagingM
   const fs::path actual = fs::weakly_canonical(directory.parent_path(), ec);
   if (ec) return fail(error, "canonicalize job staging parent: " + ec.message());
   if (expected != actual)
-    return fail(error, "manifest is outside this workspace's CAS staging directory: " +
-                           manifest_path);
+    return fail(error,
+                "manifest is outside this workspace's CAS staging directory: " + manifest_path);
   return true;
 }
 

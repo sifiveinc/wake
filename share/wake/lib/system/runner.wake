@@ -669,7 +669,6 @@ export def makeJSONRunner ((JSONRunnerPlan rawScript extraArgs extraEnv estimate
         # The workspace snapshot has its own root, so clean up the Wakebox attempt separately.
         def cleanupEmptyAttempt _ =
             def rmdir _ = prim "rmdir"
-
             def unlinked = cleanupRecoveryManifest Unit
 
             match jsonStagingRoot

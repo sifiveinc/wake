@@ -82,15 +82,17 @@ TEST(staging_manifest_rejects_unsafe_input, "cas") {
   std::string error;
   ASSERT_TRUE(wakefs::parse_staging_manifest(prefix + file + "]}", &manifest, &error));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      prefix + R"({"destination":"../escape","type":"file","staging_path":"wakebox-execution-0123456789abcdef0123456789abcdef/1-source","mode":420,"mtime_sec":0,"mtime_nsec":0}]})",
+      prefix +
+          R"({"destination":"../escape","type":"file","staging_path":"wakebox-execution-0123456789abcdef0123456789abcdef/1-source","mode":420,"mtime_sec":0,"mtime_nsec":0}]})",
       &manifest, &error));
   EXPECT_EQUAL(error, std::string("entry destination must be a normalized relative path"));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      prefix + R"({"destination":"out","type":"file","staging_path":"../source","mode":420,"mtime_sec":0,"mtime_nsec":0}]})",
+      prefix +
+          R"({"destination":"out","type":"file","staging_path":"../source","mode":420,"mtime_sec":0,"mtime_nsec":0}]})",
       &manifest, &error));
   EXPECT_EQUAL(error, std::string("entry staging_path is invalid"));
-  EXPECT_FALSE(wakefs::parse_staging_manifest(
-      prefix + file + "," + file + "]}", &manifest, &error));
+  EXPECT_FALSE(
+      wakefs::parse_staging_manifest(prefix + file + "," + file + "]}", &manifest, &error));
   EXPECT_EQUAL(error, std::string("manifest contains duplicate destination: out"));
 }
 
@@ -304,8 +306,8 @@ TEST(staging_manifest_rejects_symlinked_staging_layout, "cas") {
     } else if (std::string(component) == "cas") {
       fs::create_directories(workspace(root) + "/.build");
       fs::create_directories(root + "/outside/staging");
-      ASSERT_TRUE(symlink((root + "/outside").c_str(),
-                          (workspace(root) + "/.build/cas").c_str()) == 0);
+      ASSERT_TRUE(symlink((root + "/outside").c_str(), (workspace(root) + "/.build/cas").c_str()) ==
+                  0);
     } else {
       fs::create_directories(workspace(root) + "/.build/cas");
       fs::create_directories(root + "/outside");
@@ -418,16 +420,16 @@ TEST(staging_manifest_v2_rejects_bad_layout, "cas") {
   EXPECT_EQUAL(error, std::string("entry staging_path is outside the job staging directory"));
   manifest.entries = {file_entry(dir + "/sub/1-x")};
   EXPECT_FALSE(write_with(manifest));  // not a direct child
-  EXPECT_EQUAL(error,
-               std::string("entry staging_path must be a direct payload child of its job directory"));
+  EXPECT_EQUAL(
+      error, std::string("entry staging_path must be a direct payload child of its job directory"));
   manifest.entries = {file_entry(dir + "/recovery.json")};
   EXPECT_FALSE(write_with(manifest));  // the manifest itself
-  EXPECT_EQUAL(error,
-               std::string("entry staging_path must be a direct payload child of its job directory"));
+  EXPECT_EQUAL(
+      error, std::string("entry staging_path must be a direct payload child of its job directory"));
   manifest.entries = {file_entry(dir + "/.hidden")};
   EXPECT_FALSE(write_with(manifest));  // hidden control file
-  EXPECT_EQUAL(error,
-               std::string("entry staging_path must be a direct payload child of its job directory"));
+  EXPECT_EQUAL(
+      error, std::string("entry staging_path must be a direct payload child of its job directory"));
   manifest.entries = {file_entry("1-x")};
   EXPECT_FALSE(write_with(manifest));  // flat source
   EXPECT_EQUAL(error, std::string("entry staging_path is outside the job staging directory"));
@@ -467,8 +469,8 @@ TEST(staging_manifest_v2_parser_rejects_unsafe_sources, "cas") {
   EXPECT_FALSE(wakefs::parse_staging_manifest(
       prefix + "wakebox-execution-0123456789abcdef0123456789abcdef/recovery.json" + suffix,
       &manifest, &error));
-  EXPECT_EQUAL(error,
-               std::string("entry staging_path must be a direct payload child of its job directory"));
+  EXPECT_EQUAL(
+      error, std::string("entry staging_path must be a direct payload child of its job directory"));
 }
 
 TEST(staging_manifest_v2_retries_partial_materialization, "cas") {
@@ -619,8 +621,7 @@ TEST(staging_manifest_discovers_job_local_records, "cas") {
   EXPECT_EQUAL(*manifests[0].manifest.wake_run_id, 4);
   EXPECT_EQUAL(*manifests[0].manifest.wake_job_id, 2008);
   EXPECT_EQUAL(manifests[1].manifest.execution_uuid, std::string(kUuidB));
-  EXPECT_EQUAL(manifests[2].manifest.job_staging_dir,
-               std::string("wakebox-execution-") + kUuidA);
+  EXPECT_EQUAL(manifests[2].manifest.job_staging_dir, std::string("wakebox-execution-") + kUuidA);
   EXPECT_TRUE(fs::exists(private_manifest));
 
   // Missing staging root is not an error.

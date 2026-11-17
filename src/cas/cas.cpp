@@ -349,8 +349,7 @@ wcl::result<std::string, CASError> Cas::alloc_staging_dir(const std::string& pre
     // Staging paths and recovery manifests use the compact, unhyphenated representation.
     uuid->erase(std::remove(uuid->begin(), uuid->end(), '-'), uuid->end());
     const fs::path outer =
-        fs::path(staging_dir_) /
-        (sanitize_staging_prefix(prefix) + "-execution-" + *uuid);
+        fs::path(staging_dir_) / (sanitize_staging_prefix(prefix) + "-execution-" + *uuid);
     if (mkdir(outer.c_str(), 0755) != 0) {
       if (errno == EEXIST) continue;
       return wcl::make_error<std::string, CASError>(CASError::IOError);

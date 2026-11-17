@@ -96,10 +96,10 @@ bool has_recovery_manifest_for_run(long run_id, const std::vector<long> &job_ids
   std::unordered_set<std::string> jobs;
   // Legacy records are named for their run and job.
   for (long job_id : job_ids) {
-    const std::string path = (staging / "recovery" /
-                              ("run-" + std::to_string(run_id) + "-job-" + std::to_string(job_id) +
-                               ".json"))
-                                 .string();
+    const std::string path =
+        (staging / "recovery" /
+         ("run-" + std::to_string(run_id) + "-job-" + std::to_string(job_id) + ".json"))
+            .string();
     std::error_code error_code;
     if (std::filesystem::exists(path, error_code) && !error_code) return true;
     jobs.insert("job-" + std::to_string(job_id));
@@ -107,8 +107,8 @@ bool has_recovery_manifest_for_run(long run_id, const std::vector<long> &job_ids
   if (jobs.empty()) return false;
   // New job IDs are unique within an intact Wake database, so no manifest read is needed here.
   std::error_code error_code;
-  for (std::filesystem::directory_iterator it(staging, error_code), end;
-       !error_code && it != end; it.increment(error_code)) {
+  for (std::filesystem::directory_iterator it(staging, error_code), end; !error_code && it != end;
+       it.increment(error_code)) {
     const std::string name = it->path().filename().string();
     const size_t execution = name.rfind("-execution-");
     if (execution == std::string::npos || !jobs.count(name.substr(0, execution)) ||
