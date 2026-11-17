@@ -40,8 +40,9 @@ std::string cas_error_to_string(CASError error);
 //         {suffix}          # Blob content
 //     staging/
 //       {scratch}           # Short-lived CAS insertion temporaries
-//       {prefix}-execution-{UUID}/workspace/   # Private trees from alloc_staging_dir
-//       job-{id}-execution-{UUID}/             # FUSE job output directories (see fuse-waked)
+//       job-{id}-execution-{UUID}/workspace/    # stagingDirRunner private tree
+//       job-{id}-execution-{UUID}/             # FUSE job output directory (see fuse-waked)
+//       wakebox-execution-{UUID}/              # Standalone FUSE output directory
 class Cas {
  public:
   Cas() = delete;
