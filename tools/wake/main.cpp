@@ -110,7 +110,7 @@ bool has_recovery_manifest_for_run(long run_id, const std::vector<long> &job_ids
   for (std::filesystem::directory_iterator it(staging, error_code), end; !error_code && it != end;
        it.increment(error_code)) {
     const std::string name = it->path().filename().string();
-    const size_t execution = name.rfind("-execution-");
+    const size_t execution = name.rfind("-exec-");
     if (execution == std::string::npos || !jobs.count(name.substr(0, execution)) ||
         !wakefs::is_staging_execution_directory(name))
       continue;

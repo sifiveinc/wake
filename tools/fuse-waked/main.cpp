@@ -467,8 +467,8 @@ void Job::parse() {
   }
 }
 
-// Exclusively allocate <staging>/job-<jobID>-execution-<UUID>, or
-// <staging>/wakebox-execution-<UUID> for standalone Wakebox without a WakeDB job ID.
+// Exclusively allocate <staging>/job-<jobID>-exec-<UUID>, or
+// <staging>/wakebox-exec-<UUID> for standalone Wakebox without a WakeDB job ID.
 // Allocate on demand for a backing object or manifest; later calls reuse the saved allocation.
 // Existing on-disk paths are never adopted.
 // On failure, print a diagnostic and set errno.

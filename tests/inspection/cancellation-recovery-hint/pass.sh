@@ -60,17 +60,17 @@ run_case() {
 
     case "$case_name" in
         unrelated)
-            mkdir -p "$staging/job-$((job_id + 100000))-execution-$uuid" \
-                "$staging/job-$job_id-execution-$uuid/workspace" "$staging/job-$job_id.1234.0"
-            touch "$staging/job-$((job_id + 100000))-execution-$uuid/recovery.json" \
-                "$staging/job-$job_id-execution-$uuid/workspace/recovery.json" \
+            mkdir -p "$staging/job-$((job_id + 100000))-exec-$uuid" \
+                "$staging/job-$job_id-exec-$uuid/workspace" "$staging/job-$job_id.1234.0"
+            touch "$staging/job-$((job_id + 100000))-exec-$uuid/recovery.json" \
+                "$staging/job-$job_id-exec-$uuid/workspace/recovery.json" \
                 "$staging/job-$job_id.1234.0/recovery.json"
-            ln -s "$FIXTURE" "$staging/job-$job_id-execution-$uuid/recovery.json"
+            ln -s "$FIXTURE" "$staging/job-$job_id-exec-$uuid/recovery.json"
             ;;
         job)
-            mkdir -p "$staging/job-$job_id-execution-$uuid"
+            mkdir -p "$staging/job-$job_id-exec-$uuid"
             # The hint checks the path, not the manifest contents.
-            printf '%s\n' 'not a manifest' >"$staging/job-$job_id-execution-$uuid/recovery.json"
+            printf '%s\n' 'not a manifest' >"$staging/job-$job_id-exec-$uuid/recovery.json"
             ;;
     esac
 

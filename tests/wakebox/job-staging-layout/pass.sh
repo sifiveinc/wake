@@ -1,5 +1,5 @@
 #!/bin/sh
-# Each Wakebox execution owns one job-<jobID>-execution-<UUID>/ directory below
+# Each Wakebox execution owns one job-<jobID>-exec-<UUID>/ directory below
 # .build/cas/staging. Its regular payloads are flat, numbered, readable files (so equal
 # basenames never collide) and recovery.json sits beside them. Repeated executions of the
 # same Wake job get distinct directories.
@@ -38,7 +38,7 @@ check_v2() {
     manifest="$1/recovery.json"
     grep -q '"version"[[:space:]]*:[[:space:]]*2[[:space:]]*[,}]' "$manifest" || fail "not a v2 manifest: $manifest"
     [ "$(field job_staging_dir "$manifest")" = "${1##*/}" ] || fail "wrong staging directory in $manifest"
-    [ "$(field execution_uuid "$manifest")" = "${1##*-execution-}" ] || fail "wrong execution UUID in $manifest"
+    [ "$(field execution_uuid "$manifest")" = "${1##*-exec-}" ] || fail "wrong execution UUID in $manifest"
 }
 
 "$WAKEBOX" -o "$STATS_A" -p "$FIXTURES/input.json" >/dev/null
@@ -51,7 +51,7 @@ DIR_B=$(field job_staging_root "$STATS_B")
 [ "$(field recovery_manifest "$STATS_A")" = "$DIR_A/recovery.json" ] || fail "manifest is not beside payloads"
 [ "$(field recovery_manifest "$STATS_B")" = "$DIR_B/recovery.json" ] || fail "manifest is not beside payloads"
 for dir in "$DIR_A" "$DIR_B"; do
-  echo "$dir" | grep -q '^\.build/cas/staging/job-8-execution-[0-9a-f]\{32\}$' || fail "unexpected directory name: $dir"
+  echo "$dir" | grep -q '^\.build/cas/staging/job-8-exec-[0-9a-f]\{32\}$' || fail "unexpected directory name: $dir"
   [ -f "$dir/recovery.json" ] || fail "missing $dir/recovery.json"
   check_v2 "$dir"
 done

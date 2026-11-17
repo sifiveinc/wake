@@ -5,7 +5,7 @@
 # 2. File content can be read back immediately
 # 3. staging_files output contains the file with type "file" and a staging_path
 # 4. the result hands off an atomically written final recovery manifest, stored beside the
-#    execution's flat, numbered payloads in wakebox-execution-<UUID>/
+#    execution's flat, numbered payloads in wakebox-exec-<UUID>/
 set -eu
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
@@ -30,10 +30,10 @@ grep -q '"type":"file"'     "$STATS_FILE" || { echo "FAIL: test_output.txt type 
 MANIFEST=$(sed -n 's/.*"recovery_manifest":"\([^"]*\)".*/\1/p' "$STATS_FILE")
 [ -n "$MANIFEST" ] || { echo "FAIL: recovery manifest missing from result"; cat "$STATS_FILE"; exit 1; }
 case "$MANIFEST" in
-  .build/cas/staging/wakebox-execution-*/recovery.json) ;;
+  .build/cas/staging/wakebox-exec-*/recovery.json) ;;
   *) echo "FAIL: unexpected recovery manifest location: $MANIFEST"; exit 1 ;;
 esac
-DIR_NAME=${MANIFEST#.build/cas/staging/wakebox-execution-}
+DIR_NAME=${MANIFEST#.build/cas/staging/wakebox-exec-}
 DIR_NAME=${DIR_NAME%/recovery.json}
 case "$DIR_NAME" in
   ''|*[!0-9a-f]*) echo "FAIL: unsafe execution directory: $MANIFEST"; exit 1 ;;

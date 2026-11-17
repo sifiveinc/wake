@@ -515,13 +515,13 @@ TEST(cas_alloc_staging_dir_uses_job_execution_layout, "cas") {
   ASSERT_TRUE((bool)second);
   EXPECT_FALSE(*first == *second);
 
-  // <staging>/job-2012-execution-<UUID>/workspace
+  // <staging>/job-2012-exec-<UUID>/workspace
   fs::path workspace(*first);
   EXPECT_EQUAL(workspace.filename().string(), std::string("workspace"));
   fs::path outer = workspace.parent_path();
   EXPECT_EQUAL(outer.parent_path().string(), store_path + "/staging");
   const std::string leaf = outer.filename().string();
-  const std::string prefix = "job-2012-execution-";
+  const std::string prefix = "job-2012-exec-";
   ASSERT_TRUE(leaf.compare(0, prefix.size(), prefix) == 0);
   const std::string uuid = leaf.substr(prefix.size());
   ASSERT_TRUE(is_lower_hex32(uuid));

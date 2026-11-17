@@ -75,15 +75,15 @@ bool materialize_from_workspace(const std::string& root, const std::string& mani
 
 TEST(staging_manifest_rejects_unsafe_input, "cas") {
   const std::string prefix =
-      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":false,"job_staging_dir":"wakebox-execution-0123456789abcdef0123456789abcdef","execution_uuid":"0123456789abcdef0123456789abcdef","entries":[)";
+      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":false,"job_staging_dir":"wakebox-exec-0123456789abcdef0123456789abcdef","execution_uuid":"0123456789abcdef0123456789abcdef","entries":[)";
   const std::string file =
-      R"({"destination":"out","type":"file","staging_path":"wakebox-execution-0123456789abcdef0123456789abcdef/1-source","mode":420,"mtime_sec":0,"mtime_nsec":0})";
+      R"({"destination":"out","type":"file","staging_path":"wakebox-exec-0123456789abcdef0123456789abcdef/1-source","mode":420,"mtime_sec":0,"mtime_nsec":0})";
   wakefs::StagingManifest manifest;
   std::string error;
   ASSERT_TRUE(wakefs::parse_staging_manifest(prefix + file + "]}", &manifest, &error));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
       prefix +
-          R"({"destination":"../escape","type":"file","staging_path":"wakebox-execution-0123456789abcdef0123456789abcdef/1-source","mode":420,"mtime_sec":0,"mtime_nsec":0}]})",
+          R"({"destination":"../escape","type":"file","staging_path":"wakebox-exec-0123456789abcdef0123456789abcdef/1-source","mode":420,"mtime_sec":0,"mtime_nsec":0}]})",
       &manifest, &error));
   EXPECT_EQUAL(error, std::string("entry destination must be a normalized relative path"));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
@@ -100,11 +100,11 @@ TEST(staging_manifest_wake_identity_is_paired, "cas") {
   wakefs::StagingManifest manifest;
   std::string error;
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":false,"job_staging_dir":"job-2-execution-0123456789abcdef0123456789abcdef","execution_uuid":"0123456789abcdef0123456789abcdef","wake_run_id":1,"entries":[]})",
+      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":false,"job_staging_dir":"job-2-exec-0123456789abcdef0123456789abcdef","execution_uuid":"0123456789abcdef0123456789abcdef","wake_run_id":1,"entries":[]})",
       &manifest, &error));
   EXPECT_EQUAL(error, std::string("wake_run_id and wake_job_id must be provided together"));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":false,"job_staging_dir":"job-2-execution-0123456789abcdef0123456789abcdef","execution_uuid":"0123456789abcdef0123456789abcdef","wake_run_id":"1","wake_job_id":2,"entries":[]})",
+      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":false,"job_staging_dir":"job-2-exec-0123456789abcdef0123456789abcdef","execution_uuid":"0123456789abcdef0123456789abcdef","wake_run_id":"1","wake_job_id":2,"entries":[]})",
       &manifest, &error));
   EXPECT_EQUAL(error, std::string("wake_run_id and wake_job_id must be integers"));
 }
@@ -245,11 +245,11 @@ TEST(staging_manifest_requires_v2_fields, "cas") {
   wakefs::StagingManifest manifest;
   std::string error;
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":2,"job_key":"job","created_at_ns":1,"job_staging_dir":"wakebox-execution-0123456789abcdef0123456789abcdef","execution_uuid":"0123456789abcdef0123456789abcdef","entries":[]})",
+      R"({"version":2,"job_key":"job","created_at_ns":1,"job_staging_dir":"wakebox-exec-0123456789abcdef0123456789abcdef","execution_uuid":"0123456789abcdef0123456789abcdef","entries":[]})",
       &manifest, &error));
   EXPECT_EQUAL(error, std::string("manifest field 'materialization_complete' must be a boolean"));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":1,"job_staging_dir":"wakebox-execution-0123456789abcdef0123456789abcdef","execution_uuid":"0123456789abcdef0123456789abcdef","entries":[]})",
+      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":1,"job_staging_dir":"wakebox-exec-0123456789abcdef0123456789abcdef","execution_uuid":"0123456789abcdef0123456789abcdef","entries":[]})",
       &manifest, &error));
   EXPECT_EQUAL(error, std::string("manifest field 'materialization_complete' must be a boolean"));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
@@ -261,7 +261,7 @@ TEST(staging_manifest_requires_v2_fields, "cas") {
       &manifest, &error));
   EXPECT_EQUAL(error, std::string("manifest field 'job_staging_dir' must be a nonempty string"));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[],"job_staging_dir":"wakebox-execution-0123456789abcdef0123456789abcdef","execution_uuid":7})",
+      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":false,"entries":[],"job_staging_dir":"wakebox-exec-0123456789abcdef0123456789abcdef","execution_uuid":7})",
       &manifest, &error));
   EXPECT_EQUAL(error, std::string("manifest field 'execution_uuid' must be a nonempty string"));
   EXPECT_FALSE(wakefs::parse_staging_manifest(R"({"version":3})", &manifest, &error));
@@ -333,16 +333,16 @@ TEST(staging_manifest_rejects_symlinked_staging_layout, "cas") {
 
 TEST(staging_job_dir_names, "cas") {
   EXPECT_EQUAL(wakefs::staging_job_dir_name(2008, kUuidA),
-               std::string("job-2008-execution-") + kUuidA);
+               std::string("job-2008-exec-") + kUuidA);
   EXPECT_EQUAL(wakefs::staging_job_dir_name(std::nullopt, kUuidA),
-               std::string("wakebox-execution-") + kUuidA);
-  EXPECT_TRUE(wakefs::is_staging_execution_directory("job-2008-execution-" + std::string(kUuidA)));
-  EXPECT_TRUE(wakefs::is_staging_execution_directory("job--1-execution-" + std::string(kUuidA)));
-  EXPECT_TRUE(wakefs::is_staging_execution_directory("wakebox-execution-" + std::string(kUuidA)));
+               std::string("wakebox-exec-") + kUuidA);
+  EXPECT_TRUE(wakefs::is_staging_execution_directory("job-2008-exec-" + std::string(kUuidA)));
+  EXPECT_TRUE(wakefs::is_staging_execution_directory("job--1-exec-" + std::string(kUuidA)));
+  EXPECT_TRUE(wakefs::is_staging_execution_directory("wakebox-exec-" + std::string(kUuidA)));
   EXPECT_FALSE(wakefs::is_staging_execution_directory("job-2008.1234.0"));
-  EXPECT_FALSE(wakefs::is_staging_execution_directory("job-abc-execution-" + std::string(kUuidA)));
+  EXPECT_FALSE(wakefs::is_staging_execution_directory("job-abc-exec-" + std::string(kUuidA)));
   EXPECT_FALSE(wakefs::is_staging_execution_directory(
-      "job-2008-execution-0123456789ABCDEF0123456789abcdef"));
+      "job-2008-exec-0123456789ABCDEF0123456789abcdef"));
   EXPECT_TRUE(wakefs::is_execution_uuid(kUuidA));
   EXPECT_FALSE(wakefs::is_execution_uuid("0123456789ABCDEF0123456789abcdef"));
   EXPECT_FALSE(wakefs::is_execution_uuid("0123456789abcdef0123456789abcde"));
@@ -415,7 +415,7 @@ TEST(staging_manifest_v2_rejects_bad_layout, "cas") {
   };
 
   wakefs::StagingManifest manifest = base;
-  manifest.entries = {file_entry("job-9-execution-" + std::string(kUuidB) + "/1-x")};
+  manifest.entries = {file_entry("job-9-exec-" + std::string(kUuidB) + "/1-x")};
   EXPECT_FALSE(write_with(manifest));  // another job's directory
   EXPECT_EQUAL(error, std::string("entry staging_path is outside the job staging directory"));
   manifest.entries = {file_entry(dir + "/sub/1-x")};
@@ -434,7 +434,7 @@ TEST(staging_manifest_v2_rejects_bad_layout, "cas") {
   EXPECT_FALSE(write_with(manifest));  // flat source
   EXPECT_EQUAL(error, std::string("entry staging_path is outside the job staging directory"));
   manifest = base;
-  manifest.job_staging_dir = std::string("job-2008-execution-") + kUuidB;
+  manifest.job_staging_dir = std::string("job-2008-exec-") + kUuidB;
   EXPECT_FALSE(write_with(manifest));  // directory and UUID disagree
   EXPECT_EQUAL(error, std::string("job_staging_dir does not match the execution identity"));
   manifest = base;
@@ -442,7 +442,7 @@ TEST(staging_manifest_v2_rejects_bad_layout, "cas") {
   EXPECT_FALSE(write_with(manifest));
   EXPECT_EQUAL(error, std::string("execution_uuid must be 32 lowercase hexadecimal digits"));
   manifest = base;
-  manifest.job_staging_dir = "job-7-execution-" + std::string(kUuidA);
+  manifest.job_staging_dir = "job-7-exec-" + std::string(kUuidA);
   EXPECT_FALSE(write_with(manifest));  // directory and job ID disagree
   EXPECT_EQUAL(error, std::string("job_staging_dir does not match the execution identity"));
   manifest = base;
@@ -455,19 +455,19 @@ TEST(staging_manifest_v2_rejects_bad_layout, "cas") {
 
 TEST(staging_manifest_v2_parser_rejects_unsafe_sources, "cas") {
   const std::string prefix =
-      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":false,"job_staging_dir":"wakebox-execution-0123456789abcdef0123456789abcdef","execution_uuid":"0123456789abcdef0123456789abcdef","entries":[{"destination":"out","type":"file","staging_path":")";
+      R"({"version":2,"job_key":"job","created_at_ns":1,"materialization_complete":false,"job_staging_dir":"wakebox-exec-0123456789abcdef0123456789abcdef","execution_uuid":"0123456789abcdef0123456789abcdef","entries":[{"destination":"out","type":"file","staging_path":")";
   const std::string suffix = R"(","mode":420,"mtime_sec":0,"mtime_nsec":0}]})";
   wakefs::StagingManifest manifest;
   std::string error;
   ASSERT_TRUE(wakefs::parse_staging_manifest(
-      prefix + "wakebox-execution-0123456789abcdef0123456789abcdef/1-x" + suffix, &manifest,
+      prefix + "wakebox-exec-0123456789abcdef0123456789abcdef/1-x" + suffix, &manifest,
       &error));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      prefix + "wakebox-execution-fedcba9876543210fedcba9876543210/1-x" + suffix, &manifest,
+      prefix + "wakebox-exec-fedcba9876543210fedcba9876543210/1-x" + suffix, &manifest,
       &error));
   EXPECT_EQUAL(error, std::string("entry staging_path is outside the job staging directory"));
   EXPECT_FALSE(wakefs::parse_staging_manifest(
-      prefix + "wakebox-execution-0123456789abcdef0123456789abcdef/recovery.json" + suffix,
+      prefix + "wakebox-exec-0123456789abcdef0123456789abcdef/recovery.json" + suffix,
       &manifest, &error));
   EXPECT_EQUAL(
       error, std::string("entry staging_path must be a direct payload child of its job directory"));
@@ -548,7 +548,7 @@ TEST(staging_manifest_v2_rejects_misplaced_manifest, "cas") {
   EXPECT_TRUE(fs::exists(renamed));
 
   // In the wrong directory.
-  const std::string wrong = staging(root) + "/job-9-execution-" + kUuidB + "/recovery.json";
+  const std::string wrong = staging(root) + "/job-9-exec-" + kUuidB + "/recovery.json";
   fs::create_directories(fs::path(wrong).parent_path());
   ASSERT_TRUE(wakefs::write_staging_manifest_atomic(wrong, manifest, &error));
   EXPECT_FALSE(materialize_from_workspace(root, wrong, &summary, &error));
@@ -606,9 +606,9 @@ TEST(staging_manifest_discovers_job_local_records, "cas") {
   // Ignore CAS scratch, incomplete atomic writes, orphans, and private workspace contents.
   write_file(staging(root) + "/" + first.job_staging_dir + "/.recovery.json.tmp.1.0", "{ partial");
   write_file(staging(root) + "/scratch-file.123.0", "scratch");
-  write_file(staging(root) + "/job-5-execution-" + kUuidA + "/1-orphan", "orphan");
+  write_file(staging(root) + "/job-5-exec-" + kUuidA + "/1-orphan", "orphan");
   const std::string private_manifest =
-      staging(root) + "/job-6-execution-" + kUuidA + "/workspace/recovery.json";
+      staging(root) + "/job-6-exec-" + kUuidA + "/workspace/recovery.json";
   fs::create_directories(fs::path(private_manifest).parent_path());
   ASSERT_TRUE(wakefs::write_staging_manifest_atomic(private_manifest, first, &error));
 
@@ -621,7 +621,7 @@ TEST(staging_manifest_discovers_job_local_records, "cas") {
   EXPECT_EQUAL(*manifests[0].manifest.wake_run_id, 4);
   EXPECT_EQUAL(*manifests[0].manifest.wake_job_id, 2008);
   EXPECT_EQUAL(manifests[1].manifest.execution_uuid, std::string(kUuidB));
-  EXPECT_EQUAL(manifests[2].manifest.job_staging_dir, std::string("wakebox-execution-") + kUuidA);
+  EXPECT_EQUAL(manifests[2].manifest.job_staging_dir, std::string("wakebox-exec-") + kUuidA);
   EXPECT_TRUE(fs::exists(private_manifest));
 
   // Missing staging root is not an error.

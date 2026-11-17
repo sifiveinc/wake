@@ -44,8 +44,8 @@ bool write_staging_manifest_atomic(const std::string& path, const StagingManifes
 
 std::string staging_job_dir_name(std::optional<int64_t> wake_job_id,
                                  const std::string& execution_uuid) {
-  if (wake_job_id) return "job-" + std::to_string(*wake_job_id) + "-execution-" + execution_uuid;
-  return "wakebox-execution-" + execution_uuid;
+  if (wake_job_id) return "job-" + std::to_string(*wake_job_id) + "-exec-" + execution_uuid;
+  return "wakebox-exec-" + execution_uuid;
 }
 
 bool is_execution_uuid(const std::string& value) {

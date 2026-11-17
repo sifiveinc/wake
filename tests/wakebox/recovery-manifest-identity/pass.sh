@@ -16,7 +16,7 @@ trap cleanup EXIT
 
 "${1}/wakebox" -o "$STATS_FILE" -p input.json
 MANIFEST=$(sed -n 's/.*"recovery_manifest":"\([^"]*\)".*/\1/p' "$STATS_FILE")
-echo "$MANIFEST" | grep -q '^\.build/cas/staging/job-7-execution-[0-9a-f]\{32\}/recovery\.json$' || {
+echo "$MANIFEST" | grep -q '^\.build/cas/staging/job-7-exec-[0-9a-f]\{32\}/recovery\.json$' || {
   echo "FAIL: unexpected Wake manifest location: $MANIFEST"
   exit 1
 }

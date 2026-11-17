@@ -24,21 +24,21 @@ enum class StagingEntryType { File, Symlink, Directory };
 
 // Each FUSE execution owns one directory directly below the CAS staging root. Its regular output
 // payloads are flat children of that directory, with the recovery manifest alongside them:
-//   <staging>/job-<jobID>-execution-<UUID>/recovery.json
-//   <staging>/job-<jobID>-execution-<UUID>/1-main.o
-//   <staging>/wakebox-execution-<UUID>/...      (standalone Wakebox without WakeDB IDs)
+//   <staging>/job-<jobID>-exec-<UUID>/recovery.json
+//   <staging>/job-<jobID>-exec-<UUID>/1-main.o
+//   <staging>/wakebox-exec-<UUID>/...      (standalone Wakebox without WakeDB IDs)
 // Legacy (version 1) manifests live in <staging>/recovery/ and refer to flat PID_counter sources.
 constexpr const char* kRecoveryManifestName = "recovery.json";
 constexpr const char* kLegacyRecoveryDirName = "recovery";
 
 // Filter candidate directories by name; the manifest remains authoritative for identity.
 inline bool is_staging_execution_directory(const std::string& name) {
-  static const std::regex pattern(R"((job--?[0-9]+|wakebox)-execution-[0-9a-f]{32})");
+  static const std::regex pattern(R"((job--?[0-9]+|wakebox)-exec-[0-9a-f]{32})");
   return std::regex_match(name, pattern);
 }
 
-// The directory leaf for one execution: job-<jobID>-execution-<UUID>, or
-// wakebox-execution-<UUID> when there is no Wake job ID.
+// The directory leaf for one execution: job-<jobID>-exec-<UUID>, or
+// wakebox-exec-<UUID> when there is no Wake job ID.
 std::string staging_job_dir_name(std::optional<int64_t> wake_job_id,
                                  const std::string& execution_uuid);
 
@@ -128,7 +128,7 @@ bool discover_completed_staging_manifests(const std::string& recovery_dir,
 
 // Scan the CAS staging root for retained final manifests: each execution-named direct child
 // directory's recovery.json, plus the legacy records directly under <staging_root>/recovery/.
-// Private execution trees (such as job-N-execution-U/workspace/) are never scanned, and directories
+// Private execution trees (such as job-N-exec-U/workspace/) are never scanned, and directories
 // without a manifest and atomic-write temporaries are ignored. Results are ordered like
 // discover_completed_staging_manifests.
 bool discover_staging_manifests(const std::string& staging_root,
