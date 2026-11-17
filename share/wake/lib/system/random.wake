@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-package wake
+package random
 
 # Generate exactly length random lowercase hex digits; zero returns an empty string.
 # This is nondeterministic: using the value in job inputs can prevent cache reuse,

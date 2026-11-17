@@ -1,3 +1,5 @@
+from random import _
+
 from wake import _
 
 def checkRandom generate pattern: Result Unit Error =
