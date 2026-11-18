@@ -85,6 +85,8 @@ std::string cas_error_to_string(CASError error) {
       return "Already exists";
     case CASError::InvalidHash:
       return "Invalid hash";
+    case CASError::IdGenerationFailed:
+      return "Failed to generate execution UUID";
     default:
       return "Unknown error";
   }
@@ -345,7 +347,7 @@ wcl::result<std::string, CASError> Cas::alloc_staging_dir(const std::string& pre
   std::error_code ec;
   for (int attempt = 0; attempt < 16; ++attempt) {
     auto uuid = wcl::uuidv4();
-    if (!uuid) return wcl::make_error<std::string, CASError>(CASError::IOError);
+    if (!uuid) return wcl::make_error<std::string, CASError>(CASError::IdGenerationFailed);
     // Staging paths and recovery manifests use the compact, unhyphenated representation.
     uuid->erase(std::remove(uuid->begin(), uuid->end(), '-'), uuid->end());
     const fs::path outer =

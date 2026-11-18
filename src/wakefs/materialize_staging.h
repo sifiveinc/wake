@@ -33,7 +33,7 @@ constexpr const char* kLegacyRecoveryDirName = "recovery";
 
 // Filter candidate directories by name; the manifest remains authoritative for identity.
 inline bool is_staging_execution_directory(const std::string& name) {
-  static const std::regex pattern(R"((job--?[0-9]+|wakebox)-exec-[0-9a-f]{32})");
+  static const std::regex pattern(R"((job-[0-9]+|wakebox)-exec-[0-9a-f]{32})");
   return std::regex_match(name, pattern);
 }
 

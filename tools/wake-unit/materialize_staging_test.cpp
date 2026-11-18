@@ -33,6 +33,7 @@ std::string workspace(const std::string& root) { return root + "/workspace"; }
 
 std::string staging(const std::string& root) { return workspace(root) + "/.build/cas/staging"; }
 
+// Fixed IDs keep tests predictable; two IDs let tests distinguish executions.
 const char* kUuidA = "0123456789abcdef0123456789abcdef";
 const char* kUuidB = "fedcba9876543210fedcba9876543210";
 
@@ -336,7 +337,6 @@ TEST(staging_job_dir_names, "cas") {
   EXPECT_EQUAL(wakefs::staging_job_dir_name(std::nullopt, kUuidA),
                std::string("wakebox-exec-") + kUuidA);
   EXPECT_TRUE(wakefs::is_staging_execution_directory("job-2008-exec-" + std::string(kUuidA)));
-  EXPECT_TRUE(wakefs::is_staging_execution_directory("job--1-exec-" + std::string(kUuidA)));
   EXPECT_TRUE(wakefs::is_staging_execution_directory("wakebox-exec-" + std::string(kUuidA)));
   EXPECT_FALSE(wakefs::is_staging_execution_directory("job-2008.1234.0"));
   EXPECT_FALSE(wakefs::is_staging_execution_directory("job-abc-exec-" + std::string(kUuidA)));

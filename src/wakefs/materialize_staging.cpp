@@ -152,7 +152,12 @@ bool validate_common_metadata(const StagingManifest& manifest, std::string* erro
   return true;
 }
 
+bool validate_v1_metadata(const StagingManifest& manifest, std::string* error) {
+  return validate_common_metadata(manifest, error);
+}
+
 bool validate_v2_metadata(const StagingManifest& manifest, std::string* error) {
+  if (!validate_common_metadata(manifest, error)) return false;
   if (!is_execution_uuid(manifest.execution_uuid))
     return fail(error, "execution_uuid must be 32 lowercase hexadecimal digits");
   if (manifest.job_staging_dir !=
@@ -174,10 +179,9 @@ bool validate_v2_metadata(const StagingManifest& manifest, std::string* error) {
 
 // Validate the serialized manifest contract before trusting any paths or metadata.
 bool validate_metadata(const StagingManifest& manifest, std::string* error) {
-  if (!validate_common_metadata(manifest, error)) return false;
   switch (manifest.version) {
     case 1:
-      return true;
+      return validate_v1_metadata(manifest, error);
     case 2:
       return validate_v2_metadata(manifest, error);
     default:

@@ -27,7 +27,14 @@
 namespace cas {
 
 // Error types for CAS operations
-enum class CASError { NotFound, IOError, CorruptedData, AlreadyExists, InvalidHash };
+enum class CASError {
+  NotFound,
+  IOError,
+  CorruptedData,
+  AlreadyExists,
+  InvalidHash,
+  IdGenerationFailed
+};
 
 // Convert CASError to string for logging
 std::string cas_error_to_string(CASError error);

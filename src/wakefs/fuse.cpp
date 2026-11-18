@@ -320,8 +320,8 @@ bool run_in_fuse(fuse_args &args, int &status, std::string &result_json, FuseRun
   if (!args.no_fuse_daemon && !args.daemon.connect(args.visible, args.cas_dir, args.isolate_pids,
                                                    args.wake_run_id, args.wake_job_id))
     return false;
-  std::string output =
-      args.no_fuse_daemon ? R"({"ibytes":0,"obytes":0,"outputs":[],"staging_files":{}})" : "";
+  // Default daemon metadata for runs without FUSE.
+  std::string output = R"({"ibytes":0,"obytes":0,"outputs":[],"staging_files":{}})";
   cancellation_signal = 0;
   cancellation_repeated = 0;
   CancellationSignalHandlers signal_handlers;

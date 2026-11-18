@@ -518,7 +518,8 @@ bool Job::alloc_backing_path(const std::string &dest_path, std::string *path) {
   if (!ensure_staging_dir()) return false;
   const size_t slash = dest_path.rfind('/');
   const std::string basename = slash == std::string::npos ? dest_path : dest_path.substr(slash + 1);
-  *path = job_staging_dir + "/" + wakefs::staging_payload_name(next_output_number++, basename);
+  *path = job_staging_dir + "/" + wakefs::staging_payload_name(next_output_number, basename);
+  ++next_output_number;
   return true;
 }
 
