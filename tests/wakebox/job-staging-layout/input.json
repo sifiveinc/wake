@@ -1,0 +1,16 @@
+{
+  "command": [
+    "/bin/sh",
+    "-c",
+    "mkdir -p layout-a layout-b && echo one > layout-a/main.o && echo two > layout-b/main.o"
+  ],
+  "environment": ["USER=root", "HOME=/root", "PATH=/usr/bin:/bin:/usr/sbin:/sbin"],
+  "directory": ".",
+  "stdin": "",
+  "user-id": 0,
+  "group-id": 0,
+  "wake_run_id": 43,
+  "wake_job_id": 8,
+  "mount-ops": [{"type": "workspace", "destination": "."}],
+  "visible": []
+}

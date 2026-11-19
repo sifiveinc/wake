@@ -1,0 +1,8 @@
+{
+  "command": ["/bin/sh", "-c", ": > executed"],
+  "environment": ["PATH=/usr/bin:/bin:/usr/sbin:/sbin"],
+  "directory": ".",
+  "stdin": "",
+  "mount-ops": [{"type": "bind", "source": "private", "destination": ".", "read_only": false}],
+  "visible": []
+}

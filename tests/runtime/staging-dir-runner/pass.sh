@@ -48,3 +48,18 @@ if ! echo "$reexecuted" | grep -q '^# staging-dir-runner: failing-with-output'; 
     echo "FAIL: expected 'failing-with-output' to re-execute (failed jobs are never cached)" >&2
     exit 1
 fi
+
+# Once Wake has exited, neither job staging nor short-lived CAS scratch should remain.
+if [ ! -d .build/cas/staging ]; then
+    echo "FAIL: staging root is missing or is not a directory" >&2
+    exit 1
+fi
+if ! leftover=$(find -H .build/cas/staging -mindepth 1 -maxdepth 1); then
+    echo "FAIL: could not inspect staging root" >&2
+    exit 1
+fi
+if [ -n "$leftover" ]; then
+    echo "FAIL: staging entries survived the run:" >&2
+    echo "$leftover" >&2
+    exit 1
+fi

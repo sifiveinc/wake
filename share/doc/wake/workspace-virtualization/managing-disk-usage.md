@@ -90,10 +90,43 @@ Wake deletes every tracked file under `build/test`, removes their database
 entries, drops the CAS blobs no longer referenced by any remaining path, and
 removes the emptied directories.
 
+## Staging directory structure
+
+The CAS staging directory can contain the following entries:
+
+```text
+.build/cas/staging/
+  job-2008-exec-<UUID>/          # FUSE-tracked Wake job execution
+    recovery.json
+    1-main.o
+    2-main.o
+  wakebox-exec-<UUID>/           # Standalone Wakebox execution
+    recovery.json
+    1-report.txt
+  job-2012-exec-<UUID>/          # stagingDirRunner private tree
+    workspace/
+      src/main.c
+      build/main.o
+  <scratch-file>                 # Temporary CAS insertion file
+```
+
+Each FUSE execution has its own directory. The job ID identifies the Wake job,
+and the UUID distinguishes separate executions of that job for remote use cases.
+Standalone Wakebox uses `wakebox` instead of a job ID.
+
+FUSE regular-file outputs are stored as flat, numbered files. The readable part
+of each name comes from the output's basename when its backing file was created;
+the number distinguishes outputs with the same basename. `recovery.json` records
+the destination paths and output metadata, including directories and symlinks.
+
+The `stagingDirRunner` instead uses a private `workspace/` tree that preserves
+the input and output path directory hierachy structure.
+
 ## Cleaning up staging leftovers
 
 Since there is no automatic cleanup of staging leftovers yet, a crash or interrupted
-run can leave files and recovery manifests in `.build/cas/staging/`. If Wake
+run can leave files and recovery manifests in their job-specific directories in
+`.build/cas/staging/job-<jobID>-exec-<uuid>/`. If Wake
 reports that staged outputs remain after cancellation, recover that run with
 the command it prints, for example:
 

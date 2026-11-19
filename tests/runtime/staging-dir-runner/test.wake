@@ -13,8 +13,7 @@
 #  - `setPlanFilterOutputs`-declared (non-constant) outputs are silently dropped
 #    (documented limitation of this runner)
 #  - workspace-escaping declared output paths ("../x") are rejected
-#  - no leftover staging directories survive under `.build/cas/staging` after
-#    success, expected failure, or setup failure
+#  - no staging entries survive the suite (checked by pass.sh after Wake exits)
 
 export def writeContent (path: String) (content: String) =
     write path content
@@ -200,32 +199,6 @@ export def testOutsideWorkspaceOutput _: Result Unit Error =
     Pass Unit
     | addErrorContext "outside-workspace-output"
 
-# --- no leftover per-job staging directories after success, job failure, or setup failure ---
-
-def stagingRoot = ".build/cas/staging"
-
-export def leftoverStagingDirs Unit =
-    require True = access stagingRoot 0
-    else Pass Nil
-
-    sources stagingRoot `.*`
-
-export def testNoLeftoverStagingDirs _: Result Unit Error =
-    # Exercise success, job-failure, and setup-failure (missing declared output) paths.
-    def _ = basicOutput Unit
-    def _ = failingJobWithOutput Unit
-    def _ = missingDeclaredOutput Unit
-
-    require Pass leftovers = leftoverStagingDirs Unit
-
-    require Nil = leftovers
-    else
-        failWithError
-        "expected no leftover staging directories, found: {catWith ", " (map getPathName leftovers)}"
-
-    Pass Unit
-    | addErrorContext "no-leftover-staging-dirs"
-
 export def test _ =
     require Pass Unit = testBasicOutput Unit
     require Pass Unit = testSymlinkOutput Unit
@@ -236,6 +209,5 @@ export def test _ =
     require Pass Unit = testNoOutputs Unit
     require Pass Unit = testFilterOutputsUnsupported Unit
     require Pass Unit = testOutsideWorkspaceOutput Unit
-    require Pass Unit = testNoLeftoverStagingDirs Unit
 
     Pass 0
