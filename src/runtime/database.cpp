@@ -907,6 +907,13 @@ void Database::entropy(uint64_t *key, int words) {
 
   if (word == words) return;
 
+  if (imp->is_readonly()) {
+    // A read-only inspection needs a consistent key only within this invocation; when persisted
+    // entropy is missing, its generated in-memory values can be discarded without comparison to
+    // later invocations because inspections never persist data.
+    return;
+  }
+
   begin_rw_txn();
 
   for (word = 0; word < words; ++word) {
