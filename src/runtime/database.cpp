@@ -827,6 +827,31 @@ void Database::detail::finish_stmt(const char *why, sqlite3_stmt *stmt) const {
 }
 
 void Database::detail::single_step(const char *why, sqlite3_stmt *stmt) const {
+  auto print_failing_statement = [&] {
+    std::cerr << "The failing statement was: ";
+#if SQLITE_VERSION_NUMBER >= 3014000
+    char *tmp = sqlite3_expanded_sql(stmt);
+    std::cerr << tmp;
+    sqlite3_free(tmp);
+#else
+    std::cerr << sqlite3_sql(stmt);
+#endif
+    std::cerr << std::endl;
+  };
+
+  if (is_readonly() && !sqlite3_stmt_readonly(stmt)) {
+    // Defense in depth: SQLite's own SQLITE_OPEN_READONLY (and, for the ReadOnlyImmutable
+    // fallback, the relaxed-locking immutable=1 mode) should already prevent this, but Wake
+    // itself also knows this connection is supposed to be read-only. Catching it here gives a
+    // specific, immediate diagnostic rather than relying solely on SQLite's own rejection —
+    // which, in the ReadOnlyImmutable fallback mode, has deliberately weaker guarantees.
+    std::cerr << why
+              << "; attempted to execute a write statement on a read-only database connection."
+              << std::endl;
+    print_failing_statement();
+    exit(1);
+  }
+
   int ret;
   int retries = 0;
   const int max_retries = 3;
@@ -847,15 +872,7 @@ void Database::detail::single_step(const char *why, sqlite3_stmt *stmt) const {
     std::cerr << why << "; sqlite3_step: " << errmsg() << std::endl;
     std::cerr << "Error code: " << ret << " (SQLITE_BUSY=" << SQLITE_BUSY
               << ", SQLITE_LOCKED=" << SQLITE_LOCKED << ")" << std::endl;
-    std::cerr << "The failing statement was: ";
-#if SQLITE_VERSION_NUMBER >= 3014000
-    char *tmp = sqlite3_expanded_sql(stmt);
-    std::cerr << tmp;
-    sqlite3_free(tmp);
-#else
-    std::cerr << sqlite3_sql(stmt);
-#endif
-    std::cerr << std::endl;
+    print_failing_statement();
     exit(1);
   }
 
