@@ -61,6 +61,8 @@
 enum class DbAccess {
   ReadWrite,
   ReadOnly,
+  // Fallback read mode to enable point-in-time inspection of workspaces owned by other users.
+  ReadOnlyImmutable,
 };
 
 struct Database::detail {
@@ -198,14 +200,26 @@ struct Database::detail {
         gc_watermark(0) {}
 
   bool is_readonly() const { return access != DbAccess::ReadWrite; }
+  bool stale_read_suspected() const;
   std::string errmsg() const;
   void finish_stmt(const char *why, sqlite3_stmt *stmt) const;
   void single_step(const char *why, sqlite3_stmt *stmt) const;
 };
 
+bool Database::detail::stale_read_suspected() const {
+  if (access != DbAccess::ReadOnlyImmutable) return false;
+  int ext = sqlite3_extended_errcode(db);
+  int primary = ext & 0xff;
+  return primary == SQLITE_CORRUPT || primary == SQLITE_NOTADB || ext == SQLITE_IOERR_SHORT_READ;
+}
+
 std::string Database::detail::errmsg() const {
   std::string raw = sqlite3_errmsg(db);
-  return raw;
+  if (!stale_read_suspected()) return raw;
+  return raw +
+         "; wake.db was read without locking because its directory is not writable, and it may "
+         "have been changed by another Wake while being read. Please re-run the command; if the "
+         "error persists, wake.db may be corrupted.";
 }
 
 class WaitingIndicator {
@@ -271,7 +285,11 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
   int ret;
 
   while (true) {
-    ret = sqlite3_open_v2(memory ? ":memory:" : "wake.db", &imp->db, flags, 0);
+    const char *target = memory                                       ? ":memory:"
+                         : imp->access == DbAccess::ReadOnlyImmutable ? "file:wake.db?immutable=1"
+                                                                      : "wake.db";
+    int open_flags = flags | (imp->access == DbAccess::ReadOnlyImmutable ? SQLITE_OPEN_URI : 0);
+    ret = sqlite3_open_v2(target, &imp->db, open_flags, 0);
     if (ret != SQLITE_OK) {
       if (!imp->db) return "sqlite3_open: out of memory";
       std::string out = imp->errmsg();
@@ -308,6 +326,23 @@ std::string Database::open(bool wait, bool memory, bool tty, bool readonly) {
       if (auto res = apply_pragmas(getWriterPragmaSQL(), "set writer pragmas", 5)) {
         close_db(this);
         return *res;
+      }
+    }
+
+    if (readonly && !memory) {
+      // immutable=1 ignores any live -wal content, so this fallback reads only checkpointed
+      // main-file state; this is acceptable for brief inspection, but risks stale or even corrupted
+      // results if the database is held open while another instance writes to it.
+      int prc = sqlite3_exec(imp->db, "select 1 from sqlite_master limit 1;", 0, 0, nullptr);
+      if (imp->access == DbAccess::ReadOnly && (prc & 0xff) == SQLITE_READONLY) {
+        close_db(this);
+        imp->access = DbAccess::ReadOnlyImmutable;
+        continue;
+      }
+      if (prc != SQLITE_OK) {
+        std::string out = "Could not read wake.db: " + imp->errmsg();
+        close_db(this);
+        return out;
       }
     }
 
