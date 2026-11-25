@@ -1,0 +1,14 @@
+package lvltest
+
+from wake import _
+
+# Runtime-observable safety property of LVL.
+#
+# `100 / n` is a PARTIAL operation: it aborts the runtime when n == 0.  It is also entirely
+# argument-independent within the lambda (it does not mention `x`), so it is exactly the shape
+# a naive loop-invariant lifter would hoist out of the lambda and run unconditionally.  But the
+# lambda passed to `map` runs zero times on an empty list, so for `scaleAll 0 Nil` the division
+# must NEVER execute.  If LVL incorrectly hoisted it, this evaluation would abort with a
+# division-by-zero -- the same "evaluate work that should have stayed conditional" bug.
+export def scaleAll (n: Integer) (xs: List Integer): List Integer =
+    map (\x x + (100 / n)) xs

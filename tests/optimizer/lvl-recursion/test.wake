@@ -1,0 +1,21 @@
+package lvltest
+
+from wake import _
+
+# A recursive call is pure but NOT total: evaluating it eagerly diverges (and, when the
+# recursion builds data, blows up memory).  LVL must never hoist an RApp out of a lambda, both
+# because callee totality is unknown and because the recursive self-reference would become a
+# forward reference / unconditional eager evaluation.
+#
+# If the recursive call were hoisted, `countdown` would recurse unconditionally regardless of
+# the `n <= 0` base case and never terminate.  Termination here is the observable proof that
+# the recursive application stayed inside the conditional branch.
+export def countdown (n: Integer): Integer =
+    if n <= 0 then 0
+    else countdown (n - 1)
+
+# A larger, allocation-shaped recursion: building a list. If the recursive build were eagerly
+# hoisted it would attempt to construct an infinite list and exhaust memory.
+export def buildList (n: Integer): List Integer =
+    if n <= 0 then Nil
+    else n, buildList (n - 1)

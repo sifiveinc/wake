@@ -1,0 +1,24 @@
+package lvltest
+
+from wake import _
+
+# Edge case: hoisting a term that depends on a value CAPTURED from an enclosing scope (rather
+# than a plain literal).  A capture is still in scope at the hoist site, so a capture-dependent
+# invariant is liftable; an argument-dependent term is not.
+#
+#   captureMarker  -- depends on the captured `c` (not the element `x`) -> MUST be hoisted
+#   retainedMarker -- depends on the element `x`                         -> MUST stay in body
+#
+# The two markers live in two different mapped lambdas of the same pipeline so that each stays a
+# single-invariant body (the shape LVL actually lifts).  The test asserts captureMarker lands at
+# a strictly shallower indentation (lifted out of its lambda) than retainedMarker.
+def captureBody c x =
+    def captureMarker = c + 900000001
+    x + captureMarker
+
+def retainBody x =
+    def retainedMarker = x + 900000002
+    x + retainedMarker
+
+export def captureChain (c: Integer) (list: List Integer): List Integer =
+    map retainBody (map (\x captureBody c x) list)
