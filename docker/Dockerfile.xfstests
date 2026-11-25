@@ -1,0 +1,117 @@
+# Docker image for running xfstests against Wake's FUSE filesystem.
+#
+# Usage (from repo root):
+#   docker build -t wake-xfstests -f docker/Dockerfile.xfstests .
+#   docker run --rm \
+#     --device /dev/fuse \
+#     --cap-add SYS_ADMIN \
+#     --security-opt apparmor:unconfined \
+#     wake-xfstests
+#
+#  ./bin/wake --in fuse_test_suite runXfstests /opt/xfstests-dev -g quick
+
+FROM ubuntu:22.04
+
+# Core build tools and dependencies for wake and xfstests.
+
+RUN apt-get update && \
+	DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+	  # generic build/toolchain
+	  git \
+	  gcc \
+	  g++ \
+	  make \
+	  autoconf \
+	  automake \
+	  libtool \
+	  libtool-bin \
+	  pkg-config \
+	  util-linux \
+	  python3 \
+	  sed \
+	  gawk \
+	  bc \
+	  indent \
+	  psmisc \
+	  # wake build dependencies (mirroring debian/control)
+	  libsqlite3-dev \
+	  libgmp-dev \
+	  libre2-dev \
+	  libncurses5-dev \
+	  libfuse-dev \
+	  # xfstests core/runtime deps from README step 1
+	  acl \
+	  attr \
+	  dbench \
+	  dump \
+	  e2fsprogs \
+	  fio \
+	  libacl1-dev \
+	  libaio-dev \
+	  libcap-dev \
+	  libgdbm-dev \
+	  libgdbm-compat-dev \
+	  liburing-dev \
+	  libuuid1 \
+	  lvm2 \
+	  quota \
+	  sqlite3 \
+	  uuid-dev \
+	  uuid-runtime \
+	  xfsprogs \
+	  # xfstests filesystem-specific deps from README step 2
+	  exfatprogs \
+	  f2fs-tools \
+	  ocfs2-tools \
+	  udftools \
+	  xfsdump \
+	  xfslibs-dev \
+	  # additional libs/tools used by xfstests
+	  libinih-dev \
+	  gdbm-l10n \
+	  perl-modules \
+	  # common tools
+	  ca-certificates \
+	&& rm -rf /var/lib/apt/lists/*
+
+# Put the wake repo under /workspace/wake (conventional CI workspace)
+WORKDIR /workspace/wake
+
+# Ensure git uses the system CA bundle inside the container
+ENV GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
+
+# Copy the wake source tree into the image
+COPY . .
+
+# Build wake binaries and initialize wake.db without invoking the self-hosted
+# wake build (which would require FUSE inside the build environment).
+RUN rm -f wake.db && make -j"$(nproc)" wake.db
+RUN install -D lib/wake/fuse-waked /usr/local/libexec/wake/fuse-waked
+RUN install -D -m 0755 test-suite/wakefs_visible.py /usr/local/libexec/wake/wakefs_visible.py
+
+# xfstests FUSE mode relies on the mount(8) helper naming convention.
+# Install the checked-in helper script so the Dockerfile stays readable.
+RUN install -D -m 0755 test-suite/mount.fuse /sbin/mount.fuse
+
+# SSL_NO_VERIFY=1 can be passed at build time to skip TLS verification (for running on local machine)
+ARG SSL_NO_VERIFY=0
+ARG XFSTESTS_GIT_URL=https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git
+RUN if [ "$SSL_NO_VERIFY" = "1" ]; then \
+      git -c http.version=HTTP/1.1 -c http.sslVerify=false clone --depth 1 "$XFSTESTS_GIT_URL" /opt/xfstests-dev; \
+    else \
+      git -c http.version=HTTP/1.1 clone --depth 1 "$XFSTESTS_GIT_URL" /opt/xfstests-dev; \
+    fi && \
+    mkdir -p \
+      /opt/xfstests-dev/mnt/test \
+      /opt/xfstests-dev/mnt/scratch \
+      /opt/xfstests-dev/mnt/backing/test \
+      /opt/xfstests-dev/mnt/backing/scratch && \
+    chmod 0777 \
+      /opt/xfstests-dev/mnt/backing/test \
+      /opt/xfstests-dev/mnt/backing/scratch && \
+    cd /opt/xfstests-dev && \
+    make -j"$(nproc)"
+
+
+# Default command: run a quick xfstests group under runXfstests
+CMD ["bash", "-lc", "./bin/wake --in fuse_test_suite runXfstests /opt/xfstests-dev -g quick"]

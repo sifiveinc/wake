@@ -1,0 +1,66 @@
+# Docker image for running pjdfstest against Wake's FUSE filesystem via the
+# external FUSE test-suite harness and a single mounted filesystem.
+#
+# Usage (from repo root):
+#   docker build -t wake-pjdfstest -f docker/Dockerfile.pjdfstest .
+#   docker run --rm \
+#     --device /dev/fuse \
+#     --cap-add SYS_ADMIN \
+#     --security-opt apparmor:unconfined \
+#     wake-pjdfstest
+#
+# The container runs:
+# 	./bin/wake --in fuse_test_suite runPjdfstestSmoke /opt/pjdfstest
+
+FROM ubuntu:22.04
+
+RUN apt-get update && \
+	DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+	  git \
+	  gcc \
+	  g++ \
+	  make \
+	  autoconf \
+	  automake \
+	  libtool \
+	  libtool-bin \
+	  pkg-config \
+	  perl \
+	  util-linux \
+	  python3 \
+	  openssl \
+	  ca-certificates \
+	  libsqlite3-dev \
+	  libgmp-dev \
+	  libre2-dev \
+	  libncurses5-dev \
+	  libfuse-dev \
+	&& rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/wake
+
+ENV GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
+
+COPY . .
+
+RUN rm -f wake.db && make -j"$(nproc)" wake.db
+RUN install -D lib/wake/fuse-waked /usr/local/libexec/wake/fuse-waked
+RUN install -D -m 0755 test-suite/wakefs_visible.py /usr/local/libexec/wake/wakefs_visible.py
+RUN install -D -m 0755 test-suite/mount.fuse /sbin/mount.fuse
+
+# SSL_NO_VERIFY=1 can be passed at build time to skip TLS
+# verification for the clone when running behind a corporate MITM proxy.
+# The clone uses HTTP/1.1 to avoid some proxy/middlebox issues.
+ARG SSL_NO_VERIFY=0
+ARG PJDFSTEST_GIT_URL=https://github.com/pjd/pjdfstest.git
+RUN if [ "$SSL_NO_VERIFY" = "1" ]; then \
+      git -c http.version=HTTP/1.1 -c http.sslVerify=false clone --depth 1 "$PJDFSTEST_GIT_URL" /opt/pjdfstest; \
+    else \
+      git -c http.version=HTTP/1.1 clone --depth 1 "$PJDFSTEST_GIT_URL" /opt/pjdfstest; \
+    fi && \
+    cd /opt/pjdfstest && \
+    autoreconf -ifs && \
+    ./configure && \
+    make pjdfstest
+
+CMD ["bash", "-lc", "./bin/wake --in fuse_test_suite runPjdfstestSmoke /opt/pjdfstest"]
