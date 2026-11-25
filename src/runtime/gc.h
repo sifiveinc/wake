@@ -28,6 +28,7 @@
 #ifdef DEBUG_GC
 #include <cassert>
 #endif
+#include "small_int.h"
 #include "util/hash.h"
 
 #if __GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 8)
@@ -198,14 +199,14 @@ struct HeapPointerBase {
 };
 
 inline PadObject *HeapPointerBase::moveto(PadObject *free) {
-  if (!obj) return free;
+  if (!obj || is_small_int(obj)) return free;
   Placement out = obj->moveto(free);
   obj = out.obj;
   return out.free;
 }
 
 inline HeapStep HeapPointerBase::explore(HeapStep step) {
-  if (obj) *step.found++ = obj;
+  if (obj && !is_small_int(obj)) *step.found++ = obj;
   return step;
 }
 
